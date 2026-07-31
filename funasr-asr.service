@@ -1,0 +1,15 @@
+[Unit]
+Description=FunASR SenseVoiceSmall ASR Service
+After=network.target
+
+[Service]
+Type=simple
+User=ai
+WorkingDirectory=/home/ai/桌面
+ExecStart=/home/ai/miniconda3/envs/funasr-sensevoice/bin/python /home/ai/桌面/funasr_asr_server.py --model /home/ai/.cache/modelscope/hub/models/iic/SenseVoiceSmall --host 0.0.0.0 --port 8091 --device cuda:1
+Restart=on-failure
+RestartSec=5
+Environment=OMP_NUM_THREADS=4
+
+[Install]
+WantedBy=multi-user.target

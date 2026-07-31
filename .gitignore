@@ -1,0 +1,69 @@
+# PDF files (large documents)
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Logs
+*.log
+*.log.*.gz
+logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+chroma_db/
+
+# Environment variables
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test screenshots
+test-screenshots/
+
+# Data directory (large files)
+data/
+
+# GIF files (large)
+*.gif
+
+# Temporary files
+*.tmp
+*.bak
+*.bak.*
+=2.8.0
+整改报告上报
+
+# Files with API keys
+CHANGELOG.md
+docker-compose.yml
+diff.patch
+
+# Docker volumes
+onlyoffice_data/

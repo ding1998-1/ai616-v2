@@ -1,0 +1,27 @@
+[Unit]
+Description=AI 三重一大合规审核系统
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai
+Group=ai
+WorkingDirectory=/home/ai/文档/ai616
+Environment="HF_ENDPOINT=https://hf-mirror.com"
+Environment="PATH=/home/ai/miniconda3/envs/ai_compliance/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/ai/miniconda3/envs/ai_compliance/bin/python backend_full.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=15
+StandardOutput=append:/home/ai/文档/ai616/backend_server.log
+StandardError=append:/home/ai/文档/ai616/backend_server.log
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>合规智能管理系统</title>
+    <style>
+        :root {
+            /* 颜色变量定义 */
+            --bg-color: #f5f7f5;
+            /* 整体浅灰色背景 */
+            --primary-green: #2d6a4f;
+            /* 主色调：深绿色 (用于左侧栏) */
+            --light-green: #d8f3dc;
+            /* 浅绿色 (用于内容区块背景) */
+            --primary-orange: #e07a5f;
+            /* 强调色：深橙色 */
+            --light-orange: #ffe8d6;
+            /* 浅橙色 (用于内容区块背景) */
+            --text-dark: #333333;
+            --text-light: #ffffff;
+            --pill-bg: #ffffff;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-dark);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .dashboard {
+            width: 100%;
+            max-width: 1200px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        /* 顶部大标题 */
+        .header-title {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary-green);
+            margin-bottom: 10px;
+            border-left: 6px solid var(--primary-green);
+            padding-left: 15px;
+        }
+
+        /* 每一行的容器 */
+        .row {
+            display: flex;
+            gap: 15px;
+            align-items: stretch;
+        }
+
+        /* 左侧标题块 */
+        .sidebar-block {
+            flex: 0 0 200px;
+            background-color: var(--primary-green);
+            color: var(--text-light);
+            padding: 20px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+
+        .sidebar-block h3 {
+            margin: 0 0 5px 0;
+            font-size: 18px;
+        }
+
+        .sidebar-block p {
+            margin: 0;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        /* 右侧内容区 */
+        .content-area {
+            flex: 1;
+            display: flex;
+            gap: 15px;
+        }
+
+        /* 面板基础样式 */
+        .panel {
+            flex: 1;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 绿色面板 */
+        .panel-green {
+            background-color: var(--light-green);
+            border-top: 4px solid var(--primary-green);
+        }
+
+        /* 橙色面板 */
+        .panel-orange {
+            background-color: var(--light-orange);
+            border-top: 4px solid var(--primary-orange);
+        }
+
+        .panel-title {
+            font-weight: bold;
+            margin-bottom: 15px;
+            font-size: 15px;
+            color: var(--text-dark);
+        }
+
+        /* 内部胶囊按钮/标签容器 */
+        .pill-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        /* 胶囊标签样式 */
+        .pill {
+            background-color: var(--pill-bg);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 13px;
+            text-align: center;
+            flex: 1 1 calc(50% - 10px);
+            /* 一行两个 */
+            box-sizing: border-box;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: default;
+        }
+
+        .pill:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        /* 一行占满的标签 */
+        .pill-full {
+            flex: 1 1 100%;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="dashboard">
+        <div class="header-title">合规智能管理</div>
+
+        <div class="row">
+            <div class="sidebar-block">
+                <h3>咨询入口与方式</h3>
+                <p>集成接入 / 多端覆盖</p>
+            </div>
+            <div class="content-area">
+                <div class="panel panel-green"
+                    style="flex-direction: row; align-items: center; justify-content: space-around;">
+                    <div class="pill">集成 OA 链接</div>
+                    <div class="pill">钉钉应用</div>
+                    <div class="pill">企微应用</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="sidebar-block">
+                <h3>合规智能问答</h3>
+                <p>匹配溯源 / 热点分析 / 闭环优化</p>
+            </div>
+            <div class="content-area">
+                <div class="panel panel-green">
+                    <div class="panel-title">答案匹配与溯源</div>
+                    <div class="pill-container">
+                        <div class="pill">语义理解</div>
+                        <div class="pill">多源检索</div>
+                        <div class="pill">精准匹配</div>
+                        <div class="pill">不足处理</div>
+                        <div class="pill pill-full">答案溯源</div>
+                    </div>
+                </div>
+                <div class="panel panel-orange">
+                    <div class="panel-title">热点统计与分析</div>
+                    <div class="pill-container">
+                        <div class="pill">部门排行</div>
+                        <div class="pill">问题排行</div>
+                        <div class="pill">趋势分析</div>
+                        <div class="pill">焦点洞察</div>
+                        <div class="pill pill-full">数据导出</div>
+                    </div>
+                </div>
+                <div class="panel panel-green">
+                    <div class="panel-title">用户反馈与闭环优化</div>
+                    <div class="pill-container">
+                        <div class="pill">反馈方式</div>
+                        <div class="pill">优化清单</div>
+                        <div class="pill">清单审核</div>
+                        <div class="pill">知识更新</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="sidebar-block">
+                <h3>基础设施</h3>
+                <p>平台底座 / 资源能力</p>
+            </div>
+            <div class="content-area">
+                <div class="panel panel-green"
+                    style="flex-direction: row; align-items: center; justify-content: space-around;">
+                    <div class="pill">数据库</div>
+                    <div class="pill">MQ</div>
+                    <div class="pill">存储</div>
+                    <div class="pill">AI算力</div>
+                    <div class="pill">应用服务器</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+
+</html>

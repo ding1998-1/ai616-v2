@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>三重一大智能合规中枢架构图</title>
+    <style>
+        :root {
+            /* 腾讯/字节蓝风格设计语言 */
+            --bg-color: #f3f5f8;
+            --primary-blue: #0052d9;
+            /* 腾讯蓝 */
+            --secondary-blue: #e8f3ff;
+            /* 浅蓝背景 */
+            --accent-blue: #2979ff;
+            /* 亮蓝点缀 */
+            --primary-green: #00a870;
+            /* 成功/底座绿 */
+            --primary-purple: #722ed1;
+            /* 字节紫/聚合节点 */
+            --text-main: #1d2129;
+            /* 主文字 */
+            --text-secondary: #4e5969;
+            /* 次要文字 */
+            --text-muted: #86909c;
+            /* 辅助文字 */
+            --card-bg: #ffffff;
+            --card-border: #e5e6eb;
+            --shadow-sm: 0 2px 8px rgba(0, 82, 217, 0.04);
+            --shadow-md: 0 4px 16px rgba(0, 82, 217, 0.08);
+            --shadow-lg: 0 8px 24px rgba(0, 82, 217, 0.12);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            /* 轻微的科技网格背景 */
+            background-image:
+                linear-gradient(rgba(0, 82, 217, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 82, 217, 0.03) 1px, transparent 1px);
+            background-size: 30px 30px;
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .presentation-slide {
+            width: 1400px;
+            height: 800px;
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.05);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            padding: 40px 50px;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        /* 顶部装饰条 */
+        .slide-decoration {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: linear-gradient(90deg, var(--primary-blue), var(--accent-blue), var(--primary-blue));
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 25px;
+            z-index: 10;
+        }
+
+        .header h1 {
+            font-size: 38px;
+            margin: 0 0 10px 0;
+            color: var(--text-main);
+            letter-spacing: 2px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 16px;
+            color: var(--primary-blue);
+            margin: 0;
+            letter-spacing: 8px;
+            font-weight: 500;
+        }
+
+        .diagram-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            z-index: 10;
+        }
+
+        /* 层级通用样式 */
+        .layer {
+            display: flex;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* 1. 业务接入层 */
+        .gateway-box {
+            width: 450px;
+            height: 50px;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--primary-blue);
+            background: var(--secondary-blue);
+            border: 1px solid rgba(0, 82, 217, 0.2);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            letter-spacing: 2px;
+            box-shadow: var(--shadow-sm);
+        }
+
+        /* 数据流向指示 */
+        .data-stream {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 35px;
+            justify-content: center;
+            color: var(--accent-blue);
+            opacity: 0.6;
+            font-size: 20px;
+        }
+
+        /* 2. Agent 大脑中枢 */
+        .agent-core {
+            width: 900px;
+            padding: 24px;
+            background: #ffffff;
+            border: 2px solid var(--primary-blue);
+            border-radius: 12px;
+            box-shadow: var(--shadow-md);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* 大脑左上角角标 */
+        .agent-core::before {
+            content: '核心算力中枢';
+            position: absolute;
+            top: -12px;
+            left: 20px;
+            background: var(--primary-blue);
+            color: white;
+            padding: 4px 12px;
+            font-size: 12px;
+            border-radius: 4px;
+            letter-spacing: 1px;
+        }
+
+        .agent-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .agent-title svg {
+            color: var(--primary-blue);
+        }
+
+        .agent-processes {
+            display: flex;
+            gap: 20px;
+            width: 100%;
+            justify-content: center;
+        }
+
+        .agent-process {
+            padding: 10px 24px;
+            background: var(--bg-color);
+            border: 1px solid var(--card-border);
+            border-radius: 6px;
+            font-size: 15px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .agent-process:hover {
+            border-color: var(--primary-blue);
+            color: var(--primary-blue);
+            background: var(--secondary-blue);
+        }
+
+        /* 3. Skill & Output 层 */
+        .layer-skills {
+            display: flex;
+            gap: 24px;
+            height: 220px;
+            align-items: stretch;
+            width: 100%;
+        }
+
+        .skills-matrix {
+            flex: 7;
+            border: 1px dashed var(--accent-blue);
+            border-radius: 12px;
+            padding: 24px;
+            position: relative;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .matrix-title {
+            position: absolute;
+            top: -14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ffffff;
+            padding: 4px 24px;
+            color: var(--primary-blue);
+            font-size: 16px;
+            font-weight: 600;
+            border: 1px solid var(--accent-blue);
+            border-radius: 20px;
+        }
+
+        .skills-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            flex: 1;
+            margin-top: 10px;
+        }
+
+        .skill-item {
+            background: var(--bg-color);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .skill-item:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-md);
+            border-color: var(--accent-blue);
+            background: #ffffff;
+        }
+
+        .skill-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+
+        .skill-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 6px;
+        }
+
+        .skill-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .output-box {
+            flex: 3;
+            background: linear-gradient(135deg, #f9f0ff 0%, #ffffff 100%);
+            border: 1px solid #d3adf7;
+            border-radius: 12px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            box-shadow: 0 4px 16px rgba(114, 46, 209, 0.06);
+            position: relative;
+        }
+
+        .output-box::before {
+            content: '多维数据收敛';
+            position: absolute;
+            top: -12px;
+            left: 20px;
+            background: var(--primary-purple);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .output-box .skill-name {
+            color: var(--primary-purple);
+            font-size: 20px;
+            margin-top: 8px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .output-box .skill-desc {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        /* 4. 底座层 */
+        .layer-base {
+            height: 90px;
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        .foundation-box {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            background: #e6f6ee;
+            border: 1px solid #73d13d;
+            border-radius: 8px;
+            position: relative;
+        }
+
+        .foundation-title {
+            position: absolute;
+            top: -12px;
+            left: 20px;
+            background: var(--primary-green);
+            color: white;
+            padding: 4px 16px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 500;
+            letter-spacing: 1px;
+        }
+
+        .foundation-items {
+            display: flex;
+            justify-content: space-evenly;
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .db-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--primary-green);
+            background: #ffffff;
+            padding: 8px 30px;
+            border-radius: 6px;
+            box-shadow: 0 2px 6px rgba(0, 168, 112, 0.08);
+            border: 1px solid rgba(115, 209, 61, 0.4);
+        }
+
+        .db-item svg {
+            color: var(--primary-green);
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="presentation-slide">
+        <div class="slide-decoration"></div>
+
+        <div class="header">
+            <h1>“三重一大”智能合规中枢架构</h1>
+            <p>全天候 · 高精度 · 可追溯 · 业法一体化</p>
+        </div>
+
+        <div class="diagram-container">
+
+            <!-- 1. 业务接入层 -->
+            <div class="layer">
+                <div class="gateway-box">
+                    统一智能接入网关
+                </div>
+            </div>
+
+            <div class="data-stream">⬇</div>
+
+            <!-- 2. 中枢大脑层 -->
+            <div class="layer">
+                <div class="agent-core">
+                    <div class="agent-title">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <path d="M12 16v-4"></path>
+                            <path d="M12 8h.01"></path>
+                            <path d="M8 12h8"></path>
+                        </svg>
+                        多智能体 (Multi-Agent) 控制大脑
+                    </div>
+                    <div class="agent-processes">
+                        <span class="agent-process">� 意图深度解析</span>
+                        <span class="agent-process">🧠 思维链 (Chain of Thought) 推理</span>
+                        <span class="agent-process">⚙️ 任务智能调度</span>
+                        <span class="agent-process">🛡️ 逻辑自验纠偏</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="data-stream">⬇</div>
+
+            <!-- 3. Skill & Output 层 -->
+            <div class="layer layer-skills">
+                <div class="skills-matrix">
+                    <div class="matrix-title">原子级专业技能探针矩阵 (Skill Matrix)</div>
+                    <div class="skills-grid">
+                        <div class="skill-item">
+                            <div class="skill-icon">🔍</div>
+                            <div class="skill-name">制度提取探针</div>
+                            <div class="skill-desc">瞬间提炼千万级<br>规章条款与合规红线</div>
+                        </div>
+                        <div class="skill-item">
+                            <div class="skill-icon">⚖️</div>
+                            <div class="skill-name">语义校验探针</div>
+                            <div class="skill-desc">高维向量比对穿透<br>深层语义逻辑防伪</div>
+                        </div>
+                        <div class="skill-item">
+                            <div class="skill-icon">⏱️</div>
+                            <div class="skill-name">程序穿透探针</div>
+                            <div class="skill-desc">精准备对决策程序<br>与重点时间锚点闭环</div>
+                        </div>
+                        <div class="skill-item">
+                            <div class="skill-icon">👤</div>
+                            <div class="skill-name">责权溯源探针</div>
+                            <div class="skill-desc">自动关联责任主体权限<br>比对签字核审全链路</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="output-box">
+                    <div class="skill-icon">📑</div>
+                    <div class="skill-name">智能研判与报告中心</div>
+                    <div class="skill-desc">
+                        多角度审查结果汇聚<br>
+                        微秒级自动排版生成<br>
+                        <strong>结构化合规审计报告</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 4. 底座层 -->
+            <div class="layer layer-base">
+                <div class="foundation-box">
+                    <div class="foundation-title">信创体系 · 知识与数据资源底座</div>
+                    <div class="foundation-items">
+                        <div class="db-item">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                            </svg>
+                            国资监管法规库
+                        </div>
+                        <div class="db-item">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                            </svg>
+                            企业内控知识图谱
+                        </div>
+                        <div class="db-item">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                            </svg>
+                            私有化自然语言处理引擎
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</body>
+
+</html>

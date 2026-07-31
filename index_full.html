@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三重一大合规审核与法务对比系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 1200px;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            background: #f7f8fc;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.3s;
+            border: none;
+            background: none;
+            font-size: 16px;
+        }
+
+        .tab:hover {
+            background: #e9ecef;
+        }
+
+        .tab.active {
+            background: white;
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 30px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .chat-area {
+            max-height: 500px;
+            overflow-y: auto;
+            background: #f7f8fc;
+            margin-bottom: 20px;
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            padding: 15px 20px;
+            border-radius: 12px;
+            max-width: 85%;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            background: #667eea;
+            color: white;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.system {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+            text-align: center;
+            max-width: 100%;
+            margin: 10px auto;
+        }
+
+        .message-content pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin-top: 10px;
+        }
+
+        .input-area {
+            background: white;
+            padding: 20px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .form-group select,
+        .form-group textarea,
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        .form-group select:focus,
+        .form-group textarea:focus,
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-group textarea {
+            min-height: 120px;
+            resize: vertical;
+        }
+
+        .submit-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 40px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .submit-btn:active {
+            transform: translateY(0);
+        }
+
+        .submit-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .welcome-message {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .welcome-message h3 {
+            margin-bottom: 10px;
+        }
+
+        .welcome-message p {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .case-list {
+            margin-top: 20px;
+        }
+
+        .case-item {
+            background: #f8f9fa;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .case-item h4 {
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .case-item p {
+            margin: 5px 0;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .case-item .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .case-item .status.ongoing {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .case-item .status.pending {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .case-item .status.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .alert-box {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #dc3545;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                border-radius: 0;
+                height: 100vh;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .chat-area {
+                max-height: calc(100vh - 450px);
+            }
+
+            .tabs {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 三重一大合规审核与法务对比系统</h1>
+            <p>基于 LangChain Agent + Sentence Transformers 的智能审核与法务分析助手</p>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('audit')">合规审核</button>
+            <button class="tab" onclick="switchTab('legal')">法务对比</button>
+            <button class="tab" onclick="switchTab('ongoing')">案件追踪</button>
+        </div>
+
+        <div id="audit-content" class="tab-content active">
+            <div class="welcome-message">
+                <h3>📋 合规审核模式</h3>
+                <p>基于《中国核能电力股份有限公司 "三重一大"决策制度实施办法》进行智能合规审核。</p>
+            </div>
+
+            <div class="chat-area" id="auditChatArea"></div>
+
+            <div class="loading" id="auditLoading">
+                <div class="spinner"></div>
+                <p>AI 正在审核中，请稍候...</p>
+            </div>
+
+            <div class="input-area">
+                <form id="auditForm">
+                    <div class="form-group">
+                        <label for="matterType">事项类型</label>
+                        <select id="matterType" required>
+                            <option value="">请选择事项类型</option>
+                            <option value="重大决策">重大决策</option>
+                            <option value="重大项目安排">重大项目安排</option>
+                            <option value="大额度资金运作">大额度资金运作</option>
+                            <option value="重要人事任免">重要人事任免</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="materialText">材料文本</label>
+                        <textarea id="materialText" placeholder="请输入需要审核的材料文本..." required></textarea>
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="auditSubmitBtn">开始审核</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="legal-content" class="tab-content">
+            <div class="welcome-message">
+                <h3>⚖️ 法务对比模式</h3>
+                <p>基于历史案例库进行相似度匹配、胜诉率预测和风险评估。</p>
+                <p style="margin-top: 10px; font-size: 13px;">
+                    <strong>支持的案件类型：</strong><br>
+                    • 合同纠纷 • 劳动争议 • 侵权责任 • 建设工程
+                </p>
+            </div>
+
+            <div class="chat-area" id="legalChatArea"></div>
+
+            <div class="loading" id="legalLoading">
+                <div class="spinner"></div>
+                <p>AI 正在分析案例，请稍候...</p>
+            </div>
+
+            <div class="input-area">
+                <form id="legalForm">
+                    <div class="form-group">
+                        <label for="caseType">案件类型</label>
+                        <select id="caseType" required>
+                            <option value="">请选择案件类型</option>
+                            <option value="合同纠纷">合同纠纷</option>
+                            <option value="劳动争议">劳动争议</option>
+                            <option value="侵权责任">侵权责任</option>
+                            <option value="建设工程">建设工程</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="caseDescription">案件描述</label>
+                        <textarea id="caseDescription" placeholder="请详细描述案件情况..." required></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="caseAmount">案件金额（元）</label>
+                        <input type="number" id="caseAmount" placeholder="请输入案件金额" step="0.01">
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="legalSubmitBtn">开始法务分析</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="ongoing-content" class="tab-content">
+            <div class="welcome-message">
+                <h3>📅 案件追踪模式</h3>
+                <p>实时监控正在进行的案件，获取开庭提醒和案件进展。</p>
+            </div>
+
+            <div id="ongoingCasesList" class="case-list">
+                <p style="text-align: center; color: #666;">点击下方按钮获取案件信息...</p>
+            </div>
+
+            <div class="loading" id="ongoingLoading">
+                <div class="spinner"></div>
+                <p>正在加载案件信息...</p>
+            </div>
+
+            <div class="input-area">
+                <button type="button" class="submit-btn" id="ongoingBtn" onclick="loadOngoingCases()">
+                    刷新案件信息
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+
+        function switchTab(tabName) {
+            const tabs = document.querySelectorAll('.tab');
+            const contents = document.querySelectorAll('.tab-content');
+
+            tabs.forEach(tab => tab.classList.remove('active'));
+            contents.forEach(content => content.classList.remove('active'));
+
+            document.querySelector(`.tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
+            document.getElementById(`${tabName}-content`).classList.add('active');
+
+            if (tabName === 'ongoing') {
+                loadOngoingCases();
+            }
+        }
+
+        function addMessage(chatAreaId, content, type) {
+            const chatArea = document.getElementById(chatAreaId);
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+
+            if (type === 'assistant') {
+                contentDiv.innerHTML = formatMarkdown(content);
+            } else {
+                contentDiv.textContent = content;
+            }
+
+            messageDiv.appendChild(contentDiv);
+            chatArea.appendChild(messageDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function formatMarkdown(text) {
+            return text
+                .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+                .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+                .replace(/^# (.*$)/gm, '<h1>$1</h1>')
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/- (.*$)/gm, '<li>$1</li>')
+                .replace(/^(\d+)\. (.*$)/gm, '<li><strong>$1.</strong> $2</li>')
+                .replace(/`(.*?)`/g, '<code>$1</code>')
+                .replace(/\n\n/g, '</p><p>')
+                .replace(/\n/g, '<br>');
+        }
+
+        function formatStatus(status) {
+            const statusMap = {
+                '审理中': 'ongoing',
+                '二审中': 'ongoing',
+                '调解中': 'pending',
+                '等待立案': 'pending',
+                '执行中': 'completed'
+            };
+            return statusMap[status] || 'pending';
+        }
+
+        // Compliance Audit Form
+        document.getElementById('auditForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const matterType = document.getElementById('matterType').value;
+            const materialText = document.getElementById('materialText').value;
+
+            if (!matterType || !materialText) {
+                alert('请填写所有字段');
+                return;
+            }
+
+            const submitBtn = document.getElementById('auditSubmitBtn');
+            const loading = document.getElementById('auditLoading');
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+
+            addMessage('auditChatArea', `事项类型：${matterType}`, 'user');
+            addMessage('auditChatArea', materialText, 'user');
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/audit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        matter_type: matterType,
+                        material_text: materialText
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addMessage('auditChatArea', data.report, 'assistant');
+                } else {
+                    addMessage('auditChatArea', `审核失败：${data.message}`, 'system');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('auditChatArea', '错误：无法连接到服务器', 'system');
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        // Legal Compare Form
+        document.getElementById('legalForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const caseType = document.getElementById('caseType').value;
+            const caseDescription = document.getElementById('caseDescription').value;
+            const caseAmount = parseFloat(document.getElementById('caseAmount').value) || 0;
+
+            if (!caseType || !caseDescription) {
+                alert('请填写案件类型和描述');
+                return;
+            }
+
+            const submitBtn = document.getElementById('legalSubmitBtn');
+            const loading = document.getElementById('legalLoading');
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+
+            addMessage('legalChatArea', `案件类型：${caseType}`, 'user');
+            addMessage('legalChatArea', caseDescription, 'user');
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/legal-compare`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        case_type: caseType,
+                        case_description: caseDescription,
+                        case_amount: caseAmount
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addMessage('legalChatArea', data.report, 'assistant');
+                } else {
+                    addMessage('legalChatArea', `分析失败：${data.message}`, 'system');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('legalChatArea', '错误：无法连接到服务器', 'system');
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        // Load Ongoing Cases
+        async function loadOngoingCases() {
+            const loading = document.getElementById('ongoingLoading');
+            const casesList = document.getElementById('ongoingCasesList');
+            const btn = document.getElementById('ongoingBtn');
+
+            btn.disabled = true;
+            loading.classList.add('active');
+            casesList.innerHTML = '';
+
+            try {
+                const [ongoingResponse, hearingsResponse] = await Promise.all([
+                    fetch(`${API_BASE_URL}/ongoing-cases`),
+                    fetch(`${API_BASE_URL}/upcoming-hearings`)
+                ]);
+
+                const ongoingData = await ongoingResponse.json();
+                const hearingsData = await hearingsResponse.json();
+
+                let html = '';
+
+                // Alert for upcoming hearings
+                if (hearingsData.total > 0) {
+                    html += '<div class="alert-box">';
+                    html += `<strong>⚠️ 即将开庭提醒：</strong><br>有 ${hearingsData.total} 个案件将在30天内开庭`;
+                    html += '</div>';
+                }
+
+                // List all cases
+                html += '<h3>所有正在进行的案件</h3>';
+                if (ongoingData.cases.length === 0) {
+                    html += '<p style="text-align: center; color: #666;">暂无正在进行的案件</p>';
+                } else {
+                    ongoingData.cases.forEach(caseItem => {
+                        html += `
+                            <div class="case-item">
+                                <h4>${caseItem.case_title}</h4>
+                                <p><strong>原告：</strong>${caseItem.plaintiff}</p>
+                                <p><strong>被告：</strong>${caseItem.defendant}</p>
+                                <p><strong>法院：</strong>${caseItem.court_name}</p>
+                                <p><strong>金额：</strong>${caseItem.case_amount.toLocaleString()} 元</p>
+                                <p><strong>状态：</strong><span class="status ${formatStatus(caseItem.status)}">${caseItem.status}</span></p>
+                                ${caseItem.next_hearing_date ? `<p><strong>下次开庭：</strong>${caseItem.next_hearing_date}</p>` : ''}
+                            </div>
+                        `;
+                    });
+                }
+
+                casesList.innerHTML = html;
+
+            } catch (error) {
+                console.error('Error:', error);
+                casesList.innerHTML = '<p style="text-align: center; color: #dc3545;">加载失败：无法连接到服务器</p>';
+            } finally {
+                btn.disabled = false;
+                loading.classList.remove('active');
+            }
+        }
+
+        // Initialize
+        window.addEventListener('load', () => {
+            addMessage('auditChatArea', '合规审核系统已就绪，请选择事项类型并输入材料进行审核。', 'system');
+            addMessage('legalChatArea', '法务对比系统已就绪，请选择案件类型并描述案件情况进行分析。', 'system');
+        });
+    </script>
+</body>
+</html>

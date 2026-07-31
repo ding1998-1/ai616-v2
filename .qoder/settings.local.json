@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/ai -maxdepth 3 -type d 2>/dev/null | head -20)",
+      "Bash(ln -sfn /home/ai/文档/ai\\\\ 合规\\\\ demo\\\\ 4\\\\:28 /tmp/ai_demo && ls /tmp/ai_demo/ | head -20)",
+      "Bash(find:*)",
+      "Bash(cd /tmp && ln -sfn \"/home/ai/文档/ai åç¤ demo 4:28\" ai_demo 2>&1 && ls ai_demo/README.md)",
+      "Bash(cp /tmp/aidemo/README.md /tmp/aidemo/CLAUDE.md /tmp/aidemo/技术文档.md /tmp/aidemo/PROJECT_GUIDE.md /tmp/aidemo/系统操作手册.md /tmp/readme_docs/ 2>/dev/null || \\(mkdir -p /tmp/readme_docs && cp \"/tmp/aidemo/README.md\" \"/tmp/aidemo/CLAUDE.md\" \"/tmp/aidemo/技术文档.md\" \"/tmp/aidemo/PROJECT_GUIDE.md\" \"/tmp/aidemo/系统操作手册.md\" /tmp/readme_docs/\\) && echo \"done\")",
+      "Bash(mkdir -p /tmp/deploy_docs && find /tmp/aidemo -maxdepth 1 -name \"部署*\" -o -name \"Ubuntu*\" | while read f; do cp \"$f\" /tmp/deploy_docs/; done && echo \"done\")",
+      "Bash(mkdir -p /tmp/config_docs && cp /tmp/aidemo/.env /tmp/aidemo/.env.example /tmp/aidemo/requirements.txt /tmp/aidemo/docker-compose.yml /tmp/aidemo/Dockerfile /tmp/aidemo/start_backend.sh /tmp/config_docs/ 2>/dev/null && echo \"done\")",
+      "Bash(ls /tmp/aidemo/*.md /tmp/aidemo/技术* /tmp/aidemo/系统* 2>/dev/null | head -30)",
+      "Bash(cp /tmp/aidemo/*.md /tmp/readme_docs/ 2>/dev/null; ls /tmp/readme_docs/)"
+    ]
+  }
+}

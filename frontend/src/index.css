@@ -1,0 +1,522 @@
+:root {
+  --ui-primary: #165DFF;
+  --ui-primary-hover: #4080FF;
+  --ui-primary-soft: #E8F3FF;
+  --ui-success: #00B42A;
+  --ui-warning: #FF7D00;
+  --ui-danger: #F53F3F;
+  --ui-text-1: #1D2129;
+  --ui-text-2: #4E5969;
+  --ui-text-3: #86909C;
+  --ui-text-4: #C9CDD4;
+  --ui-border-1: #F2F3F5;
+  --ui-border-2: #E5E6EB;
+  --ui-fill-1: #F7F8FA;
+  --ui-fill-2: #F2F3F5;
+  --ui-bg-page: #F7F8FA;
+  --ui-bg-panel: #FFFFFF;
+  --ui-bg-sidebar: #111827;
+  --ui-radius-sm: 6px;
+  --ui-radius-md: 8px;
+  --ui-radius-lg: 12px;
+  --ui-radius-xl: 16px;
+  --ui-space-xs: 4px;
+  --ui-space-sm: 8px;
+  --ui-space-md: 12px;
+  --ui-space-lg: 16px;
+  --ui-space-xl: 24px;
+  --ui-shadow-panel: 0 12px 28px rgba(29, 33, 41, 0.06);
+  --ui-font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ui-font-page-title: 20px;
+  --ui-font-module-title: 16px;
+  --ui-font-section-title: 14px;
+  --ui-font-body: 13px;
+  --ui-font-caption: 12px;
+}
+
+[data-ui-theme="dark"] {
+  --ui-text-1: rgba(255, 255, 255, 0.9);
+  --ui-text-2: rgba(255, 255, 255, 0.72);
+  --ui-text-3: rgba(255, 255, 255, 0.52);
+  --ui-text-4: rgba(255, 255, 255, 0.32);
+  --ui-border-1: rgba(255, 255, 255, 0.08);
+  --ui-border-2: rgba(255, 255, 255, 0.12);
+  --ui-fill-1: rgba(255, 255, 255, 0.04);
+  --ui-fill-2: rgba(255, 255, 255, 0.08);
+  --ui-bg-page: #0B1220;
+  --ui-bg-panel: #111827;
+  --ui-shadow-panel: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--ui-font-family);
+  background: var(--ui-bg-page);
+  overflow: hidden;
+  color: var(--ui-text-1);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select,
+.ant-btn,
+.ant-menu-item {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.ant-btn {
+  font-weight: 600;
+}
+
+/* ── Unified Ant Tag styles ────────────────────────────────────────────────── */
+.ant-tag {
+  border-radius: 999px;
+  padding: 0 10px;
+  min-height: 22px;
+  line-height: 20px;
+  font-size: var(--ui-font-caption);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ui-text-2);
+  background: var(--ui-fill-1);
+  border-color: var(--ui-border-2);
+}
+
+.ant-tag-default {
+  color: var(--ui-text-2) !important;
+  background: var(--ui-fill-1) !important;
+  border-color: var(--ui-border-2) !important;
+}
+
+.ant-tag-blue,
+.ant-tag-processing {
+  color: var(--ui-primary) !important;
+  background: var(--ui-primary-soft) !important;
+  border-color: rgba(22, 93, 255, 0.16) !important;
+}
+
+.ant-tag-cyan {
+  color: #14C9C9 !important;
+  background: #E8FFFB !important;
+  border-color: rgba(20, 201, 201, 0.18) !important;
+}
+
+.ant-tag-success,
+.ant-tag-green {
+  color: var(--ui-success) !important;
+  background: #E8FFEA !important;
+  border-color: rgba(0, 180, 42, 0.18) !important;
+}
+
+.ant-tag-warning,
+.ant-tag-orange,
+.ant-tag-gold {
+  color: var(--ui-warning) !important;
+  background: #FFF7E8 !important;
+  border-color: rgba(255, 125, 0, 0.18) !important;
+}
+
+.ant-tag-error,
+.ant-tag-red {
+  color: var(--ui-danger) !important;
+  background: #FFECE8 !important;
+  border-color: rgba(245, 63, 63, 0.18) !important;
+}
+
+[data-ui-theme="dark"] .ant-tag-default {
+  color: var(--ui-text-2) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: var(--ui-border-2) !important;
+}
+
+/* ── Page fade-in animation ─────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-fade-in {
+  animation: fadeIn 0.25s ease both;
+}
+
+/* ── Custom scrollbar styles ────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.4);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.7);
+}
+
+/* ── Typing cursor (流式输出末尾光标) ──────────────────────────────────────── */
+@keyframes blinkCursor {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+.typing-cursor::after {
+  content: '▋';
+  display: inline-block;
+  font-size: 0.85em;
+  color: var(--ui-primary);
+  animation: blinkCursor 0.8s step-end infinite;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+}
+
+/* ── User bubble shadow ─────────────────────────────────────────────────────── */
+.user-bubble {
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.25);
+}
+
+/* ── Markdown styles (light mode) ──────────────────────────────────────────── */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  margin: 16px 0 8px 0;
+  font-weight: 600;
+}
+
+.markdown-content h1 {
+  font-size: 24px;
+  border-bottom: 1px solid var(--ui-border-2);
+  padding-bottom: 8px;
+}
+
+.markdown-content h2 {
+  font-size: 20px;
+  border-bottom: 1px solid var(--ui-border-2);
+  padding-bottom: 6px;
+}
+
+.markdown-content h3 {
+  font-size: 16px;
+}
+
+.markdown-content p {
+  margin: 8px 0;
+  line-height: 1.7;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.markdown-content li {
+  margin: 4px 0;
+  line-height: 1.7;
+}
+
+.markdown-content code {
+  background: var(--ui-fill-2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  background: var(--ui-fill-2);
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content strong {
+  font-weight: 600;
+}
+
+.markdown-content blockquote {
+  border-left: 4px solid var(--ui-primary);
+  padding: 8px 12px;
+  margin: 12px 0;
+  color: var(--ui-text-2);
+  background: var(--ui-primary-soft);
+  border-radius: 0 4px 4px 0;
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--ui-border-2);
+  padding: 7px 12px;
+  text-align: left;
+}
+
+.markdown-content th {
+  background: var(--ui-fill-1);
+  font-weight: 600;
+}
+
+.markdown-content tr:nth-child(even) td {
+  background: var(--ui-fill-1);
+}
+
+/* ── Markdown dark-mode overrides ───────────────────────────────────────────── */
+.markdown-dark .markdown-content h1,
+.markdown-dark .markdown-content h2 {
+  border-bottom-color: #2d2d2d;
+}
+
+.markdown-dark .markdown-content code {
+  background: #1e1e1e;
+  color: #e0e0e0;
+}
+
+.markdown-dark .markdown-content pre {
+  background: #1e1e1e;
+}
+
+.markdown-dark .markdown-content blockquote {
+  background: #1a2332;
+  border-left-color: #388bfd;
+  color: #8b949e;
+}
+
+.markdown-dark .markdown-content th {
+  background: #161b22;
+}
+
+.markdown-dark .markdown-content th,
+.markdown-dark .markdown-content td {
+  border-color: #30363d;
+}
+
+.markdown-dark .markdown-content tr:nth-child(even) td {
+  background: #0d1117;
+}
+
+/* ── Ant Design X custom styles ─────────────────────────────────────────────── */
+.ant-x-welcome {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 8px;
+  padding: 24px;
+  color: white;
+  margin-bottom: 24px;
+}
+
+.ant-x-welcome-title {
+  font-size: 28px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.ant-x-welcome-description {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.ant-x-user-guide-item {
+  margin-bottom: 16px;
+  padding: 16px;
+  background: var(--ui-fill-1);
+  border-radius: var(--ui-radius-md);
+  border-left: 3px solid var(--ui-primary);
+}
+
+.ant-x-quick-commands-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.ant-x-quick-command-item {
+  background: var(--ui-bg-panel);
+  border: 1px solid var(--ui-border-2);
+  border-radius: var(--ui-radius-md);
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.ant-x-quick-command-item:hover {
+  border-color: var(--ui-primary);
+  box-shadow: 0 2px 8px rgba(22, 93, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+/* ── Active Step Pulse Animation ───────────────────────────────────────────── */
+@keyframes activeStepPulse {
+  0% {
+    box-shadow: inset 4px 0 0 0 var(--ui-primary), inset 0 0 8px rgba(22, 93, 255, 0.3);
+  }
+
+  50% {
+    box-shadow: inset 4px 0 0 0 #4096ff, inset 0 0 20px rgba(64, 150, 255, 0.6);
+  }
+
+  100% {
+    box-shadow: inset 4px 0 0 0 var(--ui-primary), inset 0 0 8px rgba(22, 93, 255, 0.3);
+  }
+}
+
+.active-step-pulse {
+  animation: activeStepPulse 2s ease-in-out infinite;
+}
+
+/* ── Loading animation ──────────────────────────────────────────────────────── */
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid var(--ui-fill-2);
+  border-top: 4px solid var(--ui-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 10px;
+}
+
+/* ── Thinking glow animation ────────────────────────────────────────────────── */
+@keyframes siriGlow {
+  0% {
+    box-shadow: 0 0 0 2px #ff4d4f, 0 0 16px 4px rgba(255, 77, 79, 0.4);
+  }
+
+  25% {
+    box-shadow: 0 0 0 2px var(--ui-primary), 0 0 16px 4px rgba(22, 93, 255, 0.4);
+  }
+
+  50% {
+    box-shadow: 0 0 0 2px #ff00ff, 0 0 16px 4px rgba(255, 0, 255, 0.4);
+  }
+
+  75% {
+    box-shadow: 0 0 0 2px #52c41a, 0 0 16px 4px rgba(82, 196, 26, 0.4);
+  }
+
+  100% {
+    box-shadow: 0 0 0 2px #ff4d4f, 0 0 16px 4px rgba(255, 77, 79, 0.4);
+  }
+}
+
+/* Outer wrapper: fixed height, flex column, clips children */
+.siri-thinking-border-wrapper {
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.4s ease;
+}
+
+/* When the AI is thinking, animate the glowing border */
+.siri-thinking-border-wrapper.thinking {
+  animation: siriGlow 3s linear infinite;
+}
+
+/* Inner content: fills the wrapper, flex column so messages grow & input stays pinned */
+.siri-content-inner {
+  flex: 1;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Sidebar status badge ────────────────────────────────────────────────────── */
+.sidebar-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.sidebar-status-dot.online {
+  background: #52c41a;
+  box-shadow: 0 0 4px #52c41a;
+}
+
+.sidebar-status-dot.offline {
+  background: #8c8c8c;
+}
+
+/* ── Responsive design ──────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .ant-layout-sider {
+    position: fixed !important;
+    z-index: 1000;
+  }
+
+  .ant-layout-content {
+    margin-left: 0 !important;
+    padding: 16px !important;
+  }
+
+  .ant-x-welcome-title {
+    font-size: 24px;
+  }
+
+  .ant-x-quick-commands-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+.radar-pulse { animation: pulse 1.5s infinite ease-in-out; }

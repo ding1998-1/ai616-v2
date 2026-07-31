@@ -1,0 +1,9 @@
+/home/ai/文档/ai616/backend_server.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+    maxsize 50M
+}

@@ -1,0 +1,14 @@
+[Unit]
+Description=Paraformer ASR Service (GPU 1)
+After=network.target
+
+[Service]
+Type=simple
+User=ai
+WorkingDirectory=/home/ai/桌面
+ExecStart=/home/ai/miniconda3/envs/funasr-sensevoice/bin/python /home/ai/桌面/funasr_asr_server.py --device cuda:1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
