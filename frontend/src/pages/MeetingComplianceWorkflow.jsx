@@ -3354,6 +3354,50 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               </div>
             ))}
           </div>
+          {/* ── 签字看板 ── */}
+          {(() => {
+            const speakers = new Map();
+            remoteTranscripts.forEach(t => {
+              const name = t.speakerName || t.username || '';
+              if (!name) return;
+              if (!speakers.has(name)) speakers.set(name, { name, role: t.speakerRole || '参会代表', signed: false, signedAt: '', count: 0 });
+              const s = speakers.get(name);
+              s.count++;
+              if (t.correctionSigned) { s.signed = true; s.signedAt = t.correctionSignedAt || ''; }
+            });
+            const entries = [...speakers.values()];
+            if (!entries.length) return null;
+            return (
+              <div style={{ padding: 12, borderRadius: 10, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ color: palette.ink, fontWeight: 600 }}>
+                    <SignatureOutlined style={{ marginRight: 6 }} />签字确认看板
+                  </div>
+                  <Tag color={entries.every(e => e.signed) ? 'green' : 'orange'}>
+                    {entries.filter(e => e.signed).length}/{entries.length} 人已签
+                  </Tag>
+                </div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {entries.map(e => (
+                    <div key={e.name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 8, background: e.signed ? '#f0fdf4' : '#fef9c3', border: `1px solid ${e.signed ? '#bbf7d0' : '#fde68a'}` }}>
+                      <div>
+                        <span style={{ fontWeight: 600, color: palette.ink }}>{e.name}</span>
+                        <span style={{ marginLeft: 8, color: palette.muted, fontSize: 12 }}>{e.role} · {e.count} 条发言</span>
+                      </div>
+                      {e.signed
+                        ? <Tag color="green">✓ 已签 {e.signedAt ? new Date(e.signedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</Tag>
+                        : <Tag color="orange">待签</Tag>}
+                    </div>
+                  ))}
+                </div>
+                {!entries.every(e => e.signed) && (
+                  <div style={{ marginTop: 8, color: palette.red, fontSize: 12 }}>
+                    提示：未全部签字前，归档时系统会发出警告。可在手机录音页提醒未签人员完成签字。
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       );
     }
