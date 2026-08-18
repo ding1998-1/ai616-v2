@@ -1611,11 +1611,29 @@ def _local_generate_meeting_records(meeting: dict, transcripts: List[dict], even
             "keyPoints": [item["text"][:120] for item in related[:3]],
         })
 
-    # ── 决议提取（增加上下文过滤，减少噪音）──
+    # ── 决议提取（增加上下文过滤 + 议题关联）──
     decision_words = ("同意", "通过", "决定", "确认", "原则同意", "暂缓", "再议")
     negate_re = re.compile(r'(不|未|没|反对|否决)\s*(同意|通过|决定|确认)')
-    # 转折/条件上下文 — 这些词后面的"同意"不是真正的决议
     _context_negate = re.compile(r'(但是|不过|可是|然而|如果|条件是|前提|还是|还要|还需要|先)')
+    # 预构建议题关键词索引，用于决议→议题关联
+    _agenda_kw_index = []
+    for _idx, _item in enumerate(agenda_drafts[:8]):
+        _title = str(_item.get("title") or _item.get("agenda") or "")
+        _aid = str(_item.get("id") or f"agenda-{_idx}")
+        _kws = _extract_agenda_keywords(_title)
+        _agenda_kw_index.append({"id": _aid, "title": _title, "keywords": _kws})
+
+    def _match_agenda_for_decision(text):
+        text_lower = text.lower()
+        best_id, best_title, best_hits = "", "", 0
+        for ag in _agenda_kw_index:
+            hits = sum(1 for kw in ag["keywords"] if kw and kw.lower() in text_lower)
+            if hits > best_hits:
+                best_hits = hits
+                best_id = ag["id"]
+                best_title = ag["title"]
+        return (best_id, best_title) if best_hits > 0 else ("", "")
+
     decisions = []
     for item in clean_transcripts:
         text = item["text"]
@@ -1623,16 +1641,26 @@ def _local_generate_meeting_records(meeting: dict, transcripts: List[dict], even
             continue
         if negate_re.search(text):
             continue
-        # 长度过滤：太短（<10字）不是决议，太长（>200字）是原始转写
         if len(text) < 10 or len(text) > 200:
             continue
-        # 上下文过滤：如果"同意/通过"出现在转折词后面，不是真正决议
         for word in decision_words:
             if word in text:
                 pos = text.find(word)
                 prefix = text[max(0, pos - 6):pos]
                 if _context_negate.search(prefix):
                     break
+        else:
+            _mid, _mtitle = _match_agenda_for_decision(text)
+            decisions.append({
+                "time": item["time"] or "--:--",
+                "speaker": item["speaker"],
+                "content": text[:150],
+                "status": "待秘书确认",
+                "agendaId": _mid,
+                "agenda": _mtitle,
+            })
+        if len(decisions) >= 8:
+            break
         else:
             decisions.append({
                 "time": item["time"] or "--:--",
@@ -1851,7 +1879,7 @@ async def _deepseek_generate_meeting_records(meeting: dict, transcripts: List[di
 {{
   "summary": ["会议主要讨论了什么，3-5条概括，每条≤50字"],
   "minutes": [{{"agenda":"议题","status":"已讨论","keyPoints":["要点1","要点2"]}}],
-  "decisions": [{{"content":"会议确定/决定…（≤80字）","status":"待秘书确认"}}],
+  "decisions": [{{"content":"会议确定/决定…（≤80字）","status":"待秘书确认","agenda":"关联的议题名称（如有）"}}],
   "todos": [{{
     "task": "具体任务描述（≤60字）",
     "owner": "责任人姓名",

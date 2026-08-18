@@ -4511,22 +4511,43 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       </div>
                     </div>
 
-                    {/* 会议决议 */}
+                    {/* 会议决议（按议题分组） */}
                     <div>
                       <Text strong style={{ color: palette.ink, fontSize: 14 }}><CheckCircleOutlined style={{ color: palette.green, marginRight: 6, fontSize: 14 }} />会议决议</Text>
-                      {decisions.length > 0 ? (
-                        <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
-                          {decisions.slice(0, 8).map((d, i) => (
-                            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 8, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
-                              <span style={{ width: 18, height: 18, borderRadius: 999, background: '#dcfce7', color: '#166534', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0, marginTop: 1 }}>{i + 1}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ color: palette.ink, fontSize: 13 }}>{d.content || d}</div>
-                                {d.status && <Tag style={{ marginTop: 4, fontSize: 10 }}>{d.status}</Tag>}
+                      {decisions.length > 0 ? (() => {
+                        // 按议题分组
+                        const grouped = new Map();
+                        decisions.slice(0, 8).forEach((d, i) => {
+                          const key = d.agenda || '未归类决议';
+                          if (!grouped.has(key)) grouped.set(key, []);
+                          grouped.get(key).push({ ...d, _idx: i });
+                        });
+                        return (
+                          <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                            {[...grouped.entries()].map(([agenda, items]) => (
+                              <div key={agenda} style={{ padding: '8px 10px', borderRadius: 8, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
+                                <div style={{ fontWeight: 600, color: palette.blue, fontSize: 12, marginBottom: 6 }}>
+                                  {agenda}
+                                </div>
+                                <div style={{ display: 'grid', gap: 4 }}>
+                                  {items.map(d => (
+                                    <div key={d._idx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                      <span style={{ width: 16, height: 16, borderRadius: 999, background: '#dcfce7', color: '#166534', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, flexShrink: 0, marginTop: 2 }}>{d._idx + 1}</span>
+                                      <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ color: palette.ink, fontSize: 13 }}>{d.content}</div>
+                                        <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                                          {d.speaker && <span style={{ color: palette.muted, fontSize: 11 }}>{d.speaker}</span>}
+                                          {d.status && <Tag style={{ fontSize: 10 }}>{d.status}</Tag>}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
+                            ))}
+                          </div>
+                        );
+                      })() : (
                         <div style={{ marginTop: 8, color: palette.muted, fontSize: 13 }}>未检测到明确决议</div>
                       )}
                     </div>
