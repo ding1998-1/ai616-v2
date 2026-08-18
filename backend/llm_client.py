@@ -287,12 +287,27 @@ class DeepSeekThinkingLLM(BaseChatModel):
         # 重要：Agent 调用必须使用 content 字段。
         text = msg.get("content") or ""
         if not text:
-            # 如果 content 为空，说明模型只输出了思考链而没有实质回答，记录警告便于调试
+            # 如果 content 为空，尝试从 reasoning_content 提取（DeepSeek thinking 模式兼容）
             rc = msg.get("reasoning_content", "")
-            logger.warning(
-                f"【LLM】content 为空，模型可能仅输出了思考链（reasoning_content 长度={len(rc)}）。"
-                f"建议检查模型是否支持当前请求格式，当前返回空字符串。"
-            )
+            if rc:
+                # 尝试从 reasoning_content 中提取 JSON 或最终答案
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', rc)
+                if json_match:
+                    text = json_match.group()
+                    logger.info(f"【LLM】content 为空，从 reasoning_content 提取到 JSON（长度={len(text)}）")
+                else:
+                    # 取 reasoning_content 的最后 500 字符作为答案
+                    text = rc[-500:]
+                    logger.warning(
+                        f"【LLM】content 为空，使用 reasoning_content 尾部（长度={len(text)}）。"
+                        f"建议检查模型是否支持当前请求格式。"
+                    )
+            else:
+                logger.warning(
+                    f"【LLM】content 为空且无 reasoning_content。"
+                    f"建议检查模型是否支持当前请求格式，当前返回空字符串。"
+                )
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
     async def _agenerate(
@@ -425,8 +440,137 @@ class DeepSeekThinkingLLM(BaseChatModel):
 # 全局单例 — 供路由模块和 Agent 框架使用
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-llm = DeepSeekThinkingLLM()
-"""DeepSeek LLM 全局单例实例。
+# ═══════════════════════════════════════════════════════════════════════════════════
+# 本地 Qwen LLM — 备用模型
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+class QwenLocalLLM(BaseChatModel):
+    """本地部署的 Qwen3.6-35B 模型客户端（通过 sglang/vLLM 提供 OpenAI 兼容接口）。"""
+
+    api_base: str = os.environ.get("LLM_API_BASE", "http://192.168.66.44:8088/v1")
+    model_name: str = os.environ.get(
+        "LLM_LOCAL_MODEL",
+        "/home/ai/.cache/modelscope/hub/models/Qwen/Qwen3.6-35B-A3B-FP8",
+    )
+    temperature: float = 0.1
+    max_tokens: int = 8000
+    timeout: float = 180.0
+
+    @property
+    def _llm_type(self) -> str:
+        return "qwen-local"
+
+    def _convert_messages(self, messages: List[Any]) -> List[dict]:
+        result = []
+        for m in messages:
+            if isinstance(m, str):
+                result.append({"role": "user", "content": m})
+            elif isinstance(m, SystemMessage):
+                result.append({"role": "system", "content": m.content})
+            elif isinstance(m, HumanMessage):
+                result.append({"role": "user", "content": m.content})
+            elif isinstance(m, AIMessage):
+                result.append({"role": "assistant", "content": m.content or ""})
+            else:
+                result.append({"role": "user", "content": str(getattr(m, "content", m))})
+        return result
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        url = f"{self.api_base}/chat/completions"
+        payload = {
+            "model": self.model_name,
+            "messages": self._convert_messages(messages),
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        client = _get_httpx_sync()
+        resp = client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"].get("content") or ""
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        return await asyncio.get_event_loop().run_in_executor(
+            _llm_executor, lambda: self._generate(messages, stop, run_manager, **kwargs)
+        )
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        # 本地模型暂不支持流式，回退到非流式
+        result = await self._agenerate(messages, stop, run_manager, **kwargs)
+        text = result.generations[0].message.content
+        yield ChatGenerationChunk(message=AIMessageChunk(content=text))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# 带 Fallback 的 LLM — DeepSeek 优先，失败自动切本地 Qwen
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+class FallbackLLM(BaseChatModel):
+    """DeepSeek 为主、本地 Qwen 为备的 LLM 封装。
+
+    优先调用 DeepSeek API；若失败（余额不足、网络超时、服务不可用等）
+    自动降级到本地 Qwen 模型，并记录警告日志。
+    """
+
+    primary: BaseChatModel = None
+    fallback: BaseChatModel = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.primary = DeepSeekThinkingLLM()
+        self.fallback = QwenLocalLLM()
+
+    @property
+    def _llm_type(self) -> str:
+        return "deepseek-with-qwen-fallback"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        try:
+            result = self.primary._generate(messages, stop, run_manager, **kwargs)
+            # 检查返回内容是否为空（DeepSeek thinking 模式可能只返回思考链）
+            text = result.generations[0].message.content if result.generations else ""
+            if not text or len(text.strip()) < 10:
+                logger.warning("DeepSeek 返回内容为空或过短 (%d 字符)，降级到本地 Qwen", len(text))
+                return self.fallback._generate(messages, stop, run_manager, **kwargs)
+            return result
+        except Exception as e:
+            logger.warning("DeepSeek 调用失败 (%s)，降级到本地 Qwen", e)
+            return self.fallback._generate(messages, stop, run_manager, **kwargs)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        try:
+            result = await self.primary._agenerate(messages, stop, run_manager, **kwargs)
+            # 检查返回内容是否为空（DeepSeek thinking 模式可能只返回思考链）
+            text = result.generations[0].message.content if result.generations else ""
+            if not text or len(text.strip()) < 10:
+                logger.warning("DeepSeek 返回内容为空或过短 (%d 字符)，降级到本地 Qwen", len(text))
+                return await self.fallback._agenerate(messages, stop, run_manager, **kwargs)
+            return result
+        except Exception as e:
+            logger.warning("DeepSeek 调用失败 (%s)，降级到本地 Qwen", e)
+            return await self.fallback._agenerate(messages, stop, run_manager, **kwargs)
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        try:
+            async for chunk in self.primary._astream(messages, stop, run_manager, **kwargs):
+                yield chunk
+        except Exception as e:
+            logger.warning("DeepSeek 流式调用失败 (%s)，降级到本地 Qwen", e)
+            async for chunk in self.fallback._astream(messages, stop, run_manager, **kwargs):
+                yield chunk
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# 全局单例 — 供路由模块和 Agent 框架使用
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+llm = FallbackLLM()
+"""LLM 全局单例实例（DeepSeek 优先，本地 Qwen 兜底）。
 
 在路由和 Agent 中直接导入使用:
     from backend.llm_client import llm

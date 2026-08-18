@@ -1262,25 +1262,49 @@ def _append_meeting_event(meeting_id: str, event: dict) -> dict:
 
 
 
-def _extract_json_object(text: str) -> Optional[dict]:
+def _extract_json_object(text: str, required_keys: list = None) -> Optional[dict]:
+    """从文本中提取 JSON 对象。
+
+    Args:
+        text: 包含 JSON 的文本
+        required_keys: 如果指定，只返回包含这些 key 的 dict
+    """
     content = (text or "").strip()
     if not content:
         return None
+    # 移除 markdown 代码块
     content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
     content = re.sub(r"\s*```$", "", content)
+    # 尝试直接解析整个内容
     try:
         data = json.loads(content)
-        return data if isinstance(data, dict) else None
+        if isinstance(data, dict):
+            if not required_keys or any(k in data for k in required_keys):
+                return data
     except Exception:
         pass
+    # 查找所有 JSON 对象
     decoder = json.JSONDecoder()
+    candidates = []
     for match in re.finditer(r"\{", content):
         try:
             data, _ = decoder.raw_decode(content[match.start():])
             if isinstance(data, dict):
-                return data
+                candidates.append(data)
         except Exception:
             continue
+    # 优先返回包含 required_keys 的候选
+    if required_keys:
+        for d in candidates:
+            if all(k in d for k in required_keys):
+                return d
+        # 如果没有完全匹配的，返回包含部分 required_keys 的最大候选
+        partial_matches = [d for d in candidates if any(k in d for k in required_keys)]
+        if partial_matches:
+            return max(partial_matches, key=lambda d: len(json.dumps(d, ensure_ascii=False)))
+    # 否则返回最大的候选（通常是最完整的）
+    if candidates:
+        return max(candidates, key=lambda d: len(json.dumps(d, ensure_ascii=False)))
     return None
 
 
@@ -1587,54 +1611,104 @@ def _local_generate_meeting_records(meeting: dict, transcripts: List[dict], even
             "keyPoints": [item["text"][:120] for item in related[:3]],
         })
 
+    # ── 决议提取（增加上下文过滤，减少噪音）──
     decision_words = ("同意", "通过", "决定", "确认", "原则同意", "暂缓", "再议")
     negate_re = re.compile(r'(不|未|没|反对|否决)\s*(同意|通过|决定|确认)')
-    decisions = [
-        {
-            "time": item["time"] or "--:--",
-            "speaker": item["speaker"],
-            "content": item["text"],
-            "status": "待秘书确认",
-        }
-        for item in clean_transcripts
-        if any(word in item["text"] for word in decision_words)
-        and not negate_re.search(item["text"])
-    ][:8]
-    # 待办关键词 — 需要出现在具体上下文中才有效
+    # 转折/条件上下文 — 这些词后面的"同意"不是真正的决议
+    _context_negate = re.compile(r'(但是|不过|可是|然而|如果|条件是|前提|还是|还要|还需要|先)')
+    decisions = []
+    for item in clean_transcripts:
+        text = item["text"]
+        if not any(word in text for word in decision_words):
+            continue
+        if negate_re.search(text):
+            continue
+        # 长度过滤：太短（<10字）不是决议，太长（>200字）是原始转写
+        if len(text) < 10 or len(text) > 200:
+            continue
+        # 上下文过滤：如果"同意/通过"出现在转折词后面，不是真正决议
+        for word in decision_words:
+            if word in text:
+                pos = text.find(word)
+                prefix = text[max(0, pos - 6):pos]
+                if _context_negate.search(prefix):
+                    break
+        else:
+            decisions.append({
+                "time": item["time"] or "--:--",
+                "speaker": item["speaker"],
+                "content": text[:150],
+                "status": "待秘书确认",
+            })
+        if len(decisions) >= 8:
+            break
+
+    # ── 待办提取（更宽泛的关键词 + 正确提取责任人）──
     todo_patterns = [
-        r'(?:需要|必须|应该|要)\s*(?:安排|负责|提交|跟进|落实|补|做|完成)',
-        r'(?:安排|由|让|叫|请)\s*\S+\s*(?:负责|跟进|落实|处理|做)',
-        r'(?:下周|明天|会后|尽快|抓紧|马上)',
+        r'(?:需要|必须|应该|要|得)\s*(?:安排|负责|提交|跟进|落实|补|做|完成|准备|整理|确认)',
+        r'(?:安排|由|让|叫|请)\s*\S+\s*(?:负责|跟进|落实|处理|做|盯)',
+        r'(?:下周|明天|会后|尽快|抓紧|马上|月底|一周内|三天内)',
+        r'(?:你来|来负责|来跟进|来处理)',
+        r'(?:记得|别忘了|注意)',
     ]
     _todo_re = re.compile('|'.join(todo_patterns))
-    # 截止时间提取
+    # 责任人提取 — 从发言中找被指派人，而非发言人
+    _owner_patterns = [
+        re.compile(r'(?:由|让|请|叫)\s*([一-龥]{2,4})(?:\s*(?:负责|跟进|落实|处理|做|来|盯))'),
+        re.compile(r'([一-龥]{2,4})\s*(?:你来|来负责|来跟进|来处理|来做|来盯)'),
+        re.compile(r'(?:安排)\s*([一-龥]{2,4})'),
+    ]
+    # 截止时间提取（扩充）
     _deadline_patterns = {
-        r'下周': '下周', r'明天': '明天', r'月底': '月底前', r'会后': '会后',
+        r'下周[一二三四五六日]': None,  # 动态处理
+        r'下周': '下周', r'明天': '明天', r'后天': '后天',
+        r'月底': '月底前', r'会后': '会后',
         r'尽快': '尽快', r'马上': '立即', r'立即': '立即', r'抓紧': '尽快',
         r'三天内': '3天内', r'一周内': '一周内', r'两周内': '两周内',
+        r'月底前': '月底前', r'月底': '月底前',
+        r'下个月': '下个月', r'本月底': '本月底前',
     }
-    _deadline_re = re.compile('|'.join(_deadline_patterns.keys()))
-    # 优先级判断
-    _high_priority = re.compile(r'立即|马上|抓紧|紧急|火速')
-    _medium_priority = re.compile(r'尽快|尽量|尽早')
+    _deadline_re = re.compile('|'.join(k for k in _deadline_patterns.keys()))
+    # 优先级判断（扩充）
+    _high_priority = re.compile(r'立即|马上|抓紧|紧急|火速|尽快.*不能拖')
+    _medium_priority = re.compile(r'尽快|尽量|尽早|不能拖')
     todos = []
+    _todo_seen = set()  # 去重
     for item in clean_transcripts:
         if not _todo_re.search(item["text"]):
             continue
-        text = item["text"][:120]
+        text = item["text"][:150]
+        # 去重：同一发言人相似内容只保留一条
+        dedup_key = f"{item['speaker']}:{text[:30]}"
+        if dedup_key in _todo_seen:
+            continue
+        _todo_seen.add(dedup_key)
+        # 提取责任人（从发言中找被指派人）
+        owner = item["speaker"]  # 默认为发言人
+        for pat in _owner_patterns:
+            m = pat.search(item["text"])
+            if m:
+                candidate = m.group(1)
+                # 排除常见非人名词汇
+                if candidate not in ("我们", "大家", "你们", "他们", "这个", "那个", "所有"):
+                    owner = candidate
+                    break
         # 提取截止时间
-        deadline_match = _deadline_re.search(text)
-        deadline = _deadline_patterns.get(deadline_match.group(), '待定') if deadline_match else '待定'
+        deadline_match = _deadline_re.search(item["text"])
+        deadline = '待定'
+        if deadline_match:
+            matched = deadline_match.group()
+            deadline = _deadline_patterns.get(matched) or matched
         # 判断优先级
-        if _high_priority.search(text):
+        if _high_priority.search(item["text"]):
             priority = '高'
-        elif _medium_priority.search(text):
+        elif _medium_priority.search(item["text"]):
             priority = '中'
         else:
             priority = '低'
         todos.append({
             "task": text,
-            "owner": item["speaker"],
+            "owner": owner,
             "deadline": deadline,
             "priority": priority,
             "reference": text[:30],
@@ -1688,7 +1762,7 @@ def _clean_raw_decisions(decisions: list) -> list:
         d for d in decisions
         if len(str(d.get("content", ""))) < 300
         and not re.search(r"(对对+|是是是+|嗯嗯+|卖卖卖+|返返+|将将+|你好像你得你你)", str(d.get("content", "")))
-    ] or decisions  # 如果全被过滤了就保留原始
+    ]
 
 
 def _clean_raw_todos(todos: list) -> list:
@@ -1697,7 +1771,7 @@ def _clean_raw_todos(todos: list) -> list:
         t for t in todos
         if len(str(t.get("task", ""))) < 300
         and not re.search(r"(对对+|是是是+|嗯嗯+|卖卖卖+|返返+|将将+|你好像你得你你|他他这个)", str(t.get("task", "")))
-    ] or todos
+    ]
 
 
 async def _deepseek_generate_meeting_records(meeting: dict, transcripts: List[dict], events: List[dict]) -> dict:
@@ -1773,32 +1847,37 @@ async def _deepseek_generate_meeting_records(meeting: dict, transcripts: List[di
 转写内容（按时间排列）：
 {json.dumps(clean_transcripts, ensure_ascii=False)}
 
-严格按以下 JSON 格式输出：
+严格按以下 JSON 格式输出（不要输出 chronicle，纪实由系统单独生成）：
 {{
-  "summary": ["会议主要讨论了什么，3-5条概括"],
-  "chronicle": [{{"time":"时间","speaker":"人","role":"角色","content":"发言原文","signed":false}}],
+  "summary": ["会议主要讨论了什么，3-5条概括，每条≤50字"],
   "minutes": [{{"agenda":"议题","status":"已讨论","keyPoints":["要点1","要点2"]}}],
   "decisions": [{{"content":"会议确定/决定…（≤80字）","status":"待秘书确认"}}],
   "todos": [{{
     "task": "具体任务描述（≤60字）",
     "owner": "责任人姓名",
-    "deadline": "截止时间（从发言中提取：'下周三''月底前''会后3天内'等，未提及填'待定'）",
-    "priority": "高/中/低（'立即''马上''抓紧'→高，'尽快''尽量'→中，其他→低）",
+    "deadline": "截止时间（未提及填'待定'）",
+    "priority": "高/中/低",
     "reference": "相关发言原文片段（≤30字）",
-    "timestamp": "发言时间（HH:MM:SS格式，从转写time字段取）"
+    "timestamp": "HH:MM:SS"
   }}]
 }}
 """
     try:
         async with llm_semaphore:
             result = await llm._agenerate(
-                [SystemMessage(content="你是会议纪要专家。你的输出是提炼后的正式文本，不是转写原文。每条 decision/todo 一句话。"), HumanMessage(content=prompt)],
-                enable_thinking=True,
+                [SystemMessage(content="你是会议纪要专家。你的输出是提炼后的正式文本，不是转写原文。每条 decision/todo 一句话。直接输出最终结果，不要输出思考过程。"), HumanMessage(content=prompt)],
+                enable_thinking=False,
             )
         text = result.generations[0].message.content if result.generations else ""
-        payload = _extract_json_object(text)
+        # 提取 JSON
+        payload = _extract_json_object(text, required_keys=["summary", "decisions", "todos"])
         if not isinstance(payload, dict):
+            logger.warning("【AI纪要】未提取到有效 JSON，返回空")
             return {}
+        payload = _clean_ai_payload(payload)
+        ai_decisions = _clean_raw_decisions(payload.get("decisions") or [])
+        ai_todos = _clean_raw_todos(payload.get("todos") or [])
+        logger.info(f"【AI纪要】清洗后 decisions={len(ai_decisions)}, todos={len(ai_todos)}")
         local = _local_generate_meeting_records(meeting, transcripts, events)
         # 优先用 DeepSeek 的提炼结果，空的才用本地兜底
         ai_summary = payload.get("summary")
@@ -1812,9 +1891,9 @@ async def _deepseek_generate_meeting_records(meeting: dict, transcripts: List[di
             "message": "会议记录由后端读取真实转写后生成，未出现的内容不会写入结论。",
             "summary": ai_summary if use_ai else local["summary"],
             "chronicle": local["chronicle"],
-            "minutes": payload.get("minutes") if isinstance(payload.get("minutes"), list) else local["minutes"],
-            "decisions": payload.get("decisions") if isinstance(payload.get("decisions"), list) else local["decisions"],
-            "todos": payload.get("todos") if isinstance(payload.get("todos"), list) else local["todos"],
+            "minutes": payload.get("minutes") if isinstance(payload.get("minutes"), list) and payload.get("minutes") else local["minutes"],
+            "decisions": ai_decisions if ai_decisions else local["decisions"],
+            "todos": ai_todos if ai_todos else local["todos"],
         }
     except Exception as exc:
         logger.warning("DeepSeek 会议记录生成失败：%s", exc)
@@ -3091,9 +3170,13 @@ async def download_meeting_archive_docx(request: Request, meeting_id: str):
 
     md_lines.append("## 六、待办事项")
     md_lines.append("")
-    for item in records.get("todos", []) or []:
-        md_lines.append(f"- [ ] **{item.get('owner', '待确认')}**：{item.get('task', '')}")
-    if not records.get("todos"):
+    todos = records.get("todos", []) or []
+    if todos:
+        md_lines.append("| 序号 | 待办事项 | 责任人 | 截止时间 | 优先级 |")
+        md_lines.append("|------|----------|--------|----------|--------|")
+        for i, item in enumerate(todos, 1):
+            md_lines.append(f"| {i} | {item.get('task', '')} | {item.get('owner', '待确认')} | {item.get('deadline', '待定')} | {item.get('priority', '低')} |")
+    else:
         md_lines.append("（暂无待办）")
     md_lines.append("")
 
@@ -3301,8 +3384,8 @@ async def download_meeting_archive_docx(request: Request, meeting_id: str):
     todos = records.get("todos", []) or []
     if todos:
         _table(doc,
-            ["责任人", "待办事项", "来源"],
-            [[t.get("owner", ""), t.get("task", ""), t.get("sourceTime", "")] for t in todos]
+            ["序号", "待办事项", "责任人", "截止时间", "优先级"],
+            [[str(i + 1), t.get("task", ""), t.get("owner", ""), t.get("deadline", "待定"), t.get("priority", "低")] for i, t in enumerate(todos)]
         )
     else:
         _para(doc, "（暂无待办事项）")
@@ -3869,9 +3952,9 @@ async def complete_meeting_recorder_audio(
 
     # 合并为完整文件（ffmpeg remux 修复容器头）
     audio_id = f"audio_{uuid.uuid4().hex[:12]}"
-    stored_name = f"{audio_id}.webm"
+    stored_name = f"{audio_id}.mp4"
     file_path = audio_dir / stored_name
-    tmp_path = audio_dir / f".tmp_{audio_id}.webm"
+    tmp_path = audio_dir / f".tmp_{audio_id}.mp4"
 
     try:
         # 1) 创建 ffmpeg concat 列表
@@ -4003,7 +4086,9 @@ async def download_meeting_recorder_audio(request: Request, meeting_id: str, aud
     file_path = MEETING_FILES_DIR / "recordings" / safe_id / stored_name
     if not stored_name or not file_path.exists():
         raise HTTPException(status_code=404, detail="录音文件不存在")
-    return FileResponse(file_path, filename=target.get("fileName") or stored_name, media_type="audio/webm")
+    _ext_media = {".webm": "audio/webm", ".mp4": "audio/mp4", ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg"}
+    _suffix = Path(stored_name).suffix.lower()
+    return FileResponse(file_path, filename=target.get("fileName") or stored_name, media_type=_ext_media.get(_suffix, "audio/webm"))
 
 
 # ═══ ASR 文本清洗管线 ═══════════════════════════════════════════════════

@@ -389,10 +389,13 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const [audioPlaybackUrls, setAudioPlaybackUrls] = useState({});
   const [activeSpeakerName, setActiveSpeakerName] = useState('');
   const [activeSpeakerRole, setActiveSpeakerRole] = useState('');
-  // 强制使用 DashScope 云端 ASR（本地 Paraformer 质量差）
+  // ASR 后端：优先本地 Qwen（无并发限制），DashScope 作为可选
   const [asrBackend, setAsrBackend] = useState(() => {
-    try { localStorage.setItem('ai616_asr_backend', 'dashscope'); } catch (_) {}
-    return 'dashscope';
+    try {
+      const saved = localStorage.getItem('ai616_asr_backend');
+      if (saved === 'dashscope' || saved === 'qwen') return saved;
+    } catch (_) {}
+    return 'qwen';  // 默认本地，避免 DashScope 并发限制导致第二人无法转写
   });
   const signatureCanvasRef = useRef(null);
   const signatureDrawingRef = useRef(false);
