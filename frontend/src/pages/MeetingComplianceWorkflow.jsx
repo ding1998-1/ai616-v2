@@ -2698,8 +2698,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       return;
     }
     setArchiveDone(true);
-    await persistStage('archive', '已归档');
-    message.success('红头纪要、电子签和防伪归档包已生成');
+    const ok = await persistStage('archive', '已归档');
+    if (ok) {
+      // 检查后端返回的签字警告
+      const signedCount = remoteTranscripts.filter(item => item.correctionSigned).length;
+      const speakers = new Set(remoteTranscripts.map(t => t.speakerName || t.username).filter(Boolean));
+      if (speakers.size > 0 && signedCount < speakers.size) {
+        const unsigned = [...speakers].filter(name => !remoteTranscripts.some(t => (t.speakerName || t.username) === name && t.correctionSigned));
+        message.warning(`归档完成，但 ${signedCount}/${speakers.size} 人已签字，未签字：${unsigned.join('、')}`, 8);
+      } else {
+        message.success('红头纪要、电子签和防伪归档包已生成');
+      }
+    }
   };
 
   if (!meetingWorkspaceOpen) {

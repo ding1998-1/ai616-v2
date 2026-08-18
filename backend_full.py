@@ -2365,6 +2365,17 @@ async def patch_meeting(request: Request, meeting_id: str, body: MeetingPatchReq
         meeting = meetings[safe_id]
         _check_meeting_access(user, meeting)
         patch = body.dict(exclude_unset=True)
+        # ── 议题冻结校验：冻结后禁止修改议题相关字段 ──
+        if meeting.get("agendaFrozen"):
+            _agenda_fields = {"agendaDrafts", "agenda", "issueSources", "agendaTitle", "agendaFrozen"}
+            _blocked = [k for k in patch if k in _agenda_fields]
+            if _blocked:
+                # admin 可以强制修改（特殊权限）
+                if user.get("role") != "admin":
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"议题已冻结，无法修改：{', '.join(_blocked)}。如需修改请联系管理员。"
+                    )
         if "meeting_mode" in patch and patch.get("meeting_mode"):
             patch["meetingMode"] = patch.pop("meeting_mode")
         if "project_code" in patch and patch.get("project_code"):
@@ -2730,6 +2741,29 @@ async def update_meeting_stage(request: Request, meeting_id: str, body: MeetingS
                     _safe_create_task(_run_whisper_review_for_meeting(safe_id), name=f"whisper-review-{safe_id}")
                     logger.info("Whisper终审: meeting=%s, audit 阶段自动触发", safe_id)
         if stage in ("archive",):
+            # ── 签字完成率检查 ──
+            _t_data = _load_meeting_transcripts().get(safe_id, {"transcripts": []})
+            _t_list = _t_data.get("transcripts", [])
+            _speakers = set()
+            _signed_speakers = set()
+            for _t in _t_list:
+                _name = _t.get("speakerName") or _t.get("username") or ""
+                if _name:
+                    _speakers.add(_name)
+                    if _t.get("correctionSigned"):
+                        _signed_speakers.add(_name)
+            _total = len(_speakers)
+            _signed = len(_signed_speakers)
+            meeting["signedCount"] = _signed
+            meeting["participantsCount"] = _total
+            if _total > 0 and _signed < _total:
+                _unsigned = _speakers - _signed_speakers
+                logger.warning("归档签字拦截: meeting=%s, %d/%d 人已签, 未签: %s",
+                               safe_id, _signed, _total, ", ".join(_unsigned))
+                # 允许归档但标记警告，不硬性阻断（改为软拦截 + 警告信息）
+                meeting["signWarning"] = f"{_signed}/{_total} 人已签字确认，未签字：{'、'.join(_unsigned)}"
+            else:
+                meeting.pop("signWarning", None)
             meeting["reviewDone"] = True
             meeting["archiveDone"] = True
         event = {
@@ -3779,9 +3813,8 @@ async def _do_whisper_review(meeting_id: str):
                                 _row_id = _vp_row[0]
                                 _row_time_str = _vp_row[1]
                                 _row_identified_by = _vp_row[3] or "manual"
-                                # 跳过已有高置信度声纹识别的记录
-                                if _row_identified_by == "voiceprint-realtime":
-                                    continue
+                                # 会后 diarization 覆盖所有记录（包括 voiceprint-realtime），
+                                # 因为实时识别可能首次匹配错误，会后全局校准更准确
                                 try:
                                     _row_dt = datetime.strptime(_row_time_str, "%Y-%m-%d %H:%M:%S")
                                     _row_offset = _row_dt.timestamp() - meeting_start_ts
