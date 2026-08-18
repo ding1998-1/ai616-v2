@@ -3461,7 +3461,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         arr[index] = value;
         next.summary = arr;
       } else if (field === 'minutes') {
-        const arr = (editedRecords.minutes || []).map((m, i) => i === index ? { ...m, content: value } : m);
+        // minutes 结构: {agenda, status, keyPoints:[]} — 编辑时整体替换 keyPoints
+        const arr = (editedRecords.minutes || []).map((m, i) => {
+          if (i !== index) return m;
+          const points = String(value).split('\n').map(s => s.trim()).filter(Boolean);
+          return { ...m, keyPoints: points };
+        });
         next.minutes = arr;
       } else if (field === 'decisions') {
         const arr = (editedRecords.decisions || []).map((d, i) => i === index ? { ...d, decision: value } : d);
@@ -3576,12 +3581,21 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               editingRecords ? (
                 <div key={item.agenda || index} style={{ padding: 9, borderRadius: 9, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
                   <div style={{ color: palette.ink, fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{item.agenda || item.title || `议题 ${index + 1}`}</div>
-                  <Input.TextArea value={item.content || ''} onChange={e => updateEditField('minutes', index, e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} style={{ fontSize: 13 }} />
+                  <Input.TextArea
+                    value={Array.isArray(item.keyPoints) ? item.keyPoints.join('\n') : ''}
+                    onChange={e => updateEditField('minutes', index, e.target.value)}
+                    autoSize={{ minRows: 2, maxRows: 5 }} style={{ fontSize: 13 }}
+                    placeholder="每行一个要点"
+                  />
                 </div>
               ) : (
                 <div key={item.agenda || item.title || index} style={{ padding: 9, borderRadius: 9, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
                   <div style={{ color: palette.ink, fontWeight: 600, fontSize: 13 }}>{item.agenda || item.title || `议题 ${index + 1}`}</div>
-                  <div style={{ marginTop: 5, color: palette.muted, fontSize: 12, lineHeight: 1.55 }}>{item.content || item.desc || '暂无纪要内容'}</div>
+                  <div style={{ marginTop: 5, color: palette.muted, fontSize: 12, lineHeight: 1.55 }}>
+                    {(Array.isArray(item.keyPoints) && item.keyPoints.length > 0)
+                      ? item.keyPoints.map((p, j) => <div key={j}>• {p}</div>)
+                      : (item.status || '暂无纪要内容')}
+                  </div>
                 </div>
               )
             ))
@@ -3983,12 +3997,19 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 {transcriptTab === 'minutes' && (
                   meetingGeneratedRecords?.minutes?.length > 0 ? (
                     <div style={{ height: 520, overflowY: 'auto', padding: 8 }}>
-                      {meetingGeneratedRecords.minutes.map((item, i) => (
-                        <div key={i} style={{ padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13, lineHeight: 1.7, color: '#334155' }}>
-                          <span style={{ color: '#1d5fd7', fontWeight: 600, marginRight: 8 }}>{i + 1}.</span>
-                          {item}
-                        </div>
-                      ))}
+                      {meetingGeneratedRecords.minutes.map((item, i) => {
+                        // item 结构: {agenda, status, keyPoints:[]}
+                        const title = item.agenda || item.title || `议题 ${i + 1}`;
+                        const points = Array.isArray(item.keyPoints) ? item.keyPoints : [];
+                        return (
+                          <div key={i} style={{ padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13, lineHeight: 1.7, color: '#334155' }}>
+                            <div style={{ fontWeight: 600, color: '#1d5fd7', marginBottom: 4 }}>{i + 1}. {title}</div>
+                            {points.length > 0 ? points.map((p, j) => (
+                              <div key={j} style={{ paddingLeft: 20, color: '#475569' }}>• {p}</div>
+                            )) : <div style={{ paddingLeft: 20, color: '#94a3b8' }}>{item.status || '暂无要点'}</div>}
+                          </div>
+                        );
+                      })}
                       {meetingGeneratedRecords?.summary?.length > 0 && (
                         <div style={{ marginTop: 16, padding: 12, background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#475569', lineHeight: 1.7 }}>
                           <strong style={{ color: '#0f172a' }}>会议摘要</strong>
