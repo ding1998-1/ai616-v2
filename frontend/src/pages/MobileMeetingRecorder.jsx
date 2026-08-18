@@ -792,7 +792,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       const speakerOverride = activeSpeakerName.trim()
         ? { speaker_name: activeSpeakerName.trim(), speaker_role: activeSpeakerRole || '参会代表' }
         : {};
-      // 声纹识别结果（如有）— 不覆盖手动选择
+      // 声纹识别结果（如有）
       const voiceprintFields = vpInfo && vpInfo.speaker_name && !activeSpeakerName.trim()
         ? {
             speaker_name: vpInfo.speaker_name,
@@ -800,6 +800,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
             identified_by: vpInfo.identified_by || 'voiceprint-realtime',
           }
         : {};
+      // 声纹冲突提示：手动选择与声纹识别结果不同
+      if (vpInfo?.speaker_name && activeSpeakerName.trim() && vpInfo.speaker_name !== activeSpeakerName.trim()) {
+        message.warning(`声纹识别为"${vpInfo.speaker_name}"，但当前发言人选为"${activeSpeakerName.trim()}"，已按手动选择记录。`, 5);
+      }
       const data = await authFetchJson('/api/meeting/transcripts/chunk', {
         method: 'POST',
         body: JSON.stringify({
@@ -1537,7 +1541,25 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       return;
     }
     const canvas = signatureCanvasRef.current;
-    const signatureData = canvas.toDataURL('image/png');
+    let signatureData = canvas.toDataURL('image/png');
+    // 签名图片大小检查：超过 600KB 时压缩，超过 800KB 时截断并提示
+    const sizeKB = Math.round(signatureData.length * 3 / 4 / 1024);
+    if (sizeKB > 600) {
+      // 压缩：缩小 canvas 到 50% 再导出
+      const tmpCanvas = document.createElement('canvas');
+      const scale = Math.min(1, 600 / sizeKB);
+      tmpCanvas.width = Math.round(canvas.width * scale);
+      tmpCanvas.height = Math.round(canvas.height * scale);
+      const ctx = tmpCanvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, tmpCanvas.width, tmpCanvas.height);
+      ctx.drawImage(canvas, 0, 0, tmpCanvas.width, tmpCanvas.height);
+      signatureData = tmpCanvas.toDataURL('image/jpeg', 0.8);
+      const newKB = Math.round(signatureData.length * 3 / 4 / 1024);
+      if (newKB > 800) {
+        message.warning(`签名图片较大(${newKB}KB)，已自动压缩。如签名不完整请重新签名。`, 4);
+      }
+    }
     const transcriptId = editingLine.transcriptId || editingLine.id;
     try {
       const data = await authFetchJson(`/api/meeting/transcripts/${meetingId}/${transcriptId}/correction`, {

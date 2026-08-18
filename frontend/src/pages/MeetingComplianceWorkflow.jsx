@@ -3577,12 +3577,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             </div>
           ))}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 6, marginTop: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 6, marginTop: 12 }}>
           {[
             ['summary', '总结'],
             ['chapters', '纪实'],
             ['minutes', '纪要'],
             ['todos', '待办'],
+            ['compare', '对比'],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -3675,6 +3676,56 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               </div>
             )
           ))}
+          {/* ── 对比视图：原始转写 vs AI纪要 ── */}
+          {minuteView === 'compare' && (() => {
+            const chronicle = chronicleItems.length ? chronicleItems : (baseData?.chronicle || []);
+            const aiMinutes = minutesItems.length ? minutesItems : (baseData?.minutes || []);
+            if (!chronicle.length && !aiMinutes.length) {
+              return <div style={{ padding: 12, color: palette.muted, fontSize: 13 }}>暂无数据，请先生成纪实和纪要。</div>;
+            }
+            return (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {/* 左栏：原始转写 */}
+                <div style={{ borderRadius: 9, border: `1px solid ${palette.line}`, overflow: 'hidden' }}>
+                  <div style={{ padding: '8px 12px', background: '#f0f9ff', fontWeight: 600, fontSize: 13, color: palette.blue, borderBottom: `1px solid ${palette.line}` }}>
+                    📝 原始转写（{chronicle.length} 条）
+                  </div>
+                  <div style={{ maxHeight: 400, overflowY: 'auto', padding: 8 }}>
+                    {chronicle.length > 0 ? chronicle.map((item, i) => (
+                      <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9', fontSize: 12, lineHeight: 1.6 }}>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>{item.time || '--:--'}</Tag>
+                          <span style={{ fontWeight: 600, color: palette.ink }}>{item.speaker || '参会人'}</span>
+                          {item.signed && <Tag color="green" style={{ fontSize: 9, margin: 0 }}>已签</Tag>}
+                        </div>
+                        <div style={{ marginTop: 3, color: '#475569' }}>{item.content}</div>
+                      </div>
+                    )) : <div style={{ color: palette.muted, fontSize: 12 }}>暂无转写</div>}
+                  </div>
+                </div>
+                {/* 右栏：AI纪要 */}
+                <div style={{ borderRadius: 9, border: `1px solid ${palette.line}`, overflow: 'hidden' }}>
+                  <div style={{ padding: '8px 12px', background: '#f0fdf4', fontWeight: 600, fontSize: 13, color: '#166534', borderBottom: `1px solid ${palette.line}` }}>
+                    🤖 AI 提炼纪要（{aiMinutes.length} 个议题）
+                  </div>
+                  <div style={{ maxHeight: 400, overflowY: 'auto', padding: 8 }}>
+                    {aiMinutes.length > 0 ? aiMinutes.map((item, i) => {
+                      const title = item.agenda || item.title || `议题 ${i + 1}`;
+                      const points = Array.isArray(item.keyPoints) ? item.keyPoints : [];
+                      return (
+                        <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9', fontSize: 12, lineHeight: 1.6 }}>
+                          <div style={{ fontWeight: 600, color: '#166534' }}>{title}</div>
+                          {points.length > 0 ? points.map((p, j) => (
+                            <div key={j} style={{ paddingLeft: 12, color: '#475569' }}>• {p}</div>
+                          )) : <div style={{ paddingLeft: 12, color: palette.muted }}>{item.status || '暂无要点'}</div>}
+                        </div>
+                      );
+                    }) : <div style={{ color: palette.muted, fontSize: 12 }}>暂无纪要</div>}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </section>
     );
