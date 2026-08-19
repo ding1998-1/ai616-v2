@@ -496,7 +496,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [selectedIssueId, setSelectedIssueId] = useState('');
   const [selectedIssueIds, setSelectedIssueIds] = useState([]);
   const [agendaGenerated, setAgendaGenerated] = useState(false);
-  const [activeStage, setActiveStage] = useState('collect');
+  const [activeStage, setActiveStage] = useState('meeting');
   const [chatMessages, setChatMessages] = useState([]);
   const [agendaDrafts, setAgendaDrafts] = useState([]);
   const [agendaEditModal, setAgendaEditModal] = useState({ open: false, mode: 'list', item: null });
@@ -1444,14 +1444,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     setArchiveDone(Boolean(meeting.archiveDone));
     setMeetingCreated(!['问题收集中', '待创建会议'].includes(normalized.phase));
     const stageByPhase = {
-      问题收集中: 'collect',
-      待创建会议: 'collect',
-      会前确认: 'collect',
+      问题收集中: 'meeting',
+      待创建会议: 'meeting',
+      会前确认: 'meeting',
       会中记录: 'meeting',
       会后终审: 'audit',
       已归档: 'archive',
     };
-    setActiveStage(stageByPhase[normalized.phase] || 'collect');
+    setActiveStage(stageByPhase[normalized.phase] || 'meeting');
   };
 
   const loadMeetings = async () => {
@@ -2306,7 +2306,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       });
       hydrateMeetingDetail(data.meeting);
       setMeetingCreated(true);
-      setActiveStage('collect');
+      setActiveStage('meeting');
       setProjectBound(data.meeting.projectBound || false);
       setAgendaFrozen(data.meeting.agendaFrozen || false);
       setRecording(false);
@@ -2317,7 +2317,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     } catch (error) {
       setCurrentMeetingId(recordId);
       setMeetingCreated(true);
-      setActiveStage('collect');
+      setActiveStage('meeting');
       setMeetingRecords(prev => {
         const nextRecord = {
           id: recordId,
