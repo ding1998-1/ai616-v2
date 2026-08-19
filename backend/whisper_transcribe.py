@@ -4,11 +4,17 @@
 用于会后终审：录音文件 → Whisper 全量转写 → 结构化结果。
 
 Whisper 中文模型默认输出繁体，使用 opencc 自动转换为简体。
+
+重要：MediaRecorder 产生的 webm chunk 只有第一个(chunk_000000)有容器头，
+后续 chunk 是续传数据片段。合并时必须从 000000 开始按序号拼接，
+不能只取某个时间段的 chunk——否则 ffmpeg 无法解码。
 """
 import logging
 import tempfile
 import subprocess
+import os
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 
@@ -59,6 +65,96 @@ def _get_model():
     _model = whisper.load_model(model_path, device=device)
     logger.info("Whisper 模型加载完成 (%s)", device)
     return _model
+
+
+def merge_chunks_to_wav(
+    chunk_dir: str,
+    output_wav: str,
+    time_start: datetime = None,
+    time_end: datetime = None,
+    sample_rate: int = 16000,
+) -> str:
+    """合并 webm chunk 为完整 WAV 文件。
+
+    MediaRecorder 产生的 webm chunk 只有第一个有容器头，后续是续传数据。
+    必须从 chunk_000000 开始按序号拼接，不能只取某时间段的 chunk。
+
+    Args:
+        chunk_dir: chunk 文件目录
+        output_wav: 输出 WAV 文件路径
+        time_start: 可选，只保留此时间之后的 chunk（按文件修改时间过滤）
+        time_end: 可选，只保留此时间之前的 chunk
+        sample_rate: 输出采样率
+
+    Returns:
+        输出 WAV 文件路径
+    """
+    # 收集所有 chunk 并按序号排序
+    chunks = []
+    for f in os.listdir(chunk_dir):
+        if f.startswith("chunk_") and f.endswith(".webm"):
+            path = os.path.join(chunk_dir, f)
+            # 提取序号: chunk_username_000042.webm → 42
+            parts = f.rsplit("_", 1)
+            if len(parts) == 2:
+                try:
+                    idx = int(parts[1].split(".")[0])
+                    mtime = os.path.getmtime(path)
+                    chunks.append((idx, path, mtime))
+                except ValueError:
+                    continue
+
+    chunks.sort()
+
+    # 时间过滤（可选）
+    if time_start or time_end:
+        filtered = []
+        for idx, path, mtime in chunks:
+            t = datetime.fromtimestamp(mtime)
+            if time_start and t < time_start:
+                continue
+            if time_end and t > time_end:
+                continue
+            filtered.append((idx, path, mtime))
+        # 但仍然需要从第一个 chunk 开始拼接（容器头问题）
+        # 所以保留 time_start 之前的所有 chunk，但标记截取起点
+        if filtered and chunks:
+            first_filtered_idx = filtered[0][0]
+            # 保留从 0 到 first_filtered_idx 的所有 chunk
+            chunks = [(idx, path, mtime) for idx, path, mtime in chunks if idx <= filtered[-1][0]]
+        else:
+            chunks = filtered
+
+    if not chunks:
+        raise ValueError(f"无 chunk 文件: {chunk_dir}")
+
+    logger.info("合并 %d 个 chunk → %s", len(chunks), output_wav)
+
+    # 合并为 webm（从第一个 chunk 开始，保留容器头）
+    merged_webm = output_wav.replace(".wav", "_merged.webm")
+    with open(merged_webm, "wb") as out:
+        for _, path, _ in chunks:
+            with open(path, "rb") as f:
+                out.write(f.read())
+
+    # 转换为 WAV
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", merged_webm,
+                "-ar", str(sample_rate), "-ac", "1",
+                "-acodec", "pcm_s16le",
+                output_wav,
+            ],
+            capture_output=True,
+            timeout=300,
+            check=True,
+        )
+    finally:
+        Path(merged_webm).unlink(missing_ok=True)
+
+    logger.info("WAV 转换完成: %s", output_wav)
+    return output_wav
 
 
 def transcribe_file(

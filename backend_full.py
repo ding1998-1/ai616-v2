@@ -1617,6 +1617,7 @@ def _local_generate_meeting_records(meeting: dict, transcripts: List[dict], even
     _context_negate = re.compile(r'(但是|不过|可是|然而|如果|条件是|前提|还是|还要|还需要|先)')
     # 预构建议题关键词索引，用于决议→议题关联
     _agenda_kw_index = []
+    agenda_drafts = meeting.get("agendaDrafts") or []
     for _idx, _item in enumerate(agenda_drafts[:8]):
         _title = str(_item.get("title") or _item.get("agenda") or "")
         _aid = str(_item.get("id") or f"agenda-{_idx}")
@@ -2982,12 +2983,18 @@ async def _generate_whisper_meeting_docx(meeting_id: str) -> Optional[str]:
             return None
 
         # 如果有 Whisper 文本，替换纪实部分（时间戳对齐会议时间轴）
+        # 校验：Whisper 段数必须 >= 转写条数的 30%，否则视为垃圾数据跳过
         if whisper_full_text and whisper_segments:
-            whisper_chronicle = _build_whisper_chronicle(whisper_segments, whisper_event_data or {})
-            if whisper_chronicle:
-                records["chronicle"] = whisper_chronicle
-                records["whisperText"] = whisper_full_text
-                records["audioCount"] = 1
+            transcript_count = len(transcripts)
+            whisper_count = len(whisper_segments)
+            if transcript_count > 0 and whisper_count < transcript_count * 0.3:
+                logger.warning("Whisper 段数(%d) < 转写条数(%d) 的 30%%，跳过替换", whisper_count, transcript_count)
+            else:
+                whisper_chronicle = _build_whisper_chronicle(whisper_segments, whisper_event_data or {})
+                if whisper_chronicle:
+                    records["chronicle"] = whisper_chronicle
+                    records["whisperText"] = whisper_full_text
+                    records["audioCount"] = 1
 
         from docx import Document
         from docx.shared import Pt, RGBColor, Cm
@@ -4202,6 +4209,37 @@ async def _llm_refine_text(raw_text: str) -> str:
 @app.post("/api/meeting/transcripts/chunk")
 async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscriptChunkRequest):
     user = _get_request_user(request, required=True)
+    # 自动创建会议（手机录音的 meeting-local-* 会议可能不在 meetings 表中）
+    safe_id = _safe_meeting_id(body.meeting_id)
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        if safe_id not in meetings:
+            now_str = _now_text()
+            new_meeting = {
+                "id": safe_id,
+                "title": body.meeting_title or "手机录音会议",
+                "project": "",
+                "agenda": body.agenda or "",
+                "date": now_str[:10],
+                "type": "普通企业会议",
+                "meetingMode": "normal",
+                "creator": user.get("displayName") or user.get("username", ""),
+                "createdAt": now_str,
+                "updatedAt": now_str,
+                "phase": "会中记录",
+                "agendaFrozen": True,
+                "meetingCreated": True,
+                "reviewDone": False,
+                "archiveDone": False,
+                "projectBound": False,
+                "issueSources": [],
+                "agendaDrafts": [],
+                "materials": [],
+                "events": [],
+            }
+            _db_upsert_meeting(new_meeting)
+            _invalidate_meetings_cache()
+            logger.info("自动创建会议: %s (%s)", safe_id, body.meeting_title)
     raw_transcript = re.sub(r"\s+", " ", body.transcript or "").strip()
     if not raw_transcript:
         raise HTTPException(status_code=400, detail="转写内容不能为空")
