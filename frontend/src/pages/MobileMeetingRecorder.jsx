@@ -430,6 +430,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   // 音频合并/上传状态
   const [isMerging, setIsMerging] = useState(false);
   const [pendingChunks, setPendingChunks] = useState(0);
+  // P0-4: ACK 队列 — chunk 必须收到 ACK 才算成功
+  const pendingAckRef = useRef(new Map()); // Map<chunkIndex, {blob, attempts, sentAt}>
+  // Refs for functions used in useEffect (avoid stale closures)
+  const flushPendingChunksRef = useRef(null);
+  const startFunAsrRef = useRef(null);
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const meetingId = params.get('meetingId') || 'meeting-gxq-fc-2026-02';
   const [meetingTitle, setMeetingTitle] = useState(params.get('meeting') || '');
@@ -527,23 +532,95 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     recordingRef.current = recording;
   }, [recording]);
 
-  // 页面可见性变化时保护录音状态（移动端切后台/锁屏）
+  // P0-11: 页面可见性变化时全面检查录音状态（切后台/锁屏恢复）
   useEffect(() => {
     const handleVisibility = () => {
       if (document.hidden && recordingRef.current) {
-        console.warn('页面进入后台，录音可能受影响');
+        console.warn('[REC] 页面进入后台，录音可能受影响');
       }
       if (!document.hidden && recordingRef.current) {
-        // 页面恢复可见 — 检查 AudioContext 是否被挂起
+        console.warn('[REC] 页面恢复，检查所有状态...');
+        // 1. 检查 AudioContext
         const ctx = audioContextRef.current;
         if (ctx && ctx.state === 'suspended') {
           ctx.resume().catch(() => {});
-          console.warn('页面恢复，尝试恢复 AudioContext');
+          console.warn('[REC] AudioContext 已恢复');
+        }
+        // 2. 检查 MediaRecorder
+        const recorder = mediaRecorderRef.current;
+        if (recorder && recorder.state === 'inactive') {
+          // MediaRecorder 已停止（系统可能暂停了），提示用户
+          setSpeechStatus('录音已被系统暂停，请点击恢复录音');
+          setRecording(false);
+          console.warn('[REC] MediaRecorder 已停止，需用户手动恢复');
+        }
+        // 3. 检查麦克风 track
+        const stream = mediaStreamRef.current;
+        if (stream) {
+          const track = stream.getAudioTracks()[0];
+          if (track && track.readyState === 'ended') {
+            setSpeechStatus('麦克风已被系统断开，请点击恢复录音');
+            setRecording(false);
+            console.warn('[REC] 麦克风 track 已 ended');
+          }
+        }
+        // 4. 检查 WebSocket，断开则触发重连
+        const ws = asrSocketRef.current;
+        if (ws && (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
+          console.warn('[REC] WebSocket 已断开，触发重连');
+          asrSocketRef.current = null;
+          setConnectionStatus('reconnecting');
+          setSpeechStatus('实时转写重连中...');
+          // 延迟 500ms 等网络稳定
+          window.setTimeout(() => {
+            if (recordingRef.current) {
+              startFunAsrRecognition(mediaStreamRef.current).catch(() => {});
+            }
+          }, 500);
         }
       }
     };
+    const handleFocus = () => {
+      // P0-11: 窗口获得焦点时也检查
+      if (recordingRef.current) handleVisibility();
+    };
+    const handlePageshow = (e) => {
+      // P0-11: bfcache 恢复时检查
+      if (recordingRef.current) handleVisibility();
+    };
+    // P0-10: 网络状态监听
+    const handleOnline = () => {
+      if (recordingRef.current) {
+        console.warn('[NET] 网络恢复，补传 pending chunks 并重连 ASR');
+        setSpeechStatus('网络已恢复，正在补传数据...');
+        flushPendingChunksRef.current?.()?.catch(() => {});
+        // 重连 WebSocket
+        window.setTimeout(() => {
+          if (recordingRef.current && (!asrSocketRef.current || asrSocketRef.current.readyState !== WebSocket.OPEN)) {
+            startFunAsrRef.current?.(mediaStreamRef.current)?.catch(() => {});
+          }
+        }, 500);
+      }
+    };
+    const handleOffline = () => {
+      if (recordingRef.current) {
+        console.warn('[NET] 网络断开，录音继续保存到 pending 队列');
+        setSpeechStatus('网络已中断，录音仍在保存');
+        setConnectionStatus('reconnecting');
+      }
+    };
     document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('pageshow', handlePageshow);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('pageshow', handlePageshow);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
   useEffect(() => () => {
@@ -881,8 +958,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     }
   };
 
-  // 流式上传单个录音 chunk（每 3 秒调用一次，避免浏览器内存溢出）
+  // P0-4: 流式上传单个录音 chunk，等待 ACK 确认落盘
   const uploadAudioChunk = async (blob, index) => {
+    // 加入 pending ACK 队列
+    pendingAckRef.current.set(index, { blob, attempts: 0, sentAt: Date.now() });
+    setPendingChunks(pendingAckRef.current.size);
     try {
       const token = getStoredToken();
       const form = new FormData();
@@ -894,13 +974,29 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form,
       });
-      if (!resp.ok) {
-        console.warn(`Chunk ${index} 上传失败: HTTP ${resp.status}，加入重试队列`);
-        retryQueueRef.current.push({ blob, index, attempts: 1 });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.ack === index || data.success) {
+          // ACK 确认 — 从 pending 队列移除
+          pendingAckRef.current.delete(index);
+          setPendingChunks(pendingAckRef.current.size);
+        }
+      } else {
+        console.warn(`[AUDIO] Chunk ${index} 上传失败: HTTP ${resp.status}，保留待重传`);
       }
     } catch (e) {
-      console.warn(`Chunk ${index} 上传异常，加入重试队列:`, e);
-      retryQueueRef.current.push({ blob, index, attempts: 1 });
+      console.warn(`[AUDIO] Chunk ${index} 上传异常，保留待重传:`, e);
+    }
+  };
+
+  // P0-4: 重传 pending chunks（网络恢复后按序号顺序补传）
+  const flushPendingChunks = async () => {
+    flushPendingChunksRef.current = flushPendingChunks;
+    const pending = Array.from(pendingAckRef.current.entries()).sort((a, b) => a[0] - b[0]);
+    for (const [index, item] of pending) {
+      if (item.attempts >= 5) continue; // 最多重试5次
+      item.attempts++;
+      await uploadAudioChunk(item.blob, index);
     }
   };
 
@@ -999,14 +1095,19 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       const now = Date.now();
       if (now - lastProcessTime > 10000) {
         if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-        if (audioContext.state === 'closed') { setSpeechStatus('录音已中断'); setRecording(false); }
+        // P0-2: AudioContext 关闭不影响 MediaRecorder（录音是主链路，ASR 是旁路）
+        if (audioContext.state === 'closed') {
+          setSpeechStatus('实时转写中断，录音仍在保存');
+          window.clearInterval(healthWatchdog);
+        }
       }
     }, 5000);
   };
 
   const startFunAsrRecognition = async (stream) => {
+    startFunAsrRef.current = startFunAsrRecognition;
     let reconnectAttempts = 0;
-    const MAX_RECONNECT = 10;
+    // P0-9: 无限自动重连，不设上限。退避: 1s→2s→4s→8s→10s→10s...
     const asrName = asrBackend === 'qwen' ? 'SenseVoice' : 'Fun-ASR';
 
     const doConnect = (isReconnect = false) => new Promise((resolve, reject) => {
@@ -1057,18 +1158,13 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         if (!ready) {
           failBeforeReady(new Error(`${asrName} WebSocket 已关闭`));
         } else if (recordingRef.current) {
-          // 已建立连接后断开 → 自动重连
+          // P0-9: 无限自动重连 — 只要还在录音就不停止
           setConnectionStatus('reconnecting');
-          if (reconnectAttempts < MAX_RECONNECT) {
-            reconnectAttempts++;
-            const delay = Math.min(3000 * reconnectAttempts, 15000);
-            console.warn(`${asrName} WS 断连，%d秒后第%d次重连...`, Math.round(delay / 1000), reconnectAttempts);
-            setSpeechStatus(`${asrName} 连接断开，${Math.round(delay / 1000)}秒后重连...`);
-            window.setTimeout(() => doReconnect(), delay);
-          } else {
-            setConnectionStatus('disconnected');
-            setSpeechStatus(`${asrName} 重连次数已用尽，请手动停止后重新开始`);
-          }
+          reconnectAttempts++;
+          const delay = Math.min(1000 * Math.pow(2, Math.min(reconnectAttempts - 1, 3)), 10000);
+          console.warn(`${asrName} WS 断连，${Math.round(delay / 1000)}秒后第${reconnectAttempts}次重连...`);
+          setSpeechStatus(`${asrName} 连接断开，${Math.round(delay / 1000)}秒后重连...`);
+          window.setTimeout(() => doReconnect(), delay);
         } else {
           setConnectionStatus('disconnected');
         }
