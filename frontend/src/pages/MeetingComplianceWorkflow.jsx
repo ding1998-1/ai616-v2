@@ -308,7 +308,11 @@ function VoiceprintEnrollSection({ palette, isDarkMode, currentUserName, current
     setEnrolling(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      // P0-1: MIME 自动探测（兼容 iPhone Safari）
+      const _mt = ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(
+        t => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)
+      ) || '';
+      const recorder = _mt ? new MediaRecorder(stream, { mimeType: _mt }) : new MediaRecorder(stream);
       chunksRef.current = [];
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.start(1000);

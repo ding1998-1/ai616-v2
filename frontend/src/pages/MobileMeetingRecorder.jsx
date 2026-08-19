@@ -109,7 +109,11 @@ function MobileVoiceprintEnroll({ userId, displayName, role, dept }) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const rec = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      // P0-1: MIME 自动探测
+      const _mt = ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(
+        t => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)
+      ) || '';
+      const rec = _mt ? new MediaRecorder(stream, { mimeType: _mt }) : new MediaRecorder(stream);
       chunksRef.current = [];
       rec.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       rec.start(1000);
@@ -408,6 +412,8 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const audioProcessorRef = useRef(null);
   const audioChunksRef = useRef([]);
   const chunkIndexRef = useRef(0); // 流式上传 chunk 序号
+  // P0-3: client_id — 每次录音会话唯一，用于幂等判断
+  const clientIdRef = useRef(`phone-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
   const recordingStartTimeRef = useRef(null); // 录音开始时间，用于 Whisper 时间戳对齐
   const recordingRef = useRef(false);
   const asrConfidenceRef = useRef(null);
@@ -967,6 +973,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       const token = getStoredToken();
       const form = new FormData();
       form.append('meeting_id', meetingId);
+      form.append('client_id', clientIdRef.current);
       form.append('chunk_index', String(index));
       form.append('file', blob, `chunk_${index}.webm`);
       const resp = await fetch('/api/meeting/recorder/audio/chunk', {
@@ -1362,7 +1369,26 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         throw new Error('当前浏览器未开放麦克风能力。请使用 iPhone Safari 的 HTTPS 页面打开，并允许麦克风权限。');
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      // P0-1: MIME 自动探测（iPhone Safari 不支持 webm）
+      const getSupportedMimeType = () => {
+        const candidates = [
+          'audio/webm;codecs=opus',
+          'audio/webm',
+          'audio/mp4',
+          'audio/ogg;codecs=opus',
+        ];
+        for (const type of candidates) {
+          if (typeof MediaRecorder !== 'undefined' &&
+              typeof MediaRecorder.isTypeSupported === 'function' &&
+              MediaRecorder.isTypeSupported(type)) {
+            return type;
+          }
+        }
+        return '';
+      };
+      const mimeType = getSupportedMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      console.log(`[REC] MediaRecorder MIME: ${recorder.mimeType || 'browser-default'}`);
       audioChunksRef.current = [];
       chunkIndexRef.current = 0;
       recorder.ondataavailable = async event => {

@@ -3959,21 +3959,42 @@ async def upload_meeting_recorder_audio_chunk(
     request: Request,
     meeting_id: str = Form(...),
     chunk_index: int = Form(0),
+    client_id: str = Form(""),
     file: UploadFile = File(...),
 ):
     """流式上传录音片段 —— 前端每 3 秒上传一次，避免浏览器内存溢出。
 
-    修复 (2026-08-18): chunk 文件名加入用户名前缀，避免多用户同时上传时
-    同一 chunk_index 互相覆盖。
+    P0-6 幂等: 同一 meeting_id + client_id + chunk_index 重复上传不产生重复文件。
+    P0-4 ACK: 返回 ack=chunk_index 确认已落盘。
+    P0-18 MIME: 根据上传文件的 MIME 类型保存正确扩展名。
     """
     user = _get_request_user(request, required=True)
     username = (user.get("username") or user.get("name") or "unknown").strip()
     safe_id = _safe_meeting_id(meeting_id)
     audio_dir = MEETING_FILES_DIR / "recordings" / safe_id
     audio_dir.mkdir(parents=True, exist_ok=True)
-    # 使用 用户名+序号 作为 chunk 文件名，防止多用户索引冲突
-    chunk_name = f"chunk_{username}_{chunk_index:06d}.webm"
+
+    # P0-18: 根据 MIME 选择扩展名
+    mime = (file.content_type or "").lower()
+    ext = ".webm"
+    if "mp4" in mime:
+        ext = ".mp4"
+    elif "ogg" in mime:
+        ext = ".ogg"
+
+    # P0-3: 文件名 = chunk_{client_id}_{index} 或 chunk_{username}_{index}
+    cid = re.sub(r'[^a-zA-Z0-9_-]', '', client_id)[:32] if client_id else ""
+    if cid:
+        chunk_name = f"chunk_{cid}_{chunk_index:06d}{ext}"
+    else:
+        chunk_name = f"chunk_{username}_{chunk_index:06d}{ext}"
     chunk_path = audio_dir / chunk_name
+
+    # P0-6 幂等: 文件已存在且大小>0 → 不重复写入，直接返回 ACK
+    if chunk_path.exists() and chunk_path.stat().st_size > 0:
+        logger.info("录音 chunk 幂等跳过: meeting=%s, chunk=%s, size=%d", safe_id, chunk_name, chunk_path.stat().st_size)
+        return JSONResponse({"success": True, "ack": chunk_index, "chunkIndex": chunk_index, "duplicate": True})
+
     content = await _read_upload_safe(file, 50 * 1024 * 1024)  # 单 chunk 最大 50MB
     # 原子写入：先写临时文件再 rename，防止崩溃留下半截文件
     tmp_chunk = chunk_path.with_suffix(".tmp")
@@ -3982,8 +4003,10 @@ async def upload_meeting_recorder_audio_chunk(
         f.flush()
         os.fsync(f.fileno())
     tmp_chunk.rename(chunk_path)
-    logger.info("录音 chunk 上传: meeting=%s, user=%s, index=%d, size=%d", safe_id, username, chunk_index, len(content))
-    return JSONResponse({"success": True, "chunkIndex": chunk_index, "size": len(content), "user": username})
+    logger.info("[AUDIO] meeting=%s, client=%s, chunk=%d, mime=%s, bytes=%d, saved=%s",
+                safe_id, cid or username, chunk_index, mime, len(content), chunk_name)
+    # P0-4: ACK 确认已落盘
+    return JSONResponse({"success": True, "ack": chunk_index, "chunkIndex": chunk_index, "size": len(content), "user": username})
 
 
 @app.post("/api/meeting/recorder/audio/complete")
@@ -4012,12 +4035,14 @@ async def complete_meeting_recorder_audio(
     if not audio_dir.exists():
         return JSONResponse({"success": False, "error": "录音目录不存在"}, status_code=404)
 
-    # 按用户收集 chunk（新格式 chunk_{user}_{index}.webm），兼容旧格式 chunk_{index}.webm
-    user_chunks = sorted(audio_dir.glob(f"chunk_{username}_*.webm"))
+    # 按用户收集 chunk（新格式 chunk_{user}_{index}.ext），兼容旧格式 chunk_{index}.webm
+    # P0-3: 支持 client_id 格式和多种扩展名
+    user_chunks = sorted(audio_dir.glob(f"chunk_{username}_*.*"))
     if not user_chunks:
         # 降级：兼容旧格式（无用户名前缀）
-        user_chunks = sorted(audio_dir.glob("chunk_*.webm"))
-    chunks = user_chunks
+        user_chunks = sorted(audio_dir.glob("chunk_*.*"))
+    # 只收集音频文件，排除临时文件和合并后的 mp4
+    chunks = [c for c in user_chunks if c.suffix in ('.webm', '.mp4', '.ogg') and not c.name.startswith('audio_')]
     if not chunks:
         return JSONResponse({"success": False, "error": "无录音片段"}, status_code=404)
 
