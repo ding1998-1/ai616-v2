@@ -36,10 +36,9 @@ const { Paragraph: ArcoParagraph } = ArcoTypography;
 const MEETING_TYPE_OPTIONS = ['普通企业会议', '经营例会', '董事会', '总经理办公会', '专题会', '党委会', '党组会'];
 
 const STAGES = [
-  { key: 'collect', no: '01', title: '议题确认', desc: '收问题、成议题、绑项目' },
-  { key: 'meeting', no: '02', title: '会中采集与校对', desc: '录音、认人、标事件' },
-  { key: 'audit', no: '03', title: '会后终审', desc: '材料核验、合规拦截' },
-  { key: 'archive', no: '04', title: '公文归档', desc: '纪要、签署、防伪归档' },
+  { key: 'meeting', no: '01', title: '会中采集与校对', desc: '录音、认人、标事件' },
+  { key: 'audit', no: '02', title: '会后终审', desc: '材料核验、合规拦截' },
+  { key: 'archive', no: '03', title: '公文归档', desc: '纪要、签署、防伪归档' },
 ];
 
 const FEISHU_STYLE_CAPS = [
@@ -489,7 +488,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [currentMeetingId, setCurrentMeetingId] = useState(() => initialSearchParams.get('meetingId') || (directCollectEntry ? createLocalMeetingId() : ''));
   const [projectName, setProjectName] = useState(initialSearchParams.get('project') || '');
   const [projectCode, setProjectCode] = useState(initialSearchParams.get('projectCode') || '');
-  const [meetingDate, setMeetingDate] = useState(initialSearchParams.get('date') || '');
+  const [meetingDate, setMeetingDate] = useState(initialSearchParams.get('date') || createLocalDate());
   const [meetingTitle, setMeetingTitle] = useState(initialSearchParams.get('meeting') || '');
   const [meetingOrg, setMeetingOrg] = useState('普通企业会议');
   const [meetingMode, setMeetingMode] = useState(initialSearchParams.get('mode') === 'major' ? 'major' : 'normal');
@@ -2797,26 +2796,52 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   }
 
   if (!meetingCreated) {
+    const ArrowIcon = () => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+    );
+    const InfoCircleIcon = () => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h0" strokeWidth="2"/></svg>
+    );
+    const CheckIcon = () => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5 9-11"/></svg>
+    );
+    const PlusIcon = () => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+    );
+    const SparkleIcon = () => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z"/></svg>
+    );
+
+    const plannedItems = [...selectedIssueCards, ...manualAgendaItems];
+
     return (
-      <div className="meeting-compliance-page" style={{ height: '100%', padding: 16, boxSizing: 'border-box', overflow: 'hidden', background: palette.pageBg, color: palette.text }}>
-        <div className="meeting-create-layout" style={{ height: '100%', display: 'grid', gridTemplateColumns: 'minmax(330px, 0.9fr) minmax(380px, 1fr) minmax(360px, 0.95fr)', gridTemplateRows: 'minmax(0, 1fr)', gap: 12 }}>
-          <section style={{ ...panelStyle, padding: 18, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 12 }}>
-              <Space size={8} wrap>
-                <StatusPill color="blue">01 问题收集</StatusPill>
-                <StatusPill color="default">群聊 / 图片 / 单据</StatusPill>
-              </Space>
-              <button type="button" className="ant-btn ant-btn-sm ant-btn-default" style={{ borderRadius: 8, height: 32, paddingInline: 15, cursor: 'pointer', border: '1px solid #d9d9d9', background: '#fff', fontWeight: 500, fontSize: 14 }} onClick={handleBackToList}>返回列表</button>
-            </div>
-            <Title level={3} style={{ margin: 0, color: palette.ink }}>先收集碰到的问题</Title>
-            <div style={{ marginTop: 8, color: palette.muted, lineHeight: 1.6, fontSize: 13 }}>
-              参会部门不用先填会议表。先把现场问题、资金疑点、图片单据像群聊一样扔进来，AI 再聚类成可上会的议题。
+      <div className="meeting-compliance-page" style={{ height: '100%', padding: '16px 36px', boxSizing: 'border-box', overflow: 'hidden', background: palette.pageBg, color: palette.text, display: 'flex', flexDirection: 'column' }}>
+        {/* 顶部：返回按钮 */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, flexShrink: 0 }}>
+          <button type="button" className="ant-btn ant-btn-sm ant-btn-default" style={{ borderRadius: 8, height: 32, paddingInline: 15, cursor: 'pointer', border: '1px solid #d9d9d9', background: '#fff', fontWeight: 500, fontSize: 14 }} onClick={handleBackToList}>返回列表</button>
+        </div>
+
+        {/* 三栏主体 */}
+        <div className="ref-create-layout" style={{ flex: 1, minHeight: 0 }}>
+          {/* ── Column 01：问题收集 ── */}
+          <div className="ref-col">
+            <div className="ref-col-head">
+              <div className="ref-num-badge">01</div>
+              <div>
+                <div className="ref-col-title">先收集碰到的问题</div>
+                <div className="ref-col-desc">从各部门收集问题，形成问题池</div>
+              </div>
             </div>
 
-            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-              <Button icon={<DownloadOutlined />} onClick={downloadIssueTemplate} style={{ height: 38, fontWeight: 600 }}>
-                下载模板
-              </Button>
+            <div className="ref-tabs">
+              <div className="ref-tab active">问题收集</div>
+              <div className="ref-tab">群聊 / 图片 / 单据</div>
+            </div>
+
+            <div className="ref-action-row">
+              <div className="ref-action-btn" onClick={downloadIssueTemplate} role="button" tabIndex={0}>
+                <DownloadOutlined /> 下载模板
+              </div>
               <input
                 id="meeting-issue-excel-input"
                 type="file"
@@ -2828,52 +2853,73 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   importExcelIssues(file);
                 }}
               />
-              <Button
-                icon={<FileExcelOutlined />}
-                loading={issueImportRunning}
-                disabled={issueGenerationRunning}
-                onClick={() => document.getElementById('meeting-issue-excel-input')?.click()}
-                style={{ height: 38, fontWeight: 600 }}
+              <div
+                className="ref-action-btn"
+                onClick={() => !issueImportRunning && !issueGenerationRunning && document.getElementById('meeting-issue-excel-input')?.click()}
+                role="button"
+                tabIndex={0}
+                style={{ opacity: issueImportRunning || issueGenerationRunning ? 0.5 : 1, cursor: issueImportRunning || issueGenerationRunning ? 'not-allowed' : 'pointer' }}
               >
-                {issueImportRunning ? 'AI 提炼中' : '上传台账'}
-              </Button>
-              <Button icon={<ShareAltOutlined />} onClick={copyIssueCollectUrl} style={{ height: 38, fontWeight: 600 }}>
-                复制收集链接
-              </Button>
-            </div>
-            <div style={{ marginTop: 8, padding: 10, borderRadius: 10, background: isDarkMode ? '#172033' : '#f8fafc', border: `1px solid ${palette.line}`, color: palette.muted, fontSize: 12, lineHeight: 1.55 }}>
-              浙政钉、企业微信里的问题不用对接接口：发收集链接给部门填写，或下载模板后让部门按列填写再上传；零散聊天内容可直接粘贴到下方输入框。
+                <FileExcelOutlined /> {issueImportRunning ? 'AI 提炼中' : '上传台账'}
+              </div>
+              <div className="ref-action-btn" onClick={copyIssueCollectUrl} role="button" tabIndex={0}>
+                <ShareAltOutlined /> 复制收集链接
+              </div>
             </div>
 
-            <div style={{ marginTop: 14, flex: 1, minHeight: 0, overflow: 'auto', display: 'grid', gap: 9 }}>
+            <div className="ref-info-box">
+              <InfoCircleIcon />
+              <p>请将问题按模板填写或粘贴内容后提交。部门人员填写并提交后，问题将自动汇总到问题池中。</p>
+            </div>
+
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'grid', gap: 9 }}>
               {renderIssueSourceGroups()}
             </div>
 
-            <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 38px', gap: 8, flexShrink: 0 }}>
-              <Input value={chatInput} onChange={e => setChatInput(e.target.value)} onPressEnter={addChatMessage} placeholder="粘贴群聊、表格行或继续补充问题" />
-              <Button type="primary" icon={<SendOutlined />} onClick={addChatMessage} />
+            <textarea
+              className="ref-textarea"
+              value={chatInput}
+              onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addChatMessage(); } }}
+              placeholder="粘贴群聊、表格或表单内容..."
+            />
+            <div className="ref-submit-row">
+              <button className="ref-btn-primary" onClick={addChatMessage}>
+                <SendOutlined /> 提交
+              </button>
             </div>
-          </section>
+            <div className="ref-foot-cap">支持直接粘贴，系统将自动解析结构化内容</div>
+          </div>
 
-          <section className="meeting-issue-pool" style={{ ...panelStyle, padding: 16, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            <div className="meeting-issue-pool-head">
-              <div className="meeting-issue-pool-icon">
-                <RobotOutlined />
+          {/* 箭头 01→02 */}
+          <div className="ref-arrow"><ArrowIcon /></div>
+
+          {/* ── Column 02：待生成开会待办 ── */}
+          <div className="ref-col">
+            <div className="ref-col-head">
+              <div className="ref-num-badge">02</div>
+              <div>
+                <div className="ref-col-title">待生成开会待办</div>
+                <div className="ref-col-desc">将选中问题生成会议议题</div>
               </div>
-              <div className="meeting-issue-pool-copy">
-                <div className="meeting-issue-pool-title">
-                  <span>{agendaGenerated ? `AI 已整理出 ${activeIssueCards.length} 个开会待办` : '等待生成开会待办'}</span>
-                </div>
-                <div className="meeting-issue-pool-desc">收集完成后点击生成，再勾选要纳入本次会议的议题。</div>
-              </div>
-              <Button size="small" type={agendaGenerated ? 'default' : 'primary'} icon={<RobotOutlined />} onClick={generateAgendaFromCollectedIssues} loading={agendaGenerating} disabled={!chatMessages.length || issueGenerationRunning}>
-                {agendaGenerating ? '生成中' : (agendaGenerated ? '重新生成' : '生成待办')}
-              </Button>
             </div>
 
-            <div className="meeting-issue-list" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+            <div className="ref-col-center">
+              {!agendaGenerated && !issueGenerationRunning && (
+                <>
+                  <div style={{ color: '#3a4557', fontWeight: 600, fontSize: 16 }}>尚未生成议题</div>
+                  <div style={{ marginTop: 10, color: '#949dab', fontSize: 13.5, lineHeight: 1.7, maxWidth: 280 }}>
+                    先在左侧收集问题，选择需要讨论的问题，<br />再生成会议待办议题。
+                  </div>
+                  <div className="ref-btn-ghost-disabled" style={{ cursor: chatMessages.length ? 'pointer' : 'not-allowed', opacity: chatMessages.length ? 1 : 0.6 }}
+                    onClick={() => chatMessages.length && generateAgendaFromCollectedIssues()}>
+                    <RobotOutlined /> 生成开会待办
+                  </div>
+                </>
+              )}
+
               {issueGenerationRunning && (
-                <div className="meeting-ai-generating-card">
+                <div className="meeting-ai-generating-card" style={{ width: '100%' }}>
                   <div className="meeting-ai-generating-orb">
                     <MeetingAiPulse active />
                     <span />
@@ -2892,227 +2938,177 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     </div>
                     <div className="meeting-ai-generating-steps">
                       {ISSUE_IMPORT_STEPS.map((step, index) => (
-                        <span key={step} className={index <= issueImportStatus.step ? 'is-active' : ''}>
-                          {step}
-                        </span>
+                        <span key={step} className={index <= issueImportStatus.step ? 'is-active' : ''}>{step}</span>
                       ))}
                     </div>
                   </div>
                 </div>
               )}
-              {!agendaGenerated && (
-                <div style={{ padding: 22, borderRadius: 12, background: palette.panelSoft, border: `1px dashed ${palette.line}`, color: palette.muted, lineHeight: 1.75, textAlign: 'center' }}>
-                  <div style={{ color: palette.ink, fontWeight: 700 }}>等待生成开会待办</div>
-                  <div style={{ marginTop: 6 }}>先让各部门提交完问题，再点击上方"生成待办"。系统会根据当前 {chatMessages.length} 条素材生成最终候选议题。</div>
-                  <Button type="primary" icon={<RobotOutlined />} onClick={generateAgendaFromCollectedIssues} loading={agendaGenerating} disabled={!chatMessages.length || issueGenerationRunning} style={{ marginTop: 12 }}>
-                    {agendaGenerating ? '生成中' : '生成开会待办'}
-                  </Button>
-                </div>
-              )}
-              {agendaGenerated && activeIssueCards.map((item, index) => {
-                const selected = selectedIssueIds.includes(item.id);
-                const dynamicTitle = item.title;
-                const dynamicProject = item.id === 'issue-001' ? (projectName || '本次会议') : item.project;
-                const todoText = item.todoText || (item.changes || []).find(change => String(change).startsWith('生成待办：'))?.replace('生成待办：', '') || (isMajorMeeting ? '补材料、定责任人、安排会议审议' : '确认讨论范围，安排会议讨论');
-                const riskColor = isMajorMeeting ? (item.risk === '高风险' ? 'red' : 'orange') : 'blue';
-                const riskText = isMajorMeeting ? item.risk : '普通议题';
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={selected ? 'meeting-issue-row is-selected' : 'meeting-issue-row'}
-                    aria-pressed={selected}
-                    onClick={() => toggleIssueSelection(item)}
-                  >
-                    <div className="meeting-issue-row-index">{String(index + 1).padStart(2, '0')}</div>
-                    <div className="meeting-issue-row-main">
-                      <div className="meeting-issue-row-top">
-                        <div className="meeting-issue-row-title">{dynamicTitle}</div>
-                        <Tag color={riskColor} className="meeting-issue-risk-tag">{riskText}</Tag>
-                      </div>
-                      <div className="meeting-issue-row-meta">
-                        <span>{isMajorMeeting ? '事项' : '来源'}：<strong>{dynamicProject}</strong></span>
-                        <span>{item.type}</span>
-                        <span>{item.source}</span>
-                      </div>
-                      <div className="meeting-issue-row-todo">
-                        <span>下一步</span>
-                        <strong>{todoText}</strong>
-                      </div>
+
+              {agendaGenerated && (
+                <div style={{ width: '100%', display: 'grid', gap: 8, alignContent: 'start' }}>
+                  {activeIssueCards.map((item, index) => {
+                    const selected = selectedIssueIds.includes(item.id);
+                    const dynamicTitle = item.title;
+                    const dynamicProject = item.id === 'issue-001' ? (projectName || '本次会议') : item.project;
+                    const todoText = item.todoText || (item.changes || []).find(c => String(c).startsWith('生成待办：'))?.replace('生成待办：', '') || (isMajorMeeting ? '补材料、定责任人、安排会议审议' : '确认讨论范围，安排会议讨论');
+                    const riskColor = isMajorMeeting ? (item.risk === '高风险' ? 'red' : 'orange') : 'blue';
+                    const riskText = isMajorMeeting ? item.risk : '普通议题';
+                    return (
+                      <button key={item.id} type="button"
+                        className={selected ? 'meeting-issue-row is-selected' : 'meeting-issue-row'}
+                        aria-pressed={selected} onClick={() => toggleIssueSelection(item)}>
+                        <div className="meeting-issue-row-index">{String(index + 1).padStart(2, '0')}</div>
+                        <div className="meeting-issue-row-main">
+                          <div className="meeting-issue-row-top">
+                            <div className="meeting-issue-row-title">{dynamicTitle}</div>
+                            <Tag color={riskColor} className="meeting-issue-risk-tag">{riskText}</Tag>
+                          </div>
+                          <div className="meeting-issue-row-meta">
+                            <span>{isMajorMeeting ? '事项' : '来源'}：<strong>{dynamicProject}</strong></span>
+                            <span>{item.type}</span>
+                            <span>{item.source}</span>
+                          </div>
+                          <div className="meeting-issue-row-todo">
+                            <span>下一步</span>
+                            <strong>{todoText}</strong>
+                          </div>
+                        </div>
+                        <span className="meeting-issue-row-check" aria-hidden="true">
+                          {selected ? <CheckCircleOutlined /> : null}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {!activeIssueCards.length && (
+                    <div style={{ padding: 22, borderRadius: 12, background: palette.panelSoft, border: `1px dashed ${palette.line}`, color: palette.muted, lineHeight: 1.7, textAlign: 'center' }}>
+                      还没有生成议题。先在左侧粘贴问题，或下载 Excel 模板后上传台账，AI 会把素材整理成可上会事项。
                     </div>
-                    <span className="meeting-issue-row-check" aria-hidden="true">
-                      {selected ? <CheckCircleOutlined /> : null}
-                    </span>
-                  </button>
-                );
-              })}
-              {agendaGenerated && !activeIssueCards.length && (
-                <div style={{ padding: 22, borderRadius: 12, background: palette.panelSoft, border: `1px dashed ${palette.line}`, color: palette.muted, lineHeight: 1.7, textAlign: 'center' }}>
-                  还没有生成议题。先在左侧粘贴问题，或下载 Excel 模板后上传台账，AI 会把素材整理成可上会事项。
+                  )}
+                  <div style={{ textAlign: 'center', paddingTop: 4 }}>
+                    <Button type="link" icon={<RobotOutlined />} onClick={generateAgendaFromCollectedIssues} loading={agendaGenerating} disabled={!chatMessages.length || issueGenerationRunning}>
+                      {agendaGenerating ? '生成中' : '重新生成'}
+                    </Button>
+                  </div>
                 </div>
               )}
+
+              <div className="ref-green-box">
+                <div className="ref-green-check"><CheckIcon /></div>
+                <div>
+                  <div className="ref-gb-title">已选择 <b>{plannedItems.length}</b> 个问题</div>
+                  <div className="ref-gb-sub">确认后将生成开会待办议题，系统会智能归类并优化表述，便于会议高效讨论。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 箭头 02→03 */}
+          <div className="ref-arrow"><ArrowIcon /></div>
+
+          {/* ── Column 03：创建 AI 会议 ── */}
+          <div className="ref-col">
+            <div className="ref-col-head">
+              <div className="ref-num-badge">03</div>
+              <div>
+                <div className="ref-col-title">创建 AI 会议</div>
+                <div className="ref-col-desc">完善会议信息，生成会议并开始记录</div>
+              </div>
             </div>
 
-            <div className="meeting-issue-flow-note" style={{ flexShrink: 0 }}>
-              <CheckCircleOutlined />
-              <div>
-                {(() => {
-                  const plannedItems = [...selectedIssueCards, ...manualAgendaItems];
-                  return (
-                    <>
-                <div className="meeting-issue-flow-title">已勾选 {plannedItems.length} 个议题：{plannedItems.length ? plannedItems.map(item => item.title).join('、') : '等待选择'}</div>
-                <div className="meeting-issue-flow-desc">确认后这些议题会一起进入会议议程，再冻结议程、发手机录音链接。AI 议题需在上方勾选，手动议题可在右侧直接输入。</div>
-                {plannedItems.length > 0 && (
-                  <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
-                    {plannedItems.map((item, idx) => {
-                      const isManual = item.source === 'manual';
-                      return (
-                      <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                        <Tag color={isManual ? 'green' : 'blue'} style={{ margin: 0 }}>{isManual ? '手动' : `议题${idx + 1}`}</Tag>
-                        <span style={{ flex: 1, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
-                        <Select
-                          size="small"
-                          value={item.durationMinutes || 15}
-                          onChange={val => {
-                            if (isManual) {
-                              setManualAgendaItems(prev => prev.map(d => d.id === item.id ? { ...d, durationMinutes: val } : d));
-                            } else {
-                              setAgendaDrafts(prev => prev.map(d => d.id === item.id ? { ...d, durationMinutes: val } : d));
-                            }
-                          }}
-                          style={{ width: 80 }}
-                          options={[5, 10, 15, 20, 25, 30, 45, 60].map(m => ({ label: `${m}分钟`, value: m }))}
-                        />
+            <div className="ref-col3-form">
+              <div className="ref-field">
+                <div className="ref-field-label">会议名称 <span className="ref-req">*</span></div>
+                <input className="ref-input" type="text" value={meetingTitle} onChange={e => setMeetingTitle(e.target.value)}
+                  placeholder="例如：高新区二期厂房消防改造专题会" autoFocus />
+              </div>
+
+              <div className="ref-field-row">
+                <div className="ref-field">
+                  <div className="ref-field-label">会议日期 <span className="ref-req">*</span></div>
+                  <input className="ref-input" type="date" value={meetingDate} onChange={e => setMeetingDate(e.target.value)} />
+                </div>
+                <div className="ref-field">
+                  <div className="ref-field-label">会议性质 <span className="ref-req">*</span></div>
+                  <div className="ref-radio-group">
+                    <div className={`ref-radio ${meetingMode === 'normal' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('normal')}>
+                      <span className="ref-radio-box" /> 普通
+                    </div>
+                    <div className={`ref-radio ${meetingMode === 'major' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('major')}>
+                      <span className="ref-radio-box" /> 三重一大
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="ref-subhead">
+                <div className="ref-sh-title">待上会议题</div>
+                <div className="ref-sh-sub">议题将来自左侧生成或下方手动添加</div>
+              </div>
+
+              {plannedItems.length > 0 ? (
+                <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
+                  {plannedItems.map((item, i) => {
+                    const isManual = item.source === 'manual';
+                    return (
+                      <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: '#f7faff', border: '1px solid #d8e7ff', borderRadius: 8, fontSize: 13 }}>
+                        <span style={{ width: 22, height: 22, borderRadius: 999, background: '#e8f3ff', color: '#3b5bff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>{i + 1}</span>
+                        <span style={{ flex: 1, color: '#1d2129', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+                        <Tag color={isManual ? 'green' : 'blue'} style={{ margin: 0, fontSize: 11 }}>{isManual ? '手动' : 'AI'}</Tag>
                         {isManual && (
                           <span onClick={() => setManualAgendaItems(prev => prev.filter(x => x.id !== item.id))}
                             style={{ cursor: 'pointer', color: '#94a3b8', fontSize: 14, lineHeight: 1 }} title="删除">×</span>
                         )}
                       </div>
-                      );
-                    })}
-                    <div style={{ color: '#64748b', marginTop: 2 }}>
-                      ⏱ 预计总时长：{plannedItems.reduce((sum, item) => sum + (item.durationMinutes || 15), 0)} 分钟
-                    </div>
+                    );
+                  })}
+                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>
+                    ⏱ 预计总时长：{plannedItems.reduce((sum, item) => sum + (item.durationMinutes || 15), 0)} 分钟
                   </div>
-                )}
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
+                </div>
+              ) : (
+                <div className="ref-empty-state">
+                  <div className="ref-es-title">暂无议题</div>
+                  <div className="ref-es-sub">请先生成开会待办或手动添加议题</div>
+                </div>
+              )}
 
-            {/* 手动添加议题（无需 AI，直接进左侧议程） */}
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e2e8f0', flexShrink: 0 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <Input value={newAgendaInput} onChange={e => setNewAgendaInput(e.target.value)}
-                  placeholder="手动输入议题后回车 / 点添加（无需 AI）" size="middle"
-                  style={{ borderRadius: 8, flex: 1 }}
-                  onPressEnter={() => {
-                    if (newAgendaInput.trim()) {
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                <input className="ref-input" type="text" value={newAgendaInput} onChange={e => setNewAgendaInput(e.target.value)}
+                  placeholder="手动输入议题后回车添加"
+                  style={{ flex: 1 }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && newAgendaInput.trim()) {
                       setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]);
                       setNewAgendaInput('');
                     }
                   }} />
-                <Button type="primary" ghost icon={<PlusOutlined />} onClick={() => {
-                  if (newAgendaInput.trim()) {
-                    setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]);
-                    setNewAgendaInput('');
-                  }
-                }}>添加议题</Button>
+                <button className="ref-btn-outline" style={{ padding: '10px 16px', flexShrink: 0 }}
+                  onClick={() => {
+                    if (newAgendaInput.trim()) {
+                      setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]);
+                      setNewAgendaInput('');
+                    }
+                  }}>
+                  <PlusOutlined /> 添加
+                </button>
+              </div>
+
+              <div className="ref-col3-actions">
+                <button className="ref-btn-white" onClick={() => setMeetingWorkspaceOpen(false)}>取消</button>
+                <button className="ref-btn-primary" onClick={createMeeting} disabled={!meetingTitle.trim()}>
+                  <SparkleIcon /> {meetingTitle.trim() ? '创建会议' : '请先输入会议名称'}
+                </button>
               </div>
             </div>
-          </section>
-
-          <section className="meeting-create-panel" style={{ ...panelStyle }}>
-            <div className="meeting-create-panel-scroll">
-              <Title level={3} style={{ margin: 0, color: palette.ink }}>创建 AI 会议</Title>
-              <div style={{ marginTop: 6, color: palette.muted, fontSize: 13 }}>
-                填写会议基本信息后开始会前准备
-              </div>
-
-              <div style={{ marginTop: 20, display: 'grid', gap: 14 }}>
-                {/* 会议名称 — 大字突出 */}
-                <div>
-                  <div style={{ color: '#0f172a', fontWeight: 600, fontSize: 14, marginBottom: 6 }}>会议名称</div>
-                  <Input
-                    value={meetingTitle}
-                    onChange={e => setMeetingTitle(e.target.value)}
-                    placeholder="例如：高新区二期厂房消防改造专题会"
-                    size="large"
-                    autoFocus
-                    style={{ fontSize: 16, height: 48, borderRadius: 10 }}
-                  />
-                </div>
-
-                {/* 日期 + 性质 一行 */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                  <div>
-                    <div style={{ color: '#0f172a', fontWeight: 600, fontSize: 14, marginBottom: 6 }}>会议日期</div>
-                    <Input type="date" value={meetingDate} onChange={e => setMeetingDate(e.target.value)}
-                      size="large" style={{ height: 44, borderRadius: 10 }} />
-                  </div>
-                  <div>
-                    <div style={{ color: '#0f172a', fontWeight: 600, fontSize: 14, marginBottom: 6 }}>会议性质</div>
-                    <div style={{ display: 'flex', gap: 0, borderRadius: 10, border: '1.5px solid #e2e8f0', overflow: 'hidden', height: 44 }}>
-                      {[['normal','普通',<FileTextOutlined key="f2" style={{fontSize:16}}/>],['major','三重一大',<SafetyCertificateOutlined key="s2" style={{fontSize:16}}/>]].map(([v, label, icon]) => (
-                        <button key={v} type="button" onClick={() => setMeetingMode(v)}
-                          style={{ flex: 1, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: meetingMode === v ? 700 : 400,
-                            background: meetingMode === v ? '#1d5fd7' : '#fff', color: meetingMode === v ? '#fff' : '#64748b',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                          {icon}{label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* 议题摘要 */}
-                <div>
-                  <div style={{ color: '#0f172a', fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
-                    待上会议题 {selectedIssueCards.length + manualAgendaItems.length > 0 && `（${selectedIssueCards.length + manualAgendaItems.length} 项）`}
-                  </div>
-                  {(selectedIssueCards.length > 0 || manualAgendaItems.length > 0) && (
-                    <div style={{ display: 'grid', gap: 4, maxHeight: 160, overflowY: 'auto', marginBottom: 6 }}>
-                      {[...selectedIssueCards, ...manualAgendaItems].map((item, i) => {
-                        const isManual = item.source === 'manual';
-                        return (
-                          <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#f8fafc', borderRadius: 6, fontSize: 13, color: '#334155' }}>
-                            <span style={{ flex: 1 }}>{i + 1}. {item.title}</span>
-                            <Tag color={isManual ? 'green' : 'blue'} style={{ margin: 0, fontSize: 11, lineHeight: '18px' }}>
-                              {isManual ? '手动' : 'AI'}
-                            </Tag>
-                            {isManual && (
-                              <span onClick={() => setManualAgendaItems(prev => prev.filter(x => x.id !== item.id))}
-                                style={{ cursor: 'pointer', color: '#94a3b8', fontSize: 14, lineHeight: 1 }} title="删除">×</span>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {!selectedIssueCards.length && !manualAgendaItems.length && (
-                    <div style={{ padding: 12, background: '#f8fafc', borderRadius: 8, color: '#94a3b8', fontSize: 13, marginTop: 6 }}>
-                      可勾选 AI 议题，也可在下方直接手动添加议题（无需 AI）
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="meeting-create-action-bar">
-              <div />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-                <Button size="large" onClick={() => setMeetingWorkspaceOpen(false)}>取消</Button>
-                <Button type="primary" size="large" icon={<FileDoneOutlined />}
-                  onClick={createMeeting}
-                  disabled={!meetingTitle.trim()}>
-                  {meetingTitle.trim() ? `创建会议 — ${meetingTitle}` : '请先输入会议名称'}
-                </Button>
-              </div>
-            </div>
-          </section>
+          </div>
         </div>
-        
+
+        {/* 底部信息横幅 */}
+        <div className="ref-footer-banner">
+          <InfoCircleIcon />
+          <p>AI 将为会议自动生成议题、记录要点、生成纪要，并归档相关资料，确保会议合规可追溯。</p>
+        </div>
 
         <Modal
           title="保存草稿？"
@@ -3150,7 +3146,6 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             保存草稿后可返回会议列表，下次从列表进入继续编辑。放弃草稿将丢失当前所有填写内容。
           </div>
         </Modal>
-
       </div>
     );
   }
@@ -3420,19 +3415,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const getStageState = (stageKey) => {
-    if (activeStage === 'collect') {
-      return stageKey === 'collect' ? 'active' : 'locked';
-    }
-    if (activeStage === 'meeting') {
-      if (stageKey === 'collect') return 'complete';
-      if (stageKey === 'meeting') return 'active';
-      return 'locked';
+    if (activeStage === 'collect' || activeStage === 'meeting') {
+      return stageKey === 'meeting' ? 'active' : 'locked';
     }
     if (activeStage === 'audit') {
-      if (['collect', 'meeting'].includes(stageKey)) return 'complete';
+      if (stageKey === 'meeting') return 'complete';
       return stageKey === 'audit' ? 'active' : 'locked';
     }
-    if (['collect', 'meeting', 'audit'].includes(stageKey)) return 'complete';
+    if (['meeting', 'audit'].includes(stageKey)) return 'complete';
     return archiveDone ? 'complete' : 'active';
   };
 
@@ -3443,12 +3433,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     return archiveDone ? '已完成归档' : '生成红头文件并归档';
   };
 
-  const currentStageCopy = {
-    collect: ['会前确认 / 01 正在运行', isMajorMeeting ? '会议批次已创建，秘书核对 AI 议题、项目名称和议程范围。录音、声纹、终审、归档都没有数据源。' : '会议批次已创建，秘书核对 AI 提炼的待办议题和会议范围。录音、纪要、归档都没有数据源。'],
-    meeting: ['会中 / 02 正在运行', '手机端发言实时同步到 PC，秘书只盯实时转写、会前待办是否被回应、会后会生成什么。'],
-    audit: [isMajorMeeting ? '会后 / 03 正在运行' : '会后整理 / 03 正在运行', isMajorMeeting ? '会议已经结束，系统扫描会前素材、会中底稿和项目材料，缺项目或缺材料就卡住流程。' : '会议已经结束，系统对照会前待办生成会议纪实、会议纪要、会议决议和督办清单。'],
-    archive: ['发文 / 04 正在运行', isMajorMeeting ? '终审红灯已经转绿，系统生成红头纪要、表决电子签和防伪归档包。' : '会议材料已确认，系统生成可编辑纪要、签署记录和归档包。'],
-  }[activeStage];
+  const stageCopyMap = {
+    collect: ['会中 / 01 正在运行', '会议已创建，秘书核对议题后开始录音与声纹识别。'],
+    meeting: ['会中 / 01 正在运行', '手机端发言实时同步到 PC，秘书只盯实时转写、会前待办是否被回应、会后会生成什么。'],
+    audit: [isMajorMeeting ? '会后 / 02 正在运行' : '会后整理 / 02 正在运行', isMajorMeeting ? '会议已经结束，系统扫描会前素材、会中底稿和项目材料，缺项目或缺材料就卡住流程。' : '会议已经结束，系统对照会前待办生成会议纪实、会议纪要、会议决议和督办清单。'],
+    archive: ['发文 / 03 正在运行', isMajorMeeting ? '终审红灯已经转绿，系统生成红头纪要、表决电子签和防伪归档包。' : '会议材料已确认，系统生成可编辑纪要、签署记录和归档包。'],
+  };
+  const currentStageCopy = stageCopyMap[activeStage];
 
   const renderStageTimeline = () => (
     <div className="meeting-stage-strip">

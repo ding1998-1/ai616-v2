@@ -554,7 +554,7 @@
 
         .meeting-stage-strip {
           display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 8px;
         }
 
@@ -2796,4 +2796,577 @@
             grid-template-columns: 1fr !important;
           }
         }
-      
+
+        /* ═══════════════════════════════════════════════════════════
+           参考设计 1920 风格 — 会议创建三栏布局
+           ═══════════════════════════════════════════════════════════ */
+
+        /* ── 三栏容器 ── */
+        .ref-create-layout {
+          display: flex;
+          align-items: stretch;
+          gap: 0;
+          padding: 8px 0 12px;
+          min-height: 0;
+          flex: 1;
+        }
+
+        /* ── 单列 ── */
+        .ref-col {
+          flex: 1;
+          background: #fff;
+          border: 1px solid #e9edf3;
+          border-radius: 16px;
+          padding: 24px;
+          display: flex;
+          flex-direction: column;
+          box-shadow: 0 4px 18px rgba(20, 40, 80, 0.04);
+          min-width: 0;
+        }
+
+        /* ── 列头 ── */
+        .ref-col-head {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          margin-bottom: 22px;
+        }
+
+        .ref-num-badge {
+          width: 36px;
+          height: 36px;
+          flex: 0 0 36px;
+          border-radius: 50%;
+          background: #18233a;
+          color: #fff;
+          font-size: 14px;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .ref-col-title {
+          font-size: 17.5px;
+          font-weight: 700;
+          color: #18233a;
+          line-height: 1.3;
+        }
+
+        .ref-col-desc {
+          font-size: 13.5px;
+          color: #949dab;
+          margin-top: 6px;
+        }
+
+        /* ── 箭头连接器 ── */
+        .ref-arrow {
+          flex: 0 0 56px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #c3cad6;
+        }
+
+        .ref-arrow svg {
+          width: 30px;
+          height: 30px;
+        }
+
+        /* ── 操作按钮行 ── */
+        .ref-action-row {
+          display: flex;
+          gap: 12px;
+          margin-bottom: 16px;
+        }
+
+        .ref-action-btn {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          border: 1px solid #e0e6f0;
+          border-radius: 10px;
+          padding: 12px 8px;
+          font-size: 13.5px;
+          color: #4a5568;
+          cursor: pointer;
+          background: #fbfcfe;
+          transition: all 0.15s;
+          white-space: nowrap;
+          font-family: inherit;
+        }
+
+        .ref-action-btn:hover {
+          border-color: #c8d2e4;
+          background: #fff;
+        }
+
+        .ref-action-btn svg {
+          width: 17px;
+          height: 17px;
+          color: #7c8798;
+        }
+
+        /* ── 信息提示框 ── */
+        .ref-info-box {
+          display: flex;
+          gap: 11px;
+          align-items: flex-start;
+          background: #f4f7ff;
+          border: 1px solid #e2eaff;
+          border-radius: 11px;
+          padding: 14px 15px;
+          margin-bottom: 8px;
+        }
+
+        .ref-info-box svg {
+          width: 19px;
+          height: 19px;
+          flex: 0 0 19px;
+          color: #3b5bff;
+          margin-top: 1px;
+        }
+
+        .ref-info-box p {
+          font-size: 13px;
+          color: #5a6577;
+          line-height: 1.65;
+          margin: 0;
+        }
+
+        /* ── Tab 栏 ── */
+        .ref-tabs {
+          display: flex;
+          gap: 28px;
+          border-bottom: 1px solid #e9edf3;
+          margin-bottom: 18px;
+        }
+
+        .ref-tab {
+          font-size: 14px;
+          color: #949dab;
+          padding: 0 2px 12px;
+          cursor: pointer;
+          position: relative;
+        }
+
+        .ref-tab.active {
+          color: #3b5bff;
+          font-weight: 600;
+        }
+
+        .ref-tab.active::after {
+          content: "";
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: -1px;
+          height: 2.5px;
+          background: #3b5bff;
+          border-radius: 3px;
+        }
+
+        /* ── 空状态 ── */
+        .ref-empty-state {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 18px 0 8px;
+          text-align: center;
+        }
+
+        .ref-empty-state .ref-es-title {
+          font-size: 16px;
+          font-weight: 600;
+          color: #3a4557;
+        }
+
+        .ref-empty-state .ref-es-sub {
+          font-size: 13.5px;
+          color: #949dab;
+          margin-top: 7px;
+        }
+
+        /* ── 文本输入框 ── */
+        .ref-textarea {
+          border: 1px solid #e0e6f0;
+          border-radius: 11px;
+          padding: 13px 14px;
+          font-size: 13.5px;
+          color: #949dab;
+          min-height: 74px;
+          resize: none;
+          outline: none;
+          line-height: 1.5;
+          background: #fbfcfe;
+          font-family: inherit;
+          width: 100%;
+          box-sizing: border-box;
+        }
+
+        .ref-textarea:focus {
+          border-color: #3b5bff;
+          background: #fff;
+        }
+
+        /* ── 提交行 ── */
+        .ref-submit-row {
+          display: flex;
+          justify-content: flex-end;
+          margin: 13px 0 10px;
+        }
+
+        /* ── 底部说明 ── */
+        .ref-foot-cap {
+          font-size: 12px;
+          color: #b3bbc8;
+          text-align: center;
+        }
+
+        /* ── 居中内容 ── */
+        .ref-col-center {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+        }
+
+        /* ── 禁用态按钮 ── */
+        .ref-btn-ghost-disabled {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: #f1f3f8;
+          color: #aab3c2;
+          border: 1px solid #e0e6f0;
+          padding: 13px 28px;
+          border-radius: 10px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: not-allowed;
+          margin: 22px 0;
+        }
+
+        .ref-btn-ghost-disabled svg {
+          width: 17px;
+          height: 17px;
+        }
+
+        /* ── 绿色提示框 ── */
+        .ref-green-box {
+          width: 100%;
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+          background: #e9f7ef;
+          border: 1px solid #cbe9d8;
+          border-radius: 12px;
+          padding: 16px 16px;
+          margin-top: 2px;
+          text-align: left;
+        }
+
+        .ref-green-check {
+          width: 23px;
+          height: 23px;
+          flex: 0 0 23px;
+          border-radius: 50%;
+          background: #2fae6a;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .ref-green-check svg {
+          width: 13px;
+          height: 13px;
+        }
+
+        .ref-green-box .ref-gb-title {
+          font-size: 14.5px;
+          font-weight: 700;
+          color: #1f7a4d;
+        }
+
+        .ref-green-box .ref-gb-title b {
+          color: #2fae6a;
+        }
+
+        .ref-green-box .ref-gb-sub {
+          font-size: 13px;
+          color: #4f8a6c;
+          margin-top: 7px;
+          line-height: 1.6;
+        }
+
+        /* ── 表单字段 ── */
+        .ref-field {
+          margin-bottom: 18px;
+        }
+
+        .ref-field-label {
+          font-size: 13.5px;
+          color: #3a4557;
+          font-weight: 500;
+          margin-bottom: 9px;
+        }
+
+        .ref-field-label .ref-req {
+          color: #ff4d4f;
+          margin-left: 2px;
+        }
+
+        .ref-input {
+          width: 100%;
+          border: 1px solid #e0e6f0;
+          border-radius: 11px;
+          padding: 12px 14px;
+          font-size: 13.5px;
+          color: #1f2937;
+          outline: none;
+          font-family: inherit;
+          background: #fff;
+          box-sizing: border-box;
+        }
+
+        .ref-input::placeholder {
+          color: #b4bcc9;
+        }
+
+        .ref-input:focus {
+          border-color: #3b5bff;
+        }
+
+        .ref-field-row {
+          display: flex;
+          gap: 16px;
+        }
+
+        .ref-field-row .ref-field {
+          flex: 1;
+        }
+
+        /* ── Radio 组 ── */
+        .ref-radio-group {
+          display: flex;
+          gap: 20px;
+          align-items: center;
+          padding-top: 4px;
+        }
+
+        .ref-radio {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
+          font-size: 14px;
+          color: #4a5568;
+        }
+
+        .ref-radio .ref-radio-box {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          border: 1.6px solid #cdd5e3;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.15s;
+        }
+
+        .ref-radio.is-checked .ref-radio-box {
+          border-color: #3b5bff;
+          background: #3b5bff;
+        }
+
+        .ref-radio.is-checked .ref-radio-box::after {
+          content: "";
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: #fff;
+        }
+
+        .ref-radio.is-checked {
+          color: #3b5bff;
+          font-weight: 600;
+        }
+
+        /* ── 子标题 ── */
+        .ref-subhead {
+          margin: 6px 0 4px;
+        }
+
+        .ref-subhead .ref-sh-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: #3a4557;
+        }
+
+        .ref-subhead .ref-sh-sub {
+          font-size: 12.5px;
+          color: #b3bbc8;
+          margin-top: 5px;
+        }
+
+        /* ── 虚线添加按钮 ── */
+        .ref-btn-outline {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          border: 1px dashed #b9c4da;
+          color: #3b5bff;
+          background: #fbfcff;
+          padding: 13px;
+          border-radius: 10px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          font-family: inherit;
+          transition: all 0.15s;
+        }
+
+        .ref-btn-outline:hover {
+          border-color: #3b5bff;
+          background: #eef2ff;
+        }
+
+        .ref-btn-outline svg {
+          width: 17px;
+          height: 17px;
+        }
+
+        /* ── 表单区域 + 操作栏 ── */
+        .ref-col3-form {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
+        }
+
+        .ref-col3-actions {
+          display: flex;
+          gap: 12px;
+          justify-content: flex-end;
+          margin-top: auto;
+          padding-top: 18px;
+        }
+
+        .ref-btn-white {
+          background: #fff;
+          color: #4a5568;
+          border: 1px solid #e0e6f0;
+          padding: 12px 26px;
+          border-radius: 10px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          font-family: inherit;
+          transition: all 0.15s;
+        }
+
+        .ref-btn-white:hover {
+          border-color: #c8d2e4;
+        }
+
+        /* ── 主按钮 ── */
+        .ref-btn-primary {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: #3b5bff;
+          color: #fff;
+          border: none;
+          cursor: pointer;
+          padding: 12px 26px;
+          border-radius: 10px;
+          font-size: 14px;
+          font-weight: 600;
+          box-shadow: 0 6px 16px rgba(59, 91, 255, 0.32);
+          font-family: inherit;
+          transition: background 0.15s;
+        }
+
+        .ref-btn-primary:hover {
+          background: #2f4dee;
+        }
+
+        .ref-btn-primary svg {
+          width: 16px;
+          height: 16px;
+        }
+
+        .ref-btn-primary:disabled {
+          color: #a9b4c2;
+          background: #f2f3f5;
+          border: 1px solid #e5e6eb;
+          box-shadow: none;
+          cursor: not-allowed;
+        }
+
+        /* ── 底部信息横幅 ── */
+        .ref-footer-banner {
+          margin: 8px 0 0;
+          background: #eef3ff;
+          border: 1px solid #e0e9ff;
+          border-radius: 13px;
+          padding: 15px 22px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-shrink: 0;
+        }
+
+        .ref-footer-banner svg {
+          width: 19px;
+          height: 19px;
+          flex: 0 0 19px;
+          color: #3b5bff;
+        }
+
+        .ref-footer-banner p {
+          font-size: 13.5px;
+          color: #4a5568;
+          flex: 1;
+          margin: 0;
+        }
+
+        .ref-footer-banner a {
+          font-size: 13.5px;
+          color: #3b5bff;
+          font-weight: 500;
+          text-decoration: none;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          white-space: nowrap;
+          cursor: pointer;
+        }
+
+        .ref-footer-banner a svg {
+          width: 15px;
+          height: 15px;
+        }
+
+        /* ── 响应式 ── */
+        @media (max-width: 1280px) {
+          .ref-create-layout {
+            flex-direction: column;
+          }
+
+          .ref-arrow {
+            transform: rotate(90deg);
+            padding: 8px 0;
+          }
+
+          .ref-field-row {
+            flex-direction: column;
+          }
+        }

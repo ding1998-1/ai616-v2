@@ -36,12 +36,18 @@ _MODELSCOPE_MODEL = "/home/ai/.cache/modelscope/hub/models/iic/Whisper-large-v3/
 
 
 def _get_model():
-    """懒加载 Whisper 模型（openai-whisper）。"""
+    """懒加载 Whisper 模型（openai-whisper），固定使用 GPU 1。"""
     global _model
     if _model is not None:
         return _model
 
     import whisper
+    import os
+
+    # 固定使用 GPU 1，避免与 ASR (GPU 0) 争抢显存
+    whisper_gpu = os.environ.get("WHISPER_GPU", "1")
+    device = f"cuda:{whisper_gpu}"
+    logger.info("Whisper 将使用设备: %s", device)
 
     model_path = _MODELSCOPE_MODEL
     if not Path(model_path).exists():
@@ -49,9 +55,9 @@ def _get_model():
         logger.warning("ModelScope 模型不存在: %s，尝试从 HuggingFace 加载", model_path)
         model_path = "large-v3"
 
-    logger.info("加载 Whisper 模型: %s (首次加载约需 30s)", model_path)
-    _model = whisper.load_model(model_path, device="cuda")
-    logger.info("Whisper 模型加载完成")
+    logger.info("加载 Whisper 模型: %s → %s (首次加载约需 30s)", model_path, device)
+    _model = whisper.load_model(model_path, device=device)
+    logger.info("Whisper 模型加载完成 (%s)", device)
     return _model
 
 

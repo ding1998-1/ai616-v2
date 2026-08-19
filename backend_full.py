@@ -3954,13 +3954,18 @@ async def upload_meeting_recorder_audio_chunk(
     chunk_index: int = Form(0),
     file: UploadFile = File(...),
 ):
-    """流式上传录音片段 —— 前端每 3 秒上传一次，避免浏览器内存溢出。"""
+    """流式上传录音片段 —— 前端每 3 秒上传一次，避免浏览器内存溢出。
+
+    修复 (2026-08-18): chunk 文件名加入用户名前缀，避免多用户同时上传时
+    同一 chunk_index 互相覆盖。
+    """
     user = _get_request_user(request, required=True)
+    username = (user.get("username") or user.get("name") or "unknown").strip()
     safe_id = _safe_meeting_id(meeting_id)
     audio_dir = MEETING_FILES_DIR / "recordings" / safe_id
     audio_dir.mkdir(parents=True, exist_ok=True)
-    # 使用固定的 chunk 文件名，按序号存储
-    chunk_name = f"chunk_{chunk_index:06d}.webm"
+    # 使用 用户名+序号 作为 chunk 文件名，防止多用户索引冲突
+    chunk_name = f"chunk_{username}_{chunk_index:06d}.webm"
     chunk_path = audio_dir / chunk_name
     content = await _read_upload_safe(file, 50 * 1024 * 1024)  # 单 chunk 最大 50MB
     # 原子写入：先写临时文件再 rename，防止崩溃留下半截文件
@@ -3970,8 +3975,8 @@ async def upload_meeting_recorder_audio_chunk(
         f.flush()
         os.fsync(f.fileno())
     tmp_chunk.rename(chunk_path)
-    logger.info("录音 chunk 上传: meeting=%s, index=%d, size=%d", safe_id, chunk_index, len(content))
-    return JSONResponse({"success": True, "chunkIndex": chunk_index, "size": len(content)})
+    logger.info("录音 chunk 上传: meeting=%s, user=%s, index=%d, size=%d", safe_id, username, chunk_index, len(content))
+    return JSONResponse({"success": True, "chunkIndex": chunk_index, "size": len(content), "user": username})
 
 
 @app.post("/api/meeting/recorder/audio/complete")
@@ -3993,22 +3998,27 @@ async def complete_meeting_recorder_audio(
     """
     user = _get_request_user(request, required=True)
     role = _resolve_meeting_role(user)
+    username = (user.get("username") or user.get("name") or "unknown").strip()
     safe_id = _safe_meeting_id(meeting_id)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     audio_dir = MEETING_FILES_DIR / "recordings" / safe_id
     if not audio_dir.exists():
         return JSONResponse({"success": False, "error": "录音目录不存在"}, status_code=404)
 
-    # 按序号收集所有 chunk
-    chunks = sorted(audio_dir.glob("chunk_*.webm"))
+    # 按用户收集 chunk（新格式 chunk_{user}_{index}.webm），兼容旧格式 chunk_{index}.webm
+    user_chunks = sorted(audio_dir.glob(f"chunk_{username}_*.webm"))
+    if not user_chunks:
+        # 降级：兼容旧格式（无用户名前缀）
+        user_chunks = sorted(audio_dir.glob("chunk_*.webm"))
+    chunks = user_chunks
     if not chunks:
         return JSONResponse({"success": False, "error": "无录音片段"}, status_code=404)
 
     # chunk 数量校验
     if total_chunks > 0 and len(chunks) != total_chunks:
         logger.warning(
-            "录音 chunk 数量不匹配: meeting=%s, expected=%d, found=%d",
-            safe_id, total_chunks, len(chunks),
+            "录音 chunk 数量不匹配: meeting=%s, user=%s, expected=%d, found=%d",
+            safe_id, username, total_chunks, len(chunks),
         )
 
     # 合并为完整文件（ffmpeg remux 修复容器头）
@@ -4257,19 +4267,11 @@ async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscrip
         curr_text = re.sub(r"\s+", "", transcript)
         if not prev_text or not curr_text:
             continue
-        # 文本序列相似度 — 比对实际内容而非字符集
+        # 仅跳过完全相同的文本（精确去重）
+        # 不再做包含关系判断，避免误杀合法的短句跟进发言
         if prev_text == curr_text:
             is_duplicate = True
             logger.info("跳过完全重复转写: %s", transcript[:60])
-            break
-        # 短文本完全包含于长文本 → 视为重复
-        if len(curr_text) < len(prev_text) and curr_text in prev_text:
-            is_duplicate = True
-            logger.info("跳过包含重复转写: %s", transcript[:60])
-            break
-        if len(prev_text) < len(curr_text) and prev_text in curr_text:
-            is_duplicate = True
-            logger.info("跳过包含重复转写: %s", transcript[:60])
             break
     if is_duplicate:
         return JSONResponse({"success": True, "duplicate": True})
@@ -4319,6 +4321,9 @@ async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscrip
     else:
         _db_upsert_transcript(record)
         _invalidate_transcripts_cache()
+        logger.info("转写保存: meeting=%s, speaker=%s, %d字, final=%s, text=%s",
+                    body.meeting_id, speaker_name, len(transcript),
+                    body.is_final, transcript[:80])
         # 事件中同时保存转写文本 — 防止 meeting_transcripts 表意外清空后数据全丢
         _append_meeting_activity_light(body.meeting_id, {
             "id": f"transcript_event_{uuid.uuid4().hex[:10]}",
@@ -5204,6 +5209,13 @@ async def meeting_asr_websocket(websocket: WebSocket):
                 break
             audio_bytes = client_message.get("bytes")
             if audio_bytes:
+                # 缓冲音频（不管连接状态都缓存，重连后回放）
+                audio_buffer.append(audio_bytes)
+                if len(audio_buffer) > 100:
+                    audio_buffer = audio_buffer[-50:]  # keep last ~2.5s at 20ms/frame
+                if not dash_ws:
+                    # 连接已断，等待重连完成
+                    continue
                 try:
                     await dash_ws.send(audio_bytes)
                 except Exception:
@@ -5222,21 +5234,16 @@ async def meeting_asr_websocket(websocket: WebSocket):
                         await _run_dashscope_session()
                         reconnect_attempt = 0  # reset on success
                         await websocket.send_json({"type": "reconnected", "taskId": task_id})
+                        # Re-send buffered audio (last 2s worth)
+                        for buf_bytes in audio_buffer[-40:]:
+                            try:
+                                await dash_ws.send(buf_bytes)
+                            except Exception:
+                                break
                     except Exception as e:
                         logger.exception("Fun-ASR 重连失败")
                         await websocket.send_json({"type": "error", "message": f"重连失败: {e}"})
                         continue
-                    # Re-send buffered audio (last 2s worth)
-                    for buf_bytes in audio_buffer[-40:]:
-                        try:
-                            await dash_ws.send(buf_bytes)
-                        except Exception:
-                            break
-                    audio_buffer.clear()
-                if dash_ws:
-                    audio_buffer.append(audio_bytes)
-                    if len(audio_buffer) > 100:
-                        audio_buffer = audio_buffer[-50:]  # keep last ~2.5s at 20ms/frame
                 continue
             text = client_message.get("text")
             if not text:
