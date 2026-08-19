@@ -770,7 +770,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
         const token = getStoredToken();
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/api/meeting/asr/qwen/ws?token=${encodeURIComponent(token)}&meetingId=${encodeURIComponent(currentMeetingId)}`;
+        // WebSocket 直连后端（绕过不支持 WS 的外部代理）
+        let wsHost = window.location.host;
+        if (window.location.protocol === 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+          wsHost = '192.168.66.44';
+        }
+        const wsUrl = `${wsProtocol}//${wsHost}/api/meeting/asr/qwen/ws?token=${encodeURIComponent(token)}&meetingId=${encodeURIComponent(currentMeetingId)}`;
         ws = new WebSocket(wsUrl);
         micWsRef.current = ws;
         ws.binaryType = 'arraybuffer';

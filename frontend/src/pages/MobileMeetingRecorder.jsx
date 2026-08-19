@@ -1024,7 +1024,13 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         agenda,
         ...(isReconnect ? { resume: '1' } : {}),
       });
-      const socket = new WebSocket(`${wsProtocol}//${window.location.host}${wsPath}?${wsParams.toString()}`);
+      // WebSocket 直连后端（绕过不支持 WS 的外部代理）
+      // 优先用同源；如果当前是 HTTPS 外部域名，则降级到局域网直连
+      let wsHost = window.location.host;
+      if (window.location.protocol === 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        wsHost = '192.168.66.44';  // 直连后端 nginx，绕过外部 HTTPS 代理
+      }
+      const socket = new WebSocket(`${wsProtocol}//${wsHost}${wsPath}?${wsParams.toString()}`);
       let ready = false;
       let settled = false;
       const readyTimer = window.setTimeout(() => {
@@ -1192,7 +1198,12 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   // WebSocket 连通性快速预检
   const checkWSAvailability = () => new Promise((resolve) => {
     const testWsPath = asrBackend === 'qwen' ? '/api/meeting/asr/qwen/ws' : '/api/meeting/asr/ws';
-    const testWs = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${testWsPath}?token=${getStoredToken() || ''}&meetingId=ws-check&meetingTitle=test&agenda=test`);
+    // WebSocket 直连后端（绕过不支持 WS 的外部代理）
+    let wsHost = window.location.host;
+    if (window.location.protocol === 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      wsHost = '192.168.66.44';
+    }
+    const testWs = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${wsHost}${testWsPath}?token=${getStoredToken() || ''}&meetingId=ws-check&meetingTitle=test&agenda=test`);
     const done = (ok, reason) => {
       clearTimeout(timer);
       testWs.close();
