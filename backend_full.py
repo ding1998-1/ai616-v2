@@ -140,6 +140,7 @@ from backend.services.permission_service import (  # noqa: E402
     list_agenda_acl, grant_agenda_acl, revoke_agenda_acl,
     filter_agendas_for_user, can_view_agenda,
 )
+from backend.services.knowledge_service import search_agenda_knowledge  # noqa: E402
 # ═══ 模块化导入结束 ═════════════════════════════════════════════════════════════
 
 
@@ -6681,6 +6682,21 @@ async def audit_stream(http_request: Request, body: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/api/knowledge/agenda-search")
+async def agenda_knowledge_search(request: Request, q: str = "", limit: int = 20):
+    """议题级历史知识检索（§60-64）：返回 具体会议 + 具体议题 + 最终决议。
+
+    保密议题按当前用户权限过滤（内容不下发）。
+    """
+    user = _get_request_user(request, required=True)
+    try:
+        limit = max(1, min(int(limit), 50))
+    except Exception:
+        limit = 20
+    result = search_agenda_knowledge(q, limit=limit, user=user)
+    return JSONResponse(result)
+
 
 @app.post("/kb_stream")
 @app.post("/api/kb_stream")
