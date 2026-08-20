@@ -147,7 +147,7 @@ def _ensure_agendas_from_drafts(meeting_id: str):
             if cnt:
                 return
             for idx, draft in enumerate(drafts):
-                aid = f"ag-{meeting_id[:16]}-{idx + 1:03d}"
+                aid = f"ag-{meeting_id[:40]}-{idx + 1:03d}"
                 conn.execute(
                     """
                     INSERT INTO meeting_agendas (
@@ -176,7 +176,7 @@ def _ensure_agendas_from_drafts(meeting_id: str):
             if not meeting.get("activeAgendaId"):
                 conn.execute(
                     "UPDATE meetings SET active_agenda_id = ? WHERE id = ?",
-                    (f"ag-{meeting_id[:16]}-001", meeting_id),
+                    (f"ag-{meeting_id[:40]}-001", meeting_id),
                 )
 
 

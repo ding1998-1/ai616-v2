@@ -146,13 +146,19 @@ def required_signer_count(meeting_id: str) -> int:
 
 
 def signed_signer_count(meeting_id: str) -> int:
-    """已签（有效）人数：按签署人去重计数。"""
+    """已签（有效）人数：按 meeting_participants 中的参会人去重计数（§54）。
+
+    只有参会人（participants）的签字计入；非参会人（如管理员代签）不占应签名额。
+    """
     _init_app_db()
     try:
         with _db_connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(DISTINCT signer_user_id) AS c FROM meeting_signatures "
-                "WHERE meeting_id = ? AND status = 'valid' AND signer_user_id != ''",
+                """SELECT COUNT(DISTINCT p.user_id) AS c
+                   FROM meeting_participants p
+                   JOIN meeting_signatures s
+                     ON s.meeting_id = p.meeting_id AND s.signer_user_id = p.user_id AND s.status = 'valid'
+                   WHERE p.meeting_id = ?""",
                 (meeting_id,),
             ).fetchone()
             return int(row["c"]) if row else 0

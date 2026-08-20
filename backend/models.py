@@ -118,6 +118,7 @@ class MeetingUpsertRequest(BaseModel):
     meeting_mode: str = ""
     phase: str = "问题收集中"
     creator: str = ""
+    requireFullSignature: bool = False
     issueSources: Optional[List[dict]] = None
     agendaDrafts: Optional[List[dict]] = None
     materials: Optional[List[dict]] = None
@@ -141,6 +142,7 @@ class MeetingPatchRequest(BaseModel):
     agendaFrozen: Optional[bool] = None
     reviewDone: Optional[bool] = None
     archiveDone: Optional[bool] = None
+    requireFullSignature: Optional[bool] = None
     issueSources: Optional[List[dict]] = None
     agendaDrafts: Optional[List[dict]] = None
     materials: Optional[List[dict]] = None

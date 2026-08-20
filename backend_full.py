@@ -84,6 +84,9 @@ from backend.models import (  # noqa: E402
     MeetingIssueRequest, MeetingStageRequest, MeetingAgendaRealtimeCheckRequest,
     MeetingTranscriptCorrectionRequest, MeetingMarkerRequest,
     MeetingRecordsUpdateRequest, ChatRequest,
+    AgendaCreateRequest, AgendaPatchRequest,
+    AgendaRecordRequest, AgendaDecisionRequest, AgendaDecisionPatchRequest,
+    MeetingSignatureRequest,
 )
 from backend.db import (  # noqa: E402
     _db_connect, _init_app_db, _db_fetch_meetings, _db_save_meetings,
@@ -443,10 +446,12 @@ class MeetingUpsertRequest(BaseModel):
     agenda: str = ""
     date: str = ""
     type: str = "普通企业会议"
+    meetingNo: str = ""
     meetingMode: str = "normal"
     meeting_mode: str = ""
     phase: str = "问题收集中"
     creator: str = ""
+    requireFullSignature: bool = False
     issueSources: Optional[List[dict]] = None
     agendaDrafts: Optional[List[dict]] = None
     materials: Optional[List[dict]] = None
@@ -460,6 +465,7 @@ class MeetingPatchRequest(BaseModel):
     agenda: Optional[str] = None
     date: Optional[str] = None
     type: Optional[str] = None
+    meetingNo: Optional[str] = None
     meetingMode: Optional[str] = None
     meeting_mode: Optional[str] = None
     phase: Optional[str] = None
@@ -468,6 +474,7 @@ class MeetingPatchRequest(BaseModel):
     agendaFrozen: Optional[bool] = None
     reviewDone: Optional[bool] = None
     archiveDone: Optional[bool] = None
+    requireFullSignature: Optional[bool] = None
     issueSources: Optional[List[dict]] = None
     agendaDrafts: Optional[List[dict]] = None
     materials: Optional[List[dict]] = None

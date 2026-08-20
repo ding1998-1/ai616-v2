@@ -501,6 +501,7 @@ def _meeting_from_row(row: sqlite3.Row) -> dict:
         "date": row["meeting_date"],
         "type": row["meeting_type"],
         "meetingNo": row["meeting_no"] if "meeting_no" in row.keys() else "",
+        "requireFullSignature": bool(row["require_full_signature"]) if "require_full_signature" in row.keys() else False,
         "meetingMode": row["meeting_mode"],
         "activeAgendaId": row["active_agenda_id"] if "active_agenda_id" in row.keys() else "",
         "creator": row["creator"],
@@ -668,8 +669,8 @@ def _db_insert_meeting_rows(conn, meeting: dict):
             id, title, project, project_code, agenda, meeting_date, meeting_type,
             meeting_mode, creator, created_at, updated_at, phase, archived,
             project_bound, agenda_frozen, review_done, archive_done,
-            generated_records_json, meeting_no, active_agenda_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            generated_records_json, meeting_no, active_agenda_id, require_full_signature
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             normalized.get("id"),
@@ -692,6 +693,7 @@ def _db_insert_meeting_rows(conn, meeting: dict):
             _json_dumps(normalized.get("generatedRecords", {})),
             normalized.get("meetingNo", ""),
             normalized.get("activeAgendaId", ""),
+            int(bool(normalized.get("requireFullSignature", False))),
         ),
     )
     _db_insert_issue_sources(conn, normalized)
@@ -1566,6 +1568,7 @@ def _public_meeting(meeting: dict, include_detail: bool = False) -> dict:
         "date": normalized.get("date", ""),
         "type": normalized.get("type", "普通企业会议"),
         "meetingNo": normalized.get("meetingNo", ""),
+        "requireFullSignature": bool(normalized.get("requireFullSignature", False)),
         "meetingMode": normalized.get("meetingMode", "normal"),
         "activeAgendaId": normalized.get("activeAgendaId", ""),
         "creator": normalized.get("creator", ""),
