@@ -125,6 +125,15 @@ from backend.services.agenda_service import (  # noqa: E402
     list_meeting_agendas, get_meeting_agenda, get_meeting_active_agenda,
     create_meeting_agenda, update_meeting_agenda, delete_meeting_agenda,
     activate_meeting_agenda,
+    list_agenda_records, create_agenda_record,
+    list_agenda_decisions, create_agenda_decision,
+    update_agenda_decision, delete_agenda_decision,
+    generate_decisions_for_agenda,
+)
+from backend.services.signature_service import (  # noqa: E402
+    list_signatures, sign_target, invalidate_target_signatures,
+    is_fully_signed, signed_signer_count, required_signer_count,
+    compute_content_hash,
 )
 # ═══ 模块化导入结束 ═════════════════════════════════════════════════════════════
 
@@ -2540,6 +2549,93 @@ async def activate_agenda(request: Request, meeting_id: str, agenda_id: str):
     return JSONResponse({"success": True, "agenda": agenda})
 
 
+# ═══ 议题级会议记录与决议（§37-41：记录=讨论过程，决议=最终结果）═══
+
+@app.get("/api/meetings/{meeting_id}/agendas/{agenda_id}/records")
+async def list_agenda_records_route(request: Request, meeting_id: str, agenda_id: str):
+    """列出议题讨论记录；agenda_id=all 时返回整场。"""
+    _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    records = list_agenda_records(safe_id, "" if agenda_id == "all" else agenda_id)
+    return JSONResponse({"success": True, "records": records, "total": len(records)})
+
+
+@app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/records")
+async def create_agenda_record_route(request: Request, meeting_id: str, agenda_id: str, body: AgendaRecordRequest):
+    """新增议题讨论记录。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    try:
+        records = create_agenda_record(
+            safe_id, agenda_id, body.content,
+            speaker_name=body.speakerName or user.get("name") or user.get("username") or "",
+            speaker_user_id=user.get("id") or "",
+            record_type=body.recordType,
+            transcript_id=body.transcriptId,
+            source=body.source,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "records": records})
+
+
+@app.get("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions")
+async def list_agenda_decisions_route(request: Request, meeting_id: str, agenda_id: str):
+    """列出议题决议；agenda_id=all 时返回整场。"""
+    _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    decisions = list_agenda_decisions(safe_id, "" if agenda_id == "all" else agenda_id)
+    return JSONResponse({"success": True, "decisions": decisions, "total": len(decisions)})
+
+
+@app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions/generate")
+async def generate_agenda_decisions_route(request: Request, meeting_id: str, agenda_id: str):
+    """按议题生成决议草稿（逐议题，不整场猜测归属）。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    result = generate_decisions_for_agenda(safe_id, agenda_id, created_by=user.get("name") or user.get("username") or "")
+    return JSONResponse({"success": True, **result})
+
+
+@app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions")
+async def create_agenda_decision_route(request: Request, meeting_id: str, agenda_id: str, body: AgendaDecisionRequest):
+    """新增议题决议（正式绑定 agenda_id）。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    try:
+        decisions = create_agenda_decision(
+            safe_id, agenda_id, body.title, body.content,
+            created_by=user.get("name") or user.get("username") or "",
+            source=body.source, status=body.status,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "decisions": decisions})
+
+
+@app.patch("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions/{decision_id}")
+async def patch_agenda_decision_route(request: Request, meeting_id: str, agenda_id: str, decision_id: str, body: AgendaDecisionPatchRequest):
+    """更新决议；title/content 变更自动递增 version。"""
+    _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    try:
+        decision = update_agenda_decision(safe_id, agenda_id, decision_id, body.dict(exclude_unset=True))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="决议不存在")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "decision": decision})
+
+
+@app.delete("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions/{decision_id}")
+async def remove_agenda_decision_route(request: Request, meeting_id: str, agenda_id: str, decision_id: str):
+    """删除决议。"""
+    _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    delete_agenda_decision(safe_id, agenda_id, decision_id)
+    return JSONResponse({"success": True})
+
+
 @app.post("/api/meetings/{meeting_id}/issues")
 async def append_meeting_issue(request: Request, meeting_id: str, body: MeetingIssueRequest):
     user = _get_request_user(request, required=True)
@@ -2938,11 +3034,72 @@ async def archive_meeting(request: Request, meeting_id: str):
             raise HTTPException(status_code=404, detail="会议不存在")
         meeting = meetings[safe_id]
         _check_meeting_access(user, meeting)
+        # ── 归档闭环（§53）：要求全员签字时，未签齐禁止正式归档 ──
+        if meeting.get("requireFullSignature"):
+            from backend.services.signature_service import is_fully_signed, signed_signer_count, required_signer_count
+            if not is_fully_signed(safe_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"尚未全员签字（已签 {signed_signer_count(safe_id)} / 应签 {required_signer_count(safe_id)}），无法正式归档",
+                )
         meeting["archived"] = True
         meeting["updatedAt"] = _now_text()
         meetings[safe_id] = meeting
         _save_meetings(meetings)
     return JSONResponse({"success": True, "meeting": _public_meeting(meeting, include_detail=False)})
+
+
+# ═══ 会议成果签字（§50-54：绑定版本与 content_hash，未签齐禁止归档）═══
+
+@app.get("/api/meetings/{meeting_id}/signatures")
+async def list_meeting_signatures_route(request: Request, meeting_id: str):
+    """列出会议签字记录；?agenda_id=&target_type=&target_id= 可选过滤。"""
+    _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    params = request.query_params
+    signatures = list_signatures(
+        safe_id,
+        agenda_id=params.get("agenda_id", ""),
+        target_type=params.get("target_type", ""),
+        target_id=params.get("target_id", ""),
+    )
+    return JSONResponse({
+        "success": True,
+        "signatures": signatures,
+        "signedCount": signed_signer_count(safe_id),
+        "requiredCount": required_signer_count(safe_id),
+        "fullySigned": is_fully_signed(safe_id),
+    })
+
+
+@app.post("/api/meetings/{meeting_id}/signatures")
+async def sign_meeting_target_route(request: Request, meeting_id: str, body: MeetingSignatureRequest):
+    """签署会议成果：校验内容哈希与版本，签名绑定 version + content_hash。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    try:
+        signature = sign_target(
+            safe_id, body.agendaId, body.targetType, body.targetId,
+            body.version, body.content,
+            signer_user_id=user.get("id") or "",
+            signer_name=body.signerName or user.get("name") or user.get("username") or "",
+            signer_role=body.signerRole or user.get("meetingRole") or "",
+            signature_data=body.signatureData,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "signature": signature})
+
+
+@app.post("/api/meetings/{meeting_id}/signatures/hash")
+async def signature_hash_route(request: Request, meeting_id: str, body: MeetingSignatureRequest):
+    """返回目标内容在指定版本下的期望 content_hash（前端签字前比对）。"""
+    _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    return JSONResponse({
+        "success": True,
+        "contentHash": compute_content_hash(safe_id, body.agendaId, body.targetId, body.version, body.content),
+    })
 
 
 @app.get("/api/meetings/{meeting_id}/materials")

@@ -226,3 +226,39 @@ class AgendaPatchRequest(BaseModel):
     ownerUserId: Optional[str] = None
     status: Optional[str] = None
     sortOrder: Optional[int] = None
+
+
+class AgendaRecordRequest(BaseModel):
+    """议题讨论记录（record=讨论过程）"""
+    content: str
+    recordType: str = "discussion"
+    speakerName: str = ""
+    transcriptId: str = ""
+    source: str = "manual"
+
+
+class AgendaDecisionRequest(BaseModel):
+    """议题决议（decision=最终结果）"""
+    title: str
+    content: str = ""
+    status: str = "draft"
+    source: str = "manual"
+
+
+class AgendaDecisionPatchRequest(BaseModel):
+    """议题决议字段级更新（title/content 变更自动递增 version）"""
+    title: Optional[str] = None
+    content: Optional[str] = None
+    status: Optional[str] = None
+
+
+class MeetingSignatureRequest(BaseModel):
+    """会议成果签字（§50-52）"""
+    targetType: str = "decision"          # decision | minutes | meeting_result
+    targetId: str = ""
+    agendaId: str = ""
+    version: int = 1
+    content: str = ""                     # 待签内容（用于计算 content_hash 校验）
+    signerName: str = ""
+    signerRole: str = ""
+    signatureData: str = ""               # base64 签名图片

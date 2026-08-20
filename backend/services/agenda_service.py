@@ -327,3 +327,201 @@ def activate_meeting_agenda(meeting_id: str, agenda_id: str) -> dict:
             ).fetchone())
             result["previousAgendaId"] = prev_id or None
             return result
+
+
+# ────────────────────────────────────────────────────────────────
+# 议题级会议记录（讨论过程）与决议（最终结果）—— §37-41
+# ────────────────────────────────────────────────────────────────
+
+def list_agenda_records(meeting_id: str, agenda_id: str = "") -> list:
+    """列出议题讨论记录（record=讨论过程）。agenda_id 为空时返回整场。"""
+    _init_app_db()
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            if agenda_id:
+                rows = conn.execute(
+                    "SELECT * FROM meeting_agenda_records WHERE meeting_id = ? AND agenda_id = ? ORDER BY created_at, id",
+                    (meeting_id, agenda_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM meeting_agenda_records WHERE meeting_id = ? ORDER BY created_at, id",
+                    (meeting_id,),
+                ).fetchall()
+    return [{
+        "id": r["id"], "meetingId": r["meeting_id"], "agendaId": r["agenda_id"],
+        "transcriptId": r["transcript_id"], "speakerUserId": r["speaker_user_id"],
+        "participantId": r["participant_id"], "speakerName": r["speaker_name"],
+        "recordType": r["record_type"], "content": r["content"],
+        "correctedContent": r["corrected_content"], "source": r["source"],
+        "createdAt": r["created_at"],
+        "payload": _json_loads(r["payload_json"], {}),
+    } for r in rows]
+
+
+def create_agenda_record(
+    meeting_id: str, agenda_id: str, content: str,
+    speaker_name: str = "", speaker_user_id: str = "",
+    participant_id: str = "", record_type: str = "discussion",
+    transcript_id: str = "", source: str = "manual",
+) -> dict:
+    """新增一条议题讨论记录。"""
+    _init_app_db()
+    if not content or not content.strip():
+        raise ValueError("记录内容不能为空")
+    now = _now_text()
+    rid = f"rec-{uuid.uuid4().hex[:10]}"
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO meeting_agenda_records (
+                    id, meeting_id, agenda_id, transcript_id, speaker_user_id,
+                    participant_id, speaker_name, record_type, content,
+                    corrected_content, source, created_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid, meeting_id, agenda_id, transcript_id, speaker_user_id,
+                    participant_id, speaker_name, record_type, content.strip(),
+                    "", source, now, _json_dumps({"auto_from_transcript": source == "auto"}),
+                ),
+            )
+            return list_agenda_records(meeting_id, agenda_id)
+
+
+def list_agenda_decisions(meeting_id: str, agenda_id: str = "") -> list:
+    """列出议题决议（decision=最终结果）。agenda_id 为空时返回整场。"""
+    _init_app_db()
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            if agenda_id:
+                rows = conn.execute(
+                    "SELECT * FROM meeting_agenda_decisions WHERE meeting_id = ? AND agenda_id = ? ORDER BY decision_no, created_at",
+                    (meeting_id, agenda_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM meeting_agenda_decisions WHERE meeting_id = ? ORDER BY decision_no, created_at",
+                    (meeting_id,),
+                ).fetchall()
+    return [{
+        "id": r["id"], "meetingId": r["meeting_id"], "agendaId": r["agenda_id"],
+        "decisionNo": r["decision_no"], "title": r["title"], "content": r["content"],
+        "status": r["status"], "source": r["source"], "version": r["version"],
+        "createdBy": r["created_by"], "createdAt": r["created_at"],
+        "updatedAt": r["updated_at"], "confirmedAt": r["confirmed_at"],
+        "payload": _json_loads(r["payload_json"], {}),
+    } for r in rows]
+
+
+def create_agenda_decision(
+    meeting_id: str, agenda_id: str, title: str, content: str,
+    created_by: str = "", source: str = "manual", status: str = "draft",
+) -> dict:
+    """新增决议（正式绑定 agenda_id，version 从 1 开始）。"""
+    _init_app_db()
+    if not title or not title.strip():
+        raise ValueError("决议标题不能为空")
+    now = _now_text()
+    did = f"dec-{uuid.uuid4().hex[:10]}"
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM meeting_agenda_decisions WHERE meeting_id = ? AND agenda_id = ?",
+                (meeting_id, agenda_id),
+            ).fetchone()
+            next_no = int(row["c"]) + 1
+            decision_no = f"D-{next_no:03d}"
+            conn.execute(
+                """
+                INSERT INTO meeting_agenda_decisions (
+                    id, meeting_id, agenda_id, decision_no, title, content,
+                    status, source, version, created_by, created_at, updated_at,
+                    confirmed_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    did, meeting_id, agenda_id, decision_no, title.strip(),
+                    content or "", status, source, 1, created_by, now, now, "",
+                    _json_dumps({}),
+                ),
+            )
+            result = list_agenda_decisions(meeting_id, agenda_id)
+            return next((d for d in result if d["id"] == did), result)
+
+
+def update_agenda_decision(meeting_id: str, agenda_id: str, decision_id: str, patch: dict) -> dict:
+    """更新决议。content/title 变更时 version 递增（旧版本签字随后失效，见 signature 模块）。"""
+    _init_app_db()
+    allowed = {"title", "content", "status"}
+    clean = {k: v for k, v in (patch or {}).items() if k in allowed and v is not None}
+    if not clean:
+        raise ValueError("没有可更新的字段")
+    now = _now_text()
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM meeting_agenda_decisions WHERE id = ? AND meeting_id = ? AND agenda_id = ?",
+                (decision_id, meeting_id, agenda_id),
+            ).fetchone()
+            if not row:
+                raise KeyError("决议不存在")
+            bump = any(k in clean for k in ("title", "content")) and (
+                clean.get("title", row["title"]) != row["title"]
+                or clean.get("content", row["content"]) != row["content"]
+            )
+            new_version = int(row["version"]) + 1 if bump else int(row["version"])
+            sets = ["title = ?", "content = ?", "status = ?", "updated_at = ?", "version = ?"]
+            args = [
+                clean.get("title", row["title"]), clean.get("content", row["content"]),
+                clean.get("status", row["status"]), now, new_version, decision_id,
+            ]
+            conn.execute(f"UPDATE meeting_agenda_decisions SET {', '.join(sets)} WHERE id = ?", args)
+            result = list_agenda_decisions(meeting_id, agenda_id)
+            return next((d for d in result if d["id"] == decision_id), None)
+
+
+def delete_agenda_decision(meeting_id: str, agenda_id: str, decision_id: str):
+    """删除决议。"""
+    _init_app_db()
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            conn.execute(
+                "DELETE FROM meeting_agenda_decisions WHERE id = ? AND meeting_id = ? AND agenda_id = ?",
+                (decision_id, meeting_id, agenda_id),
+            )
+
+
+def generate_decisions_for_agenda(meeting_id: str, agenda_id: str, created_by: str = "") -> dict:
+    """按议题从转写/记录提取决议候选（本地规则，关键词辅助——正式数据仍以 agenda_id 为准）。
+
+    规则：扫描该议题下 transcripts，取含表决/结论关键词的句子生成草稿决议。
+    不整场生成再猜测归属（§40 逐议题原则）。
+    """
+    _init_app_db()
+    keywords = ("同意", "通过", "批准", "决定", "暂缓", "否决", "原则同意", "审议通过")
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            rows = conn.execute(
+                "SELECT speaker_name, transcript FROM meeting_transcripts "
+                "WHERE meeting_id = ? AND agenda_id = ? ORDER BY server_time",
+                (meeting_id, agenda_id),
+            ).fetchall()
+    sentences = []
+    for r in rows:
+        text = (r["transcript"] or "").strip()
+        if not text:
+            continue
+        for kw in keywords:
+            idx = text.find(kw)
+            if idx >= 0:
+                sentences.append({"speaker": r["speaker_name"] or "", "text": text[max(0, idx - 30):idx + 40]})
+                break
+    created = []
+    for i, s in enumerate(sentences[:5]):
+        title = f"{'决议'}{i + 1}（{s['speaker'] or '发言人'}）"
+        created.append(create_agenda_decision(
+            meeting_id, agenda_id, title, s["text"], created_by=created_by, source="auto", status="draft",
+        ))
+    return {"agendaId": agenda_id, "generated": len(created), "decisions": created}

@@ -261,6 +261,59 @@ def _init_app_db():
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     PRIMARY KEY (client_id, meeting_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS meeting_agenda_records (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    agenda_id TEXT NOT NULL DEFAULT '',
+                    transcript_id TEXT NOT NULL DEFAULT '',
+                    speaker_user_id TEXT NOT NULL DEFAULT '',
+                    participant_id TEXT NOT NULL DEFAULT '',
+                    speaker_name TEXT NOT NULL DEFAULT '',
+                    record_type TEXT NOT NULL DEFAULT 'discussion',
+                    content TEXT NOT NULL DEFAULT '',
+                    corrected_content TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS meeting_agenda_decisions (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    agenda_id TEXT NOT NULL,
+                    decision_no TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_by TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    confirmed_at TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS meeting_signatures (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    agenda_id TEXT NOT NULL DEFAULT '',
+                    target_type TEXT NOT NULL DEFAULT 'decision',
+                    target_id TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 1,
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    signer_user_id TEXT NOT NULL DEFAULT '',
+                    signer_name TEXT NOT NULL DEFAULT '',
+                    signer_role TEXT NOT NULL DEFAULT '',
+                    signature_data TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'valid',
+                    signed_at TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
                 """
             )
             # Migration: add meeting_mode column for databases created before 2026-06-15
@@ -278,6 +331,8 @@ def _init_app_db():
                 conn.execute("ALTER TABLE meetings ADD COLUMN meeting_no TEXT NOT NULL DEFAULT ''")
             if "active_agenda_id" not in cols:
                 conn.execute("ALTER TABLE meetings ADD COLUMN active_agenda_id TEXT NOT NULL DEFAULT ''")
+            if "require_full_signature" not in cols:
+                conn.execute("ALTER TABLE meetings ADD COLUMN require_full_signature INTEGER NOT NULL DEFAULT 0")
             # notifications table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS notifications (
