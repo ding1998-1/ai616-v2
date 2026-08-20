@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_QWEN_ASR_URL = "http://127.0.0.1:8091"
 
 
+# ── P0-13: ASR 异常分类 ──────────────────────────────────────────────
+class ASRError(Exception):
+    """ASR 基础异常。"""
+    pass
+
+class ASRUnavailableError(ASRError):
+    """ASR 服务不可用（连接失败/5xx/超时）。"""
+    pass
+
+class ASRSessionExpiredError(ASRError):
+    """ASR session 失效（400/404/session not found）。"""
+    pass
+
+class ASRChunkTimeoutError(ASRError):
+    """单个 chunk 处理超时。"""
+    pass
+
+
 class QwenASRClient:
     """Qwen3-ASR 流式转录服务客户端。
 
@@ -113,6 +131,11 @@ class QwenASRClient:
 
         Returns:
             {"language": "...", "text": "...", "chunk_id": N}
+
+        Raises:
+            ASRChunkTimeoutError: chunk 处理超时
+            ASRSessionExpiredError: session 失效 (400/404)
+            ASRUnavailableError: ASR 服务不可用 (连接失败/5xx)
         """
         if chunk_timeout is None:
             chunk_timeout = self.chunk_timeout
@@ -127,16 +150,36 @@ class QwenASRClient:
                     headers={"Content-Type": "application/octet-stream"},
                     timeout=httpx.Timeout(chunk_timeout),
                 )
+                # Session 失效 → ASRSessionExpiredError
+                if r.status_code in (400, 404):
+                    raise ASRSessionExpiredError(
+                        f"Session {session_id} 失效 (HTTP {r.status_code})"
+                    )
                 r.raise_for_status()
                 return r.json()
-            except (httpx.TimeoutException, httpx.ConnectError,
-                    httpx.RemoteProtocolError) as e:
-                last_exc = e
+            except httpx.TimeoutException as e:
+                last_exc = ASRChunkTimeoutError(f"Chunk 超时 ({chunk_timeout}s): {e}")
                 if attempt < retries:
                     logger.warning("ASR chunk retry %d/%d for session %s: %s",
                                    attempt + 1, retries, session_id, e)
                     await asyncio.sleep(0.5)
-            # 非瞬时错误（HTTP 4xx/5xx 等）不重试，直接抛出
+            except (httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                last_exc = ASRUnavailableError(f"ASR 连接失败: {e}")
+                if attempt < retries:
+                    logger.warning("ASR chunk retry %d/%d for session %s: %s",
+                                   attempt + 1, retries, session_id, e)
+                    await asyncio.sleep(0.5)
+            except (ASRSessionExpiredError, ASRError):
+                raise  # 已经是分类异常，直接抛出
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code >= 500:
+                    last_exc = ASRUnavailableError(f"ASR 服务错误 (HTTP {e.response.status_code})")
+                else:
+                    last_exc = ASRError(f"ASR 请求失败: {e}")
+                if attempt < retries:
+                    logger.warning("ASR chunk retry %d/%d for session %s: %s",
+                                   attempt + 1, retries, session_id, e)
+                    await asyncio.sleep(0.5)
         raise last_exc
 
     async def finish(self, session_id: str) -> Dict:

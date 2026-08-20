@@ -432,12 +432,16 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const retryQueueRef = useRef([]);
   const retryTimerRef = useRef(null);
   // 连接状态
-  const [connectionStatus, setConnectionStatus] = useState('disconnected'); // connected | reconnecting | disconnected
+  // P0-7: WebSocket 状态机: idle → connecting → connected → reconnecting → degraded → stopped
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
   // 音频合并/上传状态
   const [isMerging, setIsMerging] = useState(false);
   const [pendingChunks, setPendingChunks] = useState(0);
   // P0-4: ACK 队列 — chunk 必须收到 ACK 才算成功
   const pendingAckRef = useRef(new Map()); // Map<chunkIndex, {blob, attempts, sentAt}>
+  // P0-8: WebSocket 心跳
+  const heartbeatRef = useRef(null); // setInterval ID
+  const lastPongRef = useRef(0); // 上次收到 pong 的时间
   // Refs for functions used in useEffect (avoid stale closures)
   const flushPendingChunksRef = useRef(null);
   const startFunAsrRef = useRef(null);
@@ -1162,6 +1166,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         if (!ready) failBeforeReady(new Error(`${asrName} WebSocket 异常`));
       };
       socket.onclose = () => {
+        // P0-8: 清除心跳
+        if (heartbeatRef.current) {
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current = null;
+        }
         if (!ready) {
           failBeforeReady(new Error(`${asrName} WebSocket 已关闭`));
         } else if (recordingRef.current) {
@@ -1183,6 +1192,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       } catch (_) {
         return;
       }
+      // P0-8: pong 响应 — 更新心跳时间戳
+      if (payload.type === 'pong') {
+        lastPongRef.current = Date.now();
+        return;
+      }
       if (payload.type === 'ready') {
         try {
           if (!isReconnect) {
@@ -1196,6 +1210,19 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           setSpeechStatus(`${asrName} 实时转写中`);
           setConnectionStatus('connected');
           asrSocketRef.current = socket;
+          // P0-8: 启动心跳 — 每 15 秒发 ping，30 秒无 pong 触发重连
+          lastPongRef.current = Date.now();
+          if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+          heartbeatRef.current = setInterval(() => {
+            if (socket.readyState === WebSocket.OPEN) {
+              if (Date.now() - lastPongRef.current > 30000) {
+                console.warn('[WS] 心跳超时 30s，主动断开重连');
+                socket.close();
+                return;
+              }
+              socket.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+            }
+          }, 15000);
           resolve(true);
         } catch (err) {
           failBeforeReady(err);
@@ -1279,11 +1306,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     const doReconnect = () => {
       doConnect(true).catch(err => {
         console.warn(`${asrName} 重连失败:`, err.message);
-        if (reconnectAttempts < MAX_RECONNECT) {
-          reconnectAttempts++;
-          const delay = Math.min(3000 * reconnectAttempts, 15000);
-          window.setTimeout(() => doReconnect(), delay);
-        }
+        // P0-9: 无限自动重连，不设上限
+        reconnectAttempts++;
+        const delay = Math.min(3000 * reconnectAttempts, 15000);
+        window.setTimeout(() => doReconnect(), delay);
       });
     };
 
@@ -1360,6 +1386,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
 
   const startRecording = async () => {
     if (starting) return;
+    // P0-12: 防重复 MediaRecorder — 切后台回来可能触发重复 start
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      console.warn('[REC] MediaRecorder 已在运行，跳过重复创建');
+      return;
+    }
     setStarting(true);
     try {
       if (!window.isSecureContext) {

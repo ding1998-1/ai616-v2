@@ -5538,7 +5538,10 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
     协议: type: "final" + newText/fullText（与 DashScope 兼容，前端无需改动）
     先精准清洗标签 → _fuzzy_lcp 增量提取 → 句尾或 ≥6 字 → 推送 final
     """
-    from backend.qwen_asr_client import QwenASRClient
+    from backend.qwen_asr_client import (
+        QwenASRClient,
+        ASRError, ASRUnavailableError, ASRSessionExpiredError, ASRChunkTimeoutError,
+    )
 
     await websocket.accept()
 
@@ -5635,6 +5638,7 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
         except Exception:
             pass
 
+    asr_task = None
     try:
         # Lazy start：延后到检测到真正语音时才创建 ASR session
         # 避免环境噪声被 Paraformer 幻觉成 "对对对""没有没有"
@@ -5694,230 +5698,317 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
         monitor_task = asyncio.create_task(_silence_flush_monitor())
         recv_loop_alive.set()
 
-        # ── 主接收循环：8 级工业流水线 ──
+        # ── P0-15: Receiver / ASR Worker 双协程架构 ──
+        # receiver() 只负责 receive → 入队（不阻塞）
+        # asr_worker() 从队列消费 → VAD → ASR → 文本处理
+        # 录音持久化由前端 HTTP POST /audio/chunk 独立完成（ACK 已有）
+
+        # P0-16: 有界队列，满了丢 ASR 不丢录音
+        asr_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=120)
 
         # 声纹信息注入辅助函数
+        _vp_identified_user_ref = [None]  # 用 list 包装以便 worker 内修改
+        _vp_identified_name_ref = [""]
+        _vp_identified_confidence_ref = [0.0]
+        _vp_identified_by_ref = ["manual"]
+        _pending_buffer_ref = [""]  # worker 退出时保存待恢复文本
+
         def _vp_enrich(msg: dict) -> dict:
             """向消息中注入声纹识别结果（如有）。"""
-            if _vp_identified_user and msg.get("type") in ("final", "preview"):
-                msg["speaker_name"] = _vp_identified_name
-                msg["speaker_confidence"] = round(_vp_identified_confidence, 4)
-                msg["identified_by"] = _vp_identified_by
+            if _vp_identified_user_ref[0] and msg.get("type") in ("final", "preview"):
+                msg["speaker_name"] = _vp_identified_name_ref[0]
+                msg["speaker_confidence"] = round(_vp_identified_confidence_ref[0], 4)
+                msg["identified_by"] = _vp_identified_by_ref[0]
             return msg
-        while True:
-            try:
-                msg = await websocket.receive()
-            except WebSocketDisconnect:
-                break
 
-            if msg.get("type") == "websocket.disconnect":
-                break
-
-            if msg.get("text"):
+        async def receiver():
+            """P0-15: 只负责接收音频并入队，不阻塞于 ASR。"""
+            while True:
                 try:
-                    cmd = json.loads(msg["text"])
-                    if cmd.get("type") == "finish":
-                        break
-                except Exception:
-                    pass
-                continue
-
-            audio_bytes = msg.get("bytes")
-            if not audio_bytes:
-                continue
-
-            # ═══════════════════════════════════════════
-            # Stage 1: Silero VAD（神经网络语音检测，替代 Energy Gate）
-            # ═══════════════════════════════════════════
-            is_speech, vad_prob = silero_vad.process(audio_bytes)
-            if not is_speech:
-                continue
-
-            # ═══════════════════════════════════════════
-            # 声纹识别：积累音频 → 提取 embedding → 匹配已注册声纹
-            # ═══════════════════════════════════════════
-            if _vp_engine and _vp_enrolled and _vp_identified_user is None:
-                _vp_audio_buffer.extend(audio_bytes)
-                if len(_vp_audio_buffer) >= VP_BUFFER_BYTES:
-                    vp_pcm = bytes(_vp_audio_buffer[:VP_BUFFER_BYTES])
-                    _vp_audio_buffer.clear()
-                    # 异步提取 embedding（不阻塞 ASR 主路径）
+                    msg = await websocket.receive()
+                except WebSocketDisconnect:
+                    break
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                if msg.get("text"):
                     try:
-                        loop_now = asyncio.get_event_loop()
-                        _uid, _conf = await loop_now.run_in_executor(
-                            None,
-                            lambda: _vp_engine.identify_speaker_from_bytes(vp_pcm, _vp_enrolled),
-                        )
-                        if _uid:
-                            _vp_identified_user = _uid
-                            _vp_identified_confidence = _conf
-                            _vp_identified_by = "voiceprint-realtime"
-                            # 查 display_name
-                            from backend.db import _db_get_voiceprint_by_user
-                            _vp_profile = _db_get_voiceprint_by_user(_uid)
-                            if _vp_profile:
-                                _vp_identified_name = _vp_profile.get("display_name", _uid)
-                            logger.info("声纹识别: %s (conf=%.3f)", _vp_identified_name or _uid, _conf)
-                    except Exception as vp_err:
-                        logger.debug("声纹识别异常（忽略）: %s", vp_err)
+                        cmd = json.loads(msg["text"])
+                        if cmd.get("type") == "finish":
+                            break
+                        # P0-8: 心跳 pong 响应
+                        if cmd.get("type") == "ping":
+                            await websocket.send_json({"type": "pong", "timestamp": cmd.get("timestamp")})
+                    except Exception:
+                        pass
+                    continue
+                audio_bytes = msg.get("bytes")
+                if not audio_bytes:
+                    continue
+                # P0-16: 队列满了丢 ASR chunk，录音已由 HTTP 保存
+                try:
+                    asr_queue.put_nowait(audio_bytes)
+                except asyncio.QueueFull:
+                    logger.warning("[AUDIO] ASR queue full, dropping chunk (录音已保存)")
 
-            # 第一次检测到语音 → 才创建 ASR session
-            if session_id is None:
-                session_id = await qwen_client.start(hotwords=_build_asr_hotwords(meeting_title=meeting_title, agenda=agenda, project="", extra=[user_role.get("displayName", ""), user_role.get("meetingRole", "")]))
-                _ACTIVE_ASR_SESSIONS[session_key] = session_id
-                # 清空预缓冲（session 创建前的静音/噪声）
-                audio_float_buffer = bytearray()
-                logger.info("ASR会话(延迟启动): %s (meeting=%s)", session_id, meeting_id)
+        async def asr_worker():
+            """P0-15: 从队列消费音频 → VAD → ASR → 文本处理。"""
+            nonlocal session_id
 
-            # ═══════════════════════════════════════════
-            # Stage 3: 滑动缓冲区 → 600ms 对齐
-            # ═══════════════════════════════════════════
-            audio_float_buffer.extend(audio_bytes)
-            if len(audio_float_buffer) < ASR_CHUNK_BYTES:
-                continue
-            send_bytes = bytes(audio_float_buffer[:ASR_CHUNK_BYTES])
-            audio_float_buffer = audio_float_buffer[ASR_CHUNK_BYTES:]
+            session_id_local = session_id
+            chunk_count = 0
+            stale_count = 0
+            # P0-14: ASR 健康状态跟踪
+            consecutive_failures = 0
+            asr_degraded = False
+            last_recovery_check = 0.0
+            prev_full_text = ""
+            repeat_burst = 0
+            committed_text = ""
+            pending_buffer = ""
+            last_full_text = ""
+            last_change_time = time.monotonic()
+            sent_tail = ""
+            spk_id = ""
+            ui_bubble_start_idx = 0
+            audio_float_buffer = bytearray()
 
-            # ═══════════════════════════════════════════
-            # Stage 4: SeACO-Paraformer 推理
-            # ═══════════════════════════════════════════
-            chunk_count += 1
-            try:
-                result = await qwen_client.send_chunk(session_id, send_bytes)
-                raw_text = result.get("text", "").strip()
-                spk_id = result.get("spk", "")
-            except Exception as e:
-                err_str = str(e)
-                if '400' in err_str or 'invalid' in err_str.lower():
-                    logger.warning("Session失效，自动重建 (chunk %d)", chunk_count)
-                    try:
-                        session_id = await qwen_client.start()
-                        _ACTIVE_ASR_SESSIONS[session_key] = session_id
-                        result = await qwen_client.send_chunk(session_id, send_bytes)
-                        raw_text = result.get("text", "").strip()
-                        spk_id = result.get("spk", "")
-                    except Exception as e2:
-                        logger.warning("重建失败: %s", e2)
-                        continue
-                else:
-                    logger.warning("ASR chunk %d 失败: %s", chunk_count, e)
+            _vp_audio_buffer = bytearray()
+
+            while recv_loop_alive.is_set():
+                try:
+                    audio_bytes = await asyncio.wait_for(asr_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                if audio_bytes is None:  # 哨兵值，退出信号
+                    break
+
+                # Stage 1: Silero VAD
+                is_speech, vad_prob = silero_vad.process(audio_bytes)
+                if not is_speech:
                     continue
 
-            # 物理清洗
-            clean_text = _clean(raw_text)
+                # P0-14: degraded 状态 — 跳过 ASR，定期检查恢复
+                if asr_degraded:
+                    now = time.monotonic()
+                    if now - last_recovery_check > 10.0:  # 每 10 秒检查一次
+                        last_recovery_check = now
+                        if await qwen_client.is_available():
+                            logger.info("ASR 恢复可用，重建 session")
+                            asr_degraded = False
+                            consecutive_failures = 0
+                            session_id_local = await qwen_client.start(hotwords=_build_asr_hotwords(meeting_title=meeting_title, agenda=agenda, project="", extra=[user_role.get("displayName", ""), user_role.get("meetingRole", "")]))
+                            session_id = session_id_local
+                            _ACTIVE_ASR_SESSIONS[session_key] = session_id_local
+                            audio_float_buffer = bytearray()
+                        else:
+                            logger.debug("ASR 仍不可用，继续录音")
+                    continue  # degraded 期间跳过 ASR 处理
 
-            # ═══════════════════════════════════════════
-            # Stage 5: LCP 裁剪（committed_text 做锚点，与 GPU 同生共死）
-            # ═══════════════════════════════════════════
-            if not clean_text or clean_text == last_full_text:
-                stale_count += 1
-            else:
-                # 用 committed_text 做 LCP 参考（绝不无故清零）
-                prefix_len = _fuzzy_lcp(committed_text, clean_text, tolerance=2)
-                new_content = clean_text[prefix_len:]
-                if not new_content:
+                # 声纹识别
+                if _vp_engine and _vp_enrolled and _vp_identified_user_ref[0] is None:
+                    _vp_audio_buffer.extend(audio_bytes)
+                    if len(_vp_audio_buffer) >= VP_BUFFER_BYTES:
+                        vp_pcm = bytes(_vp_audio_buffer[:VP_BUFFER_BYTES])
+                        _vp_audio_buffer.clear()
+                        try:
+                            loop_now = asyncio.get_event_loop()
+                            _uid, _conf = await loop_now.run_in_executor(
+                                None,
+                                lambda: _vp_engine.identify_speaker_from_bytes(vp_pcm, _vp_enrolled),
+                            )
+                            if _uid:
+                                _vp_identified_user_ref[0] = _uid
+                                _vp_identified_confidence_ref[0] = _conf
+                                _vp_identified_by_ref[0] = "voiceprint-realtime"
+                                from backend.db import _db_get_voiceprint_by_user
+                                _vp_profile = _db_get_voiceprint_by_user(_uid)
+                                if _vp_profile:
+                                    _vp_identified_name_ref[0] = _vp_profile.get("display_name", _uid)
+                                logger.info("声纹识别: %s (conf=%.3f)", _vp_identified_name_ref[0] or _uid, _conf)
+                        except Exception as vp_err:
+                            logger.debug("声纹识别异常（忽略）: %s", vp_err)
+
+                # 第一次检测到语音 → 延迟创建 ASR session
+                if session_id_local is None:
+                    session_id_local = await qwen_client.start(hotwords=_build_asr_hotwords(meeting_title=meeting_title, agenda=agenda, project="", extra=[user_role.get("displayName", ""), user_role.get("meetingRole", "")]))
+                    session_id = session_id_local
+                    _ACTIVE_ASR_SESSIONS[session_key] = session_id_local
+                    audio_float_buffer = bytearray()
+                    logger.info("ASR会话(延迟启动): %s (meeting=%s)", session_id_local, meeting_id)
+
+                # Stage 3: 滑动缓冲区 → 对齐
+                audio_float_buffer.extend(audio_bytes)
+                if len(audio_float_buffer) < ASR_CHUNK_BYTES:
+                    continue
+                send_bytes = bytes(audio_float_buffer[:ASR_CHUNK_BYTES])
+                audio_float_buffer = audio_float_buffer[ASR_CHUNK_BYTES:]
+
+                # Stage 4: ASR 推理（P0-14: 分类异常 + 自动重建 + degraded）
+                chunk_count += 1
+                try:
+                    result = await qwen_client.send_chunk(session_id_local, send_bytes)
+                    raw_text = result.get("text", "").strip()
+                    spk_id = result.get("spk", "")
+                    consecutive_failures = 0  # 成功 → 重置计数
+                except ASRSessionExpiredError as e:
+                    consecutive_failures += 1
+                    logger.warning("Session失效，自动重建 (chunk %d, 失败%d次): %s", chunk_count, consecutive_failures, e)
+                    try:
+                        session_id_local = await qwen_client.start()
+                        session_id = session_id_local
+                        _ACTIVE_ASR_SESSIONS[session_key] = session_id_local
+                        result = await qwen_client.send_chunk(session_id_local, send_bytes)
+                        raw_text = result.get("text", "").strip()
+                        spk_id = result.get("spk", "")
+                        consecutive_failures = 0  # 重建成功
+                    except Exception as e2:
+                        logger.warning("重建失败: %s", e2)
+                        if consecutive_failures >= 3:
+                            asr_degraded = True
+                            last_recovery_check = time.monotonic()
+                            logger.warning("ASR 进入 degraded 状态（连续 %d 次失败），录音继续", consecutive_failures)
+                        continue
+                except ASRChunkTimeoutError as e:
+                    consecutive_failures += 1
+                    logger.warning("ASR chunk %d 超时 (失败%d次): %s", chunk_count, consecutive_failures, e)
+                    if consecutive_failures >= 3:
+                        asr_degraded = True
+                        last_recovery_check = time.monotonic()
+                        logger.warning("ASR 进入 degraded 状态（连续 %d 次超时），录音继续", consecutive_failures)
+                    continue
+                except ASRUnavailableError as e:
+                    consecutive_failures += 1
+                    logger.warning("ASR 不可用 (chunk %d, 失败%d次): %s", chunk_count, consecutive_failures, e)
+                    if consecutive_failures >= 3:
+                        asr_degraded = True
+                        last_recovery_check = time.monotonic()
+                        logger.warning("ASR 进入 degraded 状态（连续 %d 次不可用），录音继续", consecutive_failures)
+                    continue
+                except ASRError as e:
+                    consecutive_failures += 1
+                    logger.warning("ASR chunk %d 错误 (失败%d次): %s", chunk_count, consecutive_failures, e)
+                    continue
+
+                # 物理清洗
+                clean_text = _clean(raw_text)
+
+                # Stage 5: LCP 裁剪
+                if not clean_text or clean_text == last_full_text:
                     stale_count += 1
                 else:
-                    stale_count = 0
-                    last_full_text = clean_text
-                    last_change_time = time.monotonic()
+                    prefix_len = _fuzzy_lcp(committed_text, clean_text, tolerance=2)
+                    new_content = clean_text[prefix_len:]
+                    if not new_content:
+                        stale_count += 1
+                    else:
+                        stale_count = 0
+                        last_full_text = clean_text
+                        last_change_time = time.monotonic()
 
-                    # ═══════════════════════════════════════════
-                    # Stage 6: 重复 Token 熔断
-                    # ═══════════════════════════════════════════
-                    if _REPEAT_RE.search(clean_text):
-                        logger.warning("熔断A: 重复Token '%s'，重启", clean_text[-20:])
-                        try: await qwen_client.finish(session_id)
-                        except Exception: pass
-                        session_id = await qwen_client.start()
-                        _ACTIVE_ASR_SESSIONS[session_key] = session_id
-                        committed_text = ""; last_full_text = ""; pending_buffer = ""
-                        sent_tail = ""; ui_bubble_start_idx = 0
-                        silero_vad.reset()
-                        continue
-
-                    if clean_text == prev_full_text:
-                        repeat_burst += 1
-                        if repeat_burst >= 3:
-                            logger.warning("熔断B: 连续3帧相同，重启")
-                            try: await qwen_client.finish(session_id)
+                        # Stage 6: 重复 Token 熔断
+                        if _REPEAT_RE.search(clean_text):
+                            logger.warning("熔断A: 重复Token '%s'，重启", clean_text[-20:])
+                            try: await qwen_client.finish(session_id_local)
                             except Exception: pass
-                            session_id = await qwen_client.start()
-                            _ACTIVE_ASR_SESSIONS[session_key] = session_id
-                            committed_text = ""; last_full_text = ""; prev_full_text = ""
-                            pending_buffer = ""; sent_tail = ""
-                            repeat_burst = 0; ui_bubble_start_idx = 0
+                            session_id_local = await qwen_client.start()
+                            session_id = session_id_local
+                            _ACTIVE_ASR_SESSIONS[session_key] = session_id_local
+                            committed_text = ""; last_full_text = ""; pending_buffer = ""
+                            sent_tail = ""; ui_bubble_start_idx = 0
                             silero_vad.reset()
                             continue
-                    else:
-                        prev_full_text = clean_text
-                        repeat_burst = 0
 
-                    # ── Preview：当前气泡的文本（从游标到末尾）──
-                    bubble_text = clean_text[ui_bubble_start_idx:]
-                    await websocket.send_json(_vp_enrich({
-                        "type": "preview", "taskId": task_id,
-                        "meetingId": meeting_id, "meetingTitle": meeting_title,
-                        "agenda": agenda, "text": bubble_text,
-                        "isFinal": False, "backend": "paraformer", "spk": spk_id,
-                    }))
+                        if clean_text == prev_full_text:
+                            repeat_burst += 1
+                            if repeat_burst >= 3:
+                                logger.warning("熔断B: 连续3帧相同，重启")
+                                try: await qwen_client.finish(session_id_local)
+                                except Exception: pass
+                                session_id_local = await qwen_client.start()
+                                session_id = session_id_local
+                                _ACTIVE_ASR_SESSIONS[session_key] = session_id_local
+                                committed_text = ""; last_full_text = ""; prev_full_text = ""
+                                pending_buffer = ""; sent_tail = ""
+                                repeat_burst = 0; ui_bubble_start_idx = 0
+                                silero_vad.reset()
+                                continue
+                        else:
+                            prev_full_text = clean_text
+                            repeat_burst = 0
 
-                    # ── 动作 B：遇到标点 → UI 换行，不碰 GPU ──
-                    END_PUNCTS = ('。', '？', '！', '…')
-                    if clean_text.endswith(END_PUNCTS):
-                        bubble = clean_text[ui_bubble_start_idx:]
-                        if bubble.strip():
-                            await websocket.send_json(_vp_enrich({
-                                "type": "final", "taskId": task_id,
-                                "meetingId": meeting_id, "meetingTitle": meeting_title,
-                                "agenda": agenda, "newText": bubble, "fullText": clean_text,
-                                "isFinal": True, "backend": "paraformer", "spk": spk_id,
-                            }))
-                        # 关键：只移 UI 游标，不碰 committed_text 和 GPU
-                        ui_bubble_start_idx = len(clean_text)
-                        committed_text = clean_text  # 更新 LCP 锚点
-                        pending_buffer = ""
+                        # Preview
+                        bubble_text = clean_text[ui_bubble_start_idx:]
+                        await websocket.send_json(_vp_enrich({
+                            "type": "preview", "taskId": task_id,
+                            "meetingId": meeting_id, "meetingTitle": meeting_title,
+                            "agenda": agenda, "text": bubble_text,
+                            "isFinal": False, "backend": "paraformer", "spk": spk_id,
+                        }))
 
-                    # ── 无标点但 ≥8 字 → 累积提交，减少半句切碎与气泡抖动 ──
-                    else:
-                        pending_buffer = pending_buffer + new_content
-                        if len(pending_buffer) >= 8:
-                            if not (pending_buffer == sent_tail[-len(pending_buffer):] and len(pending_buffer) >= 3):
+                        # 标点 → 换行
+                        END_PUNCTS = ('。', '？', '！', '…')
+                        if clean_text.endswith(END_PUNCTS):
+                            bubble = clean_text[ui_bubble_start_idx:]
+                            if bubble.strip():
                                 await websocket.send_json(_vp_enrich({
                                     "type": "final", "taskId": task_id,
                                     "meetingId": meeting_id, "meetingTitle": meeting_title,
-                                    "agenda": agenda, "newText": pending_buffer, "fullText": clean_text,
+                                    "agenda": agenda, "newText": bubble, "fullText": clean_text,
                                     "isFinal": True, "backend": "paraformer", "spk": spk_id,
                                 }))
-                                sent_tail = (sent_tail + pending_buffer)[-50:]
-                            committed_text = clean_text  # 更新 LCP 锚点
                             ui_bubble_start_idx = len(clean_text)
+                            committed_text = clean_text
                             pending_buffer = ""
 
-            # ═══════════════════════════════════════════
-            # Stage 7: 流式失活检测
-            # ═══════════════════════════════════════════
-            if stale_count >= 30:
-                logger.warning("失活: %d chunks无新字，重启", stale_count)
-                try: await qwen_client.finish(session_id)
-                except Exception: pass
-                session_id = await qwen_client.start()
-                _ACTIVE_ASR_SESSIONS[session_key] = session_id
-                committed_text = ""; last_full_text = ""; prev_full_text = ""
-                pending_buffer = ""; sent_tail = ""
-                ui_bubble_start_idx = 0; stale_count = 0; repeat_burst = 0
+                        # 无标点但 ≥8 字 → 累积提交
+                        else:
+                            pending_buffer = pending_buffer + new_content
+                            if len(pending_buffer) >= 8:
+                                if not (pending_buffer == sent_tail[-len(pending_buffer):] and len(pending_buffer) >= 3):
+                                    await websocket.send_json(_vp_enrich({
+                                        "type": "final", "taskId": task_id,
+                                        "meetingId": meeting_id, "meetingTitle": meeting_title,
+                                        "agenda": agenda, "newText": pending_buffer, "fullText": clean_text,
+                                        "isFinal": True, "backend": "paraformer", "spk": spk_id,
+                                    }))
+                                    sent_tail = (sent_tail + pending_buffer)[-50:]
+                                committed_text = clean_text
+                                ui_bubble_start_idx = len(clean_text)
+                                pending_buffer = ""
 
-            # 每30帧诊断
-            if chunk_count % 30 == 0:
-                import struct as _st
-                n = min(len(send_bytes)//2, 100)
-                s = _st.unpack(f'<{n}h', send_bytes[:n*2])
-                p = max(abs(x) for x in s) if s else 0
-                r = int((sum(x*x for x in s)/len(s))**0.5) if s else 0
-                logger.info("ASR diag: chunk=%d bytes=%d peak=%d rms=%d stale=%d raw='%s'",
-                            chunk_count, len(send_bytes), p, r, stale_count, raw_text[:50])
+                # Stage 7: 流式失活检测
+                if stale_count >= 30:
+                    logger.warning("失活: %d chunks无新字，重启", stale_count)
+                    try: await qwen_client.finish(session_id_local)
+                    except Exception: pass
+                    session_id_local = await qwen_client.start()
+                    session_id = session_id_local
+                    _ACTIVE_ASR_SESSIONS[session_key] = session_id_local
+                    committed_text = ""; last_full_text = ""; prev_full_text = ""
+                    pending_buffer = ""; sent_tail = ""
+                    ui_bubble_start_idx = 0; stale_count = 0; repeat_burst = 0
 
-        # Stage 8: 800ms 超时切句 — 由 monitor 协程处理
+                # 每30帧诊断
+                if chunk_count % 30 == 0:
+                    import struct as _st
+                    n = min(len(send_bytes)//2, 100)
+                    s = _st.unpack(f'<{n}h', send_bytes[:n*2])
+                    p = max(abs(x) for x in s) if s else 0
+                    r = int((sum(x*x for x in s)/len(s))**0.5) if s else 0
+                    logger.info("ASR diag: chunk=%d bytes=%d peak=%d rms=%d stale=%d raw='%s'",
+                                chunk_count, len(send_bytes), p, r, stale_count, raw_text[:50])
+
+            # worker 退出前保存待恢复文本
+            _pending_buffer_ref[0] = pending_buffer
+
+        # 启动双协程
+        asr_task = asyncio.create_task(asr_worker())
+        await receiver()
+        # receiver 退出 → 发送哨兵值通知 worker 退出
+        try:
+            asr_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
 
     except Exception as exc:
         logger.exception("本地 ASR WS 异常")
@@ -5927,20 +6018,27 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
             pass
     finally:
         recv_loop_alive.clear()
+        # 取消 monitor 和 asr_worker
         monitor_task.cancel()
         try:
             await monitor_task
         except asyncio.CancelledError:
             pass
+        if asr_task is not None:
+            asr_task.cancel()
+            try:
+                await asyncio.wait_for(asr_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         _ACTIVE_ASR_SESSIONS.pop(session_key, None)
         if session_id:
             try:
                 await qwen_client.finish(session_id)
             except Exception:
                 pass
-        if pending_buffer:
+        if _pending_buffer_ref[0]:
             _asr_pending_store[session_key] = {
-                "text": pending_buffer, "timestamp": time.time(), "version": 1,
+                "text": _pending_buffer_ref[0], "timestamp": time.time(), "version": 1,
             }
         try:
             await websocket.send_json({"type": "finished", "taskId": task_id})
