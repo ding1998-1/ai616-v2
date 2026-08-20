@@ -123,16 +123,17 @@ const UI_PANEL_BG = 'var(--ui-bg-panel)';
 const UI_BORDER = 'var(--ui-border-2)';
 
 const PAGE_META = {
-  dashboard: { title: '合规处置工作台', desc: '先看风险，再进事项，最后归档留痕。' },
-  compliance: { title: '三重一大审查', desc: '按事项类型、制度依据和材料内容生成审查意见。' },
-  ai_meeting: { title: 'AI 会议合规', desc: '从群聊议题、声纹分轨到表决归档的全链路管理。' },
+  ai_meeting: { title: '会议管理', desc: '从议题准备、多人录音、实时转写到决议签署与归档。' },
+  dashboard: { title: '处置工作台', desc: '先看风险，再进事项，最后归档留痕。' },
+  compliance: { title: '三重一大审查', desc: '重大事项会议启用的增强合规审查，按制度依据生成审查意见。' },
   compliance_focus: { title: '快速审查', desc: '普通经办人员使用的简化审查路径。' },
+  todos: { title: '待办事项', desc: '会议决议与任务落实的跟踪看板。' },
   oa: { title: 'OA 审批联动', desc: '模拟事项流转、风险拦截和审批凭证联动。' },
   archive: { title: '归档中心', desc: '查询审查记录、时间线和原始附件。' },
-  knowledge: { title: '合规问答', desc: '从制度、案例和知识库中检索业务口径。' },
+  knowledge: { title: '会议知识库', desc: '从历史会议、制度和案例中检索业务口径。' },
   cases: { title: '合同审查', desc: '预览合同、定位风险、处理建议并下载审查版。' },
   library: { title: '知识文库', desc: '维护制度、案例和共享资料的生效状态。' },
-  rules: { title: '合规规则库', desc: '管理三重一大审查规则文件，支持上传、筛选、预览和删除。' },
+  rules: { title: '制度规则库', desc: '管理三重一大审查规则文件，支持上传、筛选、预览和删除。' },
   users: { title: '用户管理', desc: '维护账号、角色、状态和组织归属。' },
 };
 
@@ -237,7 +238,7 @@ function SidebarStatus({ online }) {
 function AppShell({ currentUser, onLogout }) {
   const [currentPage, setCurrentPage] = useState(() => {
     const page = new URLSearchParams(window.location.search).get('page');
-    return PAGE_META[page] ? page : 'dashboard';
+    return PAGE_META[page] ? page : 'ai_meeting';
   });
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [notificationCount, setNotificationCount] = useState(0);
@@ -263,25 +264,26 @@ function AppShell({ currentUser, onLogout }) {
 
   const menuItems = useMemo(() => {
     const items = [
+      { key: 'ai_meeting', icon: <AudioOutlined />, label: '会议管理' },
+      { key: 'todos', icon: <ScheduleOutlined />, label: '待办事项' },
+      { type: 'divider' },
       { key: 'dashboard', icon: <DashboardOutlined />, label: '处置工作台' },
       { key: 'compliance_focus', icon: <SafetyCertificateOutlined />, label: '快速审查' },
-      { key: 'compliance', icon: <FileTextOutlined />, label: '三重一大' },
-      { key: 'ai_meeting', icon: <AudioOutlined />, label: 'AI会议' },
-      { key: 'todos', icon: <ScheduleOutlined />, label: '待办跟踪' },
+      { key: 'compliance', icon: <FileTextOutlined />, label: '三重一大审查' },
       { key: 'oa', icon: <DesktopOutlined />, label: 'OA 审批' },
       { key: 'archive', icon: <FolderOpenOutlined />, label: '归档中心' },
-      { key: 'knowledge', icon: <DatabaseOutlined />, label: '合规问答' },
+      { key: 'knowledge', icon: <DatabaseOutlined />, label: '会议知识库' },
       { key: 'cases', icon: <ExperimentOutlined />, label: '合同审查' },
       { key: 'library', icon: <BookOutlined />, label: '知识文库' },
     ];
     if (currentUser?.role === 'admin') {
-      items.push({ key: 'rules', icon: <SafetyCertificateOutlined />, label: '合规规则库' });
+      items.push({ key: 'rules', icon: <SafetyCertificateOutlined />, label: '制度规则库' });
       items.push({ key: 'users', icon: <TeamOutlined />, label: '用户管理' });
     }
     return items;
   }, [currentUser]);
 
-  const pageMeta = PAGE_META[currentPage] || PAGE_META.dashboard;
+  const pageMeta = PAGE_META[currentPage] || PAGE_META.ai_meeting;
 
   const handleNavigate = useCallback((page) => {
     setCurrentPage(page);
@@ -293,7 +295,7 @@ function AppShell({ currentUser, onLogout }) {
 
   const pageContent = useMemo(() => {
     const props = { isDarkMode, currentUser, onNavigate: handleNavigate };
-    let PageComponent = StatisticalDashboard;
+    let PageComponent = MeetingComplianceWorkflow;
     switch (currentPage) {
       case 'compliance': PageComponent = ComplianceAudit; break;
       case 'ai_meeting': PageComponent = MeetingComplianceWorkflow; break;
@@ -370,8 +372,8 @@ function AppShell({ currentUser, onLogout }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <SidebarBrandMark />
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>AI 合规系统</div>
-                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>审查 · 处置 · 留痕</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>AI 会议管理</div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>会议 · 议题 · 决议 · 归档</div>
               </div>
             </div>
             <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>

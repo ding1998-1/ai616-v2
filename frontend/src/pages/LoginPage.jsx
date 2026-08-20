@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Card, Form, Input, Segmented, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, Segmented, Space, Tag, Typography, message } from 'antd';
 import { IdcardOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { setStoredToken } from '../lib/auth';
 
@@ -124,6 +124,13 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
       }
       throw new Error(errMsg);
     }
+    // 一次性凭据：仅本次返回，必须提示用户保存
+    if (data.oneTimePassword) {
+      message.warning({
+        content: `系统已为你生成一次性密码：${data.oneTimePassword}。请务必保存，下次登录需要输入该密码。`,
+        duration: 12,
+      });
+    }
     await finishAuth(data);
   };
 
@@ -163,7 +170,7 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
       meeting_role: isIssueCollect ? '问题填报人' : '参会代表',
       meeting_seat: isIssueCollect ? '问题收集端' : '移动端席位',
     }
-    : { username: isExternalMeetingEntry ? '' : 'admin', password: isExternalMeetingEntry ? '' : 'admin123' };
+    : { username: isExternalMeetingEntry ? '' : 'admin', password: '' };
 
   return (
     <div
@@ -329,10 +336,10 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
               </Title>
               <Text style={{ color: '#6b7280', lineHeight: isExternalMeetingEntry ? 1.55 : 1.75, fontSize: isExternalMeetingEntry ? 12 : undefined }}>
                 {isIssueCollect
-                  ? '登录或登记后填写问题，内容会回到秘书端议题池。'
+                  ? '登录或登记后填写事项，内容会回到秘书端议题池。'
                   : isMobileRecorder
-                    ? '登录或登记后进入录音。演示账号：liuqiang / 123456'
-                  : '默认账户：`admin / admin123`，体验账户：`zhangsan / 123456`'}
+                    ? '登录或登记后进入录音。已有参会身份请使用首次登记时设置的密码。'
+                  : '请输入你的账号与密码。首次使用请联系管理员开通账号。'}
               </Text>
             </div>
 

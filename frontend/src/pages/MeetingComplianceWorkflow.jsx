@@ -23,6 +23,7 @@ import {
   ShareAltOutlined,
   SignatureOutlined,
   SyncOutlined,
+  ThunderboltOutlined,
   UploadOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -495,7 +496,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [meetingDate, setMeetingDate] = useState(initialSearchParams.get('date') || createLocalDate());
   const [meetingTitle, setMeetingTitle] = useState(initialSearchParams.get('meeting') || '');
   const [meetingOrg, setMeetingOrg] = useState('普通企业会议');
+  const [meetingNo, setMeetingNo] = useState('');
   const [meetingMode, setMeetingMode] = useState(initialSearchParams.get('mode') === 'major' ? 'major' : 'normal');
+  const [showGovernance, setShowGovernance] = useState(false);
   const [agendaTitle, setAgendaTitle] = useState(initialSearchParams.get('agenda') || '');
   const [selectedIssueId, setSelectedIssueId] = useState('');
   const [selectedIssueIds, setSelectedIssueIds] = useState([]);
@@ -533,6 +536,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [remoteTranscripts, setRemoteTranscripts] = useState([]);
   const [transcriptUpdatedAt, setTranscriptUpdatedAt] = useState('');
   const [activeMeetingAgendaId, setActiveMeetingAgendaId] = useState('');
+  // 正式议题实体（后端 meeting_agendas 持久化，active_agenda_id 为唯一事实来源）
+  const [formalAgendas, setFormalAgendas] = useState([]);
+  const [formalActiveAgendaId, setFormalActiveAgendaId] = useState('');
   const [meetingAgendaMarkers, setMeetingAgendaMarkers] = useState({});
   const [agendaRealtimeChecks, setAgendaRealtimeChecks] = useState({});
   const [agendaRealtimeProvider, setAgendaRealtimeProvider] = useState('');
@@ -1463,6 +1469,60 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     setActiveStage(stageByPhase[normalized.phase] || 'meeting');
   };
 
+  // 正式议题（meeting_agendas）：拉取后端持久化的当前议题，刷新/多端重连后可恢复
+  const loadFormalAgendas = async (meetingId) => {
+    if (!meetingId) return;
+    try {
+      const data = await authFetchJson(`/api/meetings/${meetingId}/agendas`);
+      if (data?.success) {
+        setFormalAgendas(data.agendas || []);
+        setFormalActiveAgendaId(data.activeAgendaId || '');
+        if (data.activeAgendaId) setActiveMeetingAgendaId(data.activeAgendaId);
+      }
+    } catch {
+      // 后端未升级时静默降级为纯前端模式
+    }
+  };
+
+  // 切换当前议题：乐观更新 UI，同时向后端持久化 active_agenda_id
+  const persistActivateAgenda = async (agendaId) => {
+    if (!currentMeetingId || !agendaId) return;
+    setActiveMeetingAgendaId(agendaId);
+    try {
+      await authFetchJson(`/api/meetings/${currentMeetingId}/agendas/${agendaId}/activate`, { method: 'POST' });
+      setFormalActiveAgendaId(agendaId);
+      setAgendaTimerActive(true);
+      setAgendaTimerSeconds(0);
+    } catch {
+      // 网络失败时保留本地切换，下一次操作会重新同步
+    }
+  };
+
+  // 会中临时议题：立即持久化（agenda_type=temporary, source=in_meeting）
+  const quickCreateTemporaryAgenda = async () => {
+    if (!currentMeetingId) return;
+    const title = (window.prompt('请输入临时议题名称', '临时议题') || '').trim();
+    if (!title) return;
+    try {
+      const data = await authFetchJson(`/api/meetings/${currentMeetingId}/agendas`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title,
+          agendaType: 'temporary',
+          source: 'in_meeting',
+          confidentialityLevel: 'normal',
+        }),
+      });
+      if (data?.success) {
+        await loadFormalAgendas(currentMeetingId);
+        await persistActivateAgenda(data.agenda.id);
+        message.success('临时议题已创建并切换到当前议题');
+      }
+    } catch (err) {
+      message.warning(`创建临时议题失败：${err.message}`);
+    }
+  };
+
   const loadMeetings = async () => {
     setMeetingsLoading(true);
     try {
@@ -1484,6 +1544,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     try {
       const data = await authFetchJson(`/api/meetings/${meetingId}`);
       hydrateMeetingDetail(data.meeting);
+      await loadFormalAgendas(meetingId);
       return data.meeting;
     } catch (error) {
       if (!createIfMissing) {
@@ -2186,7 +2247,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'AI会议问题收集模板.xlsx';
+      link.download = 'AI会议事项收集模板.xlsx';
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -2307,6 +2368,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           agenda: meetingAgendaTitle,
           date: meetingDate,
           type: meetingOrg,
+          meetingNo,
           meetingMode,
           phase: '会前确认',
           issueSources: chatMessages,
@@ -2336,6 +2398,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           agenda: meetingAgendaTitle,
           date: meetingDate,
           type: meetingOrg,
+          meetingNo,
           meetingMode,
           creator: currentUserLabel,
           createdAt: createLocalTimestamp(),
@@ -2734,7 +2797,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 </Space>
                 <Title level={3} style={{ margin: 0, color: palette.ink }}>会议列表</Title>
                 <div style={{ marginTop: 7, color: palette.muted, fontSize: 13, lineHeight: 1.65 }}>
-                  先管理会议批次，再进入问题收集、AI 议题池和会中录音。列表保留创建时间、创建人和当前阶段，方便秘书回到草稿继续处理。
+                  从议题准备、多人录音、实时转写到决议签署与归档。普通会议与三重一大会议统一在此管理，按状态推进每一步。
                 </div>
               </div>
               <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} style={{ height: 44, fontWeight: 600 }}>
@@ -2753,15 +2816,17 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             ) : (
             <div style={{ display: 'grid', gap: 10 }}>
               {meetingRecords.map(record => (
-                <div key={record.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(320px,1fr) 150px 150px 120px 190px', gap: 12, alignItems: 'center', padding: 14, borderRadius: 12, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
+                <div key={record.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(320px,1fr) 150px 130px 120px 190px', gap: 12, alignItems: 'center', padding: 14, borderRadius: 12, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <Text strong style={{ color: palette.ink, fontSize: 15 }}>{record.title}</Text>
+                      <Tag color="blue" style={{ margin: 0 }}>{record.meetingType || '会议'}</Tag>
+                      {record.meetingMode === 'major' && <Tag color="gold" style={{ margin: 0 }}>三重一大</Tag>}
                       <Tag color={record.statusColor} style={{ margin: 0 }}>{record.phase}</Tag>
-                      {record.meetingMode === 'major' && <Tag color="red" style={{ margin: 0 }}>三重一大</Tag>}
                     </div>
                     <div style={{ marginTop: 6, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
-                      {record.project} · {record.agenda}
+                      {record.meetingNo ? <span style={{ color: palette.ink, fontWeight: 600 }}>{record.meetingNo}</span> : null}
+                      {record.meetingNo ? ' · ' : ''}{record.project} · {record.agenda}
                     </div>
                   </div>
                   <div>
@@ -2769,12 +2834,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{record.date}</div>
                   </div>
                   <div>
-                    <div style={{ color: palette.muted, fontSize: 12 }}>创建人</div>
-                    <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{record.creator}</div>
-                  </div>
-                  <div>
                     <div style={{ color: palette.muted, fontSize: 12 }}>议题数</div>
                     <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{record.issueCount} 个</div>
+                  </div>
+                  <div>
+                    <div style={{ color: palette.muted, fontSize: 12 }}>参会人数</div>
+                    <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{(record.participantCount ?? 0) > 0 ? `${record.participantCount} 人` : '—'}</div>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                     <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => openMeetingRecord(record)}>编辑</Button>
@@ -2832,18 +2897,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
         {/* 三栏主体 */}
         <div className="ref-create-layout" style={{ flex: 1, minHeight: 0 }}>
-          {/* ── Column 01：问题收集 ── */}
+          {/* ── Column 01：事项收集 ── */}
           <div className="ref-col">
             <div className="ref-col-head">
               <div className="ref-num-badge">01</div>
               <div>
-                <div className="ref-col-title">先收集碰到的问题</div>
-                <div className="ref-col-desc">从各部门收集问题，形成问题池</div>
+                <div className="ref-col-title">收集会议事项</div>
+                <div className="ref-col-desc">从各部门收集事项，整理进入议题池</div>
               </div>
             </div>
 
             <div className="ref-tabs">
-              <div className="ref-tab active">问题收集</div>
+              <div className="ref-tab active">事项收集</div>
               <div className="ref-tab">群聊 / 图片 / 单据</div>
             </div>
 
@@ -2878,7 +2943,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
             <div className="ref-info-box">
               <InfoCircleIcon />
-              <p>请将问题按模板填写或粘贴内容后提交。部门人员填写并提交后，问题将自动汇总到问题池中。</p>
+              <p>请将事项按模板填写或粘贴内容后提交。部门人员填写并提交后，事项将自动汇总到议题池中。</p>
             </div>
 
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'grid', gap: 9 }}>
@@ -2903,13 +2968,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           {/* 箭头 01→02 */}
           <div className="ref-arrow"><ArrowIcon /></div>
 
-          {/* ── Column 02：待生成开会待办 ── */}
+          {/* ── Column 02：议题准备 ── */}
           <div className="ref-col">
             <div className="ref-col-head">
               <div className="ref-num-badge">02</div>
               <div>
-                <div className="ref-col-title">待生成开会待办</div>
-                <div className="ref-col-desc">将选中问题生成会议议题</div>
+                <div className="ref-col-title">议题准备</div>
+                <div className="ref-col-desc">将收集事项整理为会议议题</div>
               </div>
             </div>
 
@@ -2918,11 +2983,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <>
                   <div style={{ color: '#3a4557', fontWeight: 600, fontSize: 16 }}>尚未生成议题</div>
                   <div style={{ marginTop: 10, color: '#949dab', fontSize: 13.5, lineHeight: 1.7, maxWidth: 280 }}>
-                    先在左侧收集问题，选择需要讨论的问题，<br />再生成会议待办议题。
+                    先在左侧收集事项，选择需要讨论的事项，<br />再生成会议议题。
                   </div>
                   <div className="ref-btn-ghost-disabled" style={{ cursor: chatMessages.length ? 'pointer' : 'not-allowed', opacity: chatMessages.length ? 1 : 0.6 }}
                     onClick={() => chatMessages.length && generateAgendaFromCollectedIssues()}>
-                    <RobotOutlined /> 生成开会待办
+                    <RobotOutlined /> 生成会议议题
                   </div>
                 </>
               )}
@@ -2940,7 +3005,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       <StatusPill color="processing">{ISSUE_IMPORT_STEPS[issueImportStatus.step]}</StatusPill>
                     </div>
                     <div style={{ marginTop: 7, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
-                      已收到《{issueImportStatus.fileName}》，正在读取问题、梳理开会待办、按会议性质生成候选项。请保持页面打开。
+                      已收到《{issueImportStatus.fileName}》，正在读取事项、梳理议题、按会议类型生成候选项。请保持页面打开。
                     </div>
                     <div className="meeting-ai-generating-track" style={{ marginTop: 12 }}>
                       <i style={{ width: `${Math.max(18, ((issueImportStatus.step + 1) / ISSUE_IMPORT_STEPS.length) * 100)}%` }} />
@@ -3006,7 +3071,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <div className="ref-green-check"><CheckIcon /></div>
                 <div>
                   <div className="ref-gb-title">已选择 <b>{plannedItems.length}</b> 个问题</div>
-                  <div className="ref-gb-sub">确认后将生成开会待办议题，系统会智能归类并优化表述，便于会议高效讨论。</div>
+                  <div className="ref-gb-sub">确认后将生成会议议题，系统会智能归类并优化表述，便于会议高效讨论。</div>
                 </div>
               </div>
             </div>
@@ -3029,7 +3094,16 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               <div className="ref-field">
                 <div className="ref-field-label">会议名称 <span className="ref-req">*</span></div>
                 <input className="ref-input" type="text" value={meetingTitle} onChange={e => setMeetingTitle(e.target.value)}
-                  placeholder="例如：高新区二期厂房消防改造专题会" autoFocus />
+                  placeholder="例如：2026年第12次总经理办公会" autoFocus />
+              </div>
+
+              <div className="ref-field">
+                <div className="ref-field-label">会议类型 <span className="ref-req">*</span></div>
+                <select className="ref-input" value={meetingOrg} onChange={e => setMeetingOrg(e.target.value)} style={{ appearance: 'auto', height: 38 }}>
+                  {['总经理办公会', '董事会', '股东会', '党委会', '党组会', '经营例会', '专题会', '项目会', '部门会议', '普通企业会议'].map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="ref-field-row">
@@ -3038,16 +3112,33 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   <input className="ref-input" type="date" value={meetingDate} onChange={e => setMeetingDate(e.target.value)} />
                 </div>
                 <div className="ref-field">
-                  <div className="ref-field-label">会议性质 <span className="ref-req">*</span></div>
-                  <div className="ref-radio-group">
-                    <div className={`ref-radio ${meetingMode === 'normal' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('normal')}>
-                      <span className="ref-radio-box" /> 普通
+                  <div className="ref-field-label">会议文号</div>
+                  <input className="ref-input" type="text" value={meetingNo} onChange={e => setMeetingNo(e.target.value)}
+                    placeholder="如：总经〔2026〕第12号" />
+                </div>
+              </div>
+
+              <div className="ref-field">
+                <div className="ref-field-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => setShowGovernance(v => !v)}>
+                  <span>会议治理模式</span>
+                  <span style={{ color: '#86909c', fontSize: 12, fontWeight: 400 }}>{showGovernance ? '收起' : '展开高级选项'} {meetingMode === 'major' ? '· 当前：三重一大' : ''}</span>
+                </div>
+                {showGovernance && (
+                  <div className="ref-radio-group" style={{ marginTop: 8, padding: 12, border: '1px solid #e5e6eb', borderRadius: 10, background: '#fafbfc' }}>
+                    <div style={{ color: '#4e5969', fontSize: 13, marginBottom: 8 }}>普通会议拥有完整会议能力；三重一大为重大事项会议启用增强合规检查。</div>
+                    <div className={`ref-radio ${meetingMode === 'normal' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('normal')} style={{ marginBottom: 6 }}>
+                      <span className="ref-radio-box" /> 普通会议（默认）
                     </div>
                     <div className={`ref-radio ${meetingMode === 'major' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('major')}>
-                      <span className="ref-radio-box" /> 三重一大
+                      <span className="ref-radio-box" /> 重大事项 / 三重一大
                     </div>
+                    {meetingMode === 'major' && (
+                      <div style={{ marginTop: 8, color: '#b25e09', fontSize: 12, lineHeight: 1.7, background: '#fff7e6', border: '1px solid #ffe7ba', borderRadius: 8, padding: '8px 10px' }}>
+                        启用后将展开：制度依据 · 材料完整性 · 决策程序 · 风险检查 · 合规审核
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
               </div>
 
               <div className="ref-subhead">
@@ -3078,7 +3169,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               ) : (
                 <div className="ref-empty-state">
                   <div className="ref-es-title">暂无议题</div>
-                  <div className="ref-es-sub">请先生成开会待办或手动添加议题</div>
+                  <div className="ref-es-sub">请先生成会议议题或手动添加议题</div>
                 </div>
               )}
 
@@ -3211,7 +3302,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     <StatusPill color={agendaFrozen ? 'green' : 'gold'}>{agendaFrozen ? '议程已冻结' : '议程待确认'}</StatusPill>
                   </Space>
                   <div style={{ marginTop: 9, color: palette.ink, fontWeight: 600, fontSize: 16 }}>当前议题：{agendaTitle}</div>
-                  <div style={{ marginTop: 5, color: palette.muted, fontSize: 12 }}>{meetingDate} · {isMajorMeeting ? '三重一大会议' : '普通会议'} · {projectName || '本次会议'}</div>
+                  <div style={{ marginTop: 5, color: palette.muted, fontSize: 12 }}>{meetingDate} · {isMajorMeeting ? '三重一大' : '普通会议'} · {projectName || '本次会议'}</div>
                   <div style={{ marginTop: 5, color: palette.muted, fontSize: 13 }}>{isMajorMeeting ? 'AI 正在实时转写、提炼阶段结论，并同步检查三重一大触发条件。' : 'AI 正在实时转写、提炼阶段结论，并对照会前待办生成纪实、纪要和决议。'}</div>
                 </div>
                 <MeetingAiPulse active={recording} />
@@ -4206,9 +4297,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   <StatusPill color="blue">{agendaCheckRows.length} 项</StatusPill>
                 </div>
                 {/* 会中议题编辑区 */}
-                <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => setAgendaEditModal({ open: true, mode: 'add', item: null })}>
                     添加议题
+                  </Button>
+                  <Button size="small" type="dashed" icon={<ThunderboltOutlined />} onClick={quickCreateTemporaryAgenda}>
+                    临时议题
                   </Button>
                   <Button size="small" icon={<EditOutlined />} onClick={() => setAgendaEditModal({ open: true, mode: 'list', item: null })}>
                     编辑议题
@@ -4234,7 +4328,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                         key={item.id}
                         type="button"
                         className={`agenda-timeline-row ${rowClass}`}
-                        onClick={() => setActiveMeetingAgendaId(item.id)}
+                        onClick={() => { setActiveMeetingAgendaId(item.id); persistActivateAgenda(item.id); }}
                       >
                         <span className="agenda-tl-node">{isResolved ? '✓' : index + 1}</span>
                         <div className="agenda-tl-body">
@@ -5433,13 +5527,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     <StatusPill color="green">议题已锁定</StatusPill>
                   </div>
                 ) : (
-                  <em>{isMajorMeeting ? '三重一大终审会' : '普通会议'} · 当前议题：{agendaDisplayTitle}</em>
+                  <em>当前议题：{agendaDisplayTitle}{isMajorMeeting ? ' · 本场启用三重一大治理' : ''}</em>
                 )}
               </div>
               {activeStage !== 'meeting' && (
                 <Space size={7} wrap className="meeting-compact-stage-tags">
                   <StatusPill color="blue">AI 会议</StatusPill>
-                  <StatusPill color={isMajorMeeting ? 'red' : 'green'}>{isMajorMeeting ? '三重一大会议' : '普通会议'}</StatusPill>
+                  <StatusPill color={isMajorMeeting ? 'gold' : 'green'}>{isMajorMeeting ? '三重一大' : '普通会议'}</StatusPill>
                   <StatusPill color="default">{meetingDate}</StatusPill>
                   <Button size="small" onClick={backToMeetingList}>返回会议列表</Button>
                 </Space>
