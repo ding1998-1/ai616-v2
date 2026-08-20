@@ -314,6 +314,25 @@ def _init_app_db():
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS user_roles (
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    granted_at TEXT NOT NULL DEFAULT '',
+                    granted_by TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (user_id, role)
+                );
+
+                CREATE TABLE IF NOT EXISTS agenda_acl (
+                    agenda_id TEXT NOT NULL,
+                    meeting_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT '',
+                    permission TEXT NOT NULL DEFAULT 'view',
+                    granted_at TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (agenda_id, user_id, permission)
+                );
                 """
             )
             # Migration: add meeting_mode column for databases created before 2026-06-15

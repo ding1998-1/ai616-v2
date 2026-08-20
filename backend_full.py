@@ -135,6 +135,11 @@ from backend.services.signature_service import (  # noqa: E402
     is_fully_signed, signed_signer_count, required_signer_count,
     compute_content_hash,
 )
+from backend.services.permission_service import (  # noqa: E402
+    get_user_roles, add_user_role, remove_user_role,
+    list_agenda_acl, grant_agenda_acl, revoke_agenda_acl,
+    filter_agendas_for_user, can_view_agenda,
+)
 # ═══ 模块化导入结束 ═════════════════════════════════════════════════════════════
 
 
@@ -2453,18 +2458,42 @@ def _can_manage_agenda(user: dict, meeting: dict) -> bool:
 
 @app.get("/api/meetings/{meeting_id}/agendas")
 async def list_agendas(request: Request, meeting_id: str):
-    """列出会议全部正式议题（含从 agendaDrafts 的兼容物化）。"""
+    """列出会议全部正式议题（含从 agendaDrafts 的兼容物化）。
+
+    保密议题在 API 层过滤（§57）：无权限用户只拿到脱敏占位，内容不下发。
+    """
     user = _get_request_user(request, required=True)
     safe_id = _safe_meeting_id(meeting_id)
-    _check_meeting_access(user, _load_meetings().get(safe_id) or {})
+    meeting = _load_meetings().get(safe_id) or {}
+    _check_meeting_access(user, meeting)
     agendas = list_meeting_agendas(safe_id)
+    agendas = filter_agendas_for_user(user, meeting, agendas)
     active = get_meeting_active_agenda(safe_id)
+    if active and not can_view_agenda(user, meeting, active):
+        active = None
     return JSONResponse({
         "success": True,
         "agendas": agendas,
         "activeAgendaId": (active or {}).get("id", ""),
         "activeAgenda": active,
     })
+
+
+@app.get("/api/meetings/{meeting_id}/agendas/{agenda_id}")
+async def get_agenda_detail(request: Request, meeting_id: str, agenda_id: str):
+    """获取单个议题详情（保密议题无权限时返回脱敏占位）。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id) or {}
+    _check_meeting_access(user, meeting)
+    agenda = get_meeting_agenda(safe_id, agenda_id)
+    if not agenda:
+        raise HTTPException(status_code=404, detail="议题不存在")
+    if not can_view_agenda(user, meeting, agenda):
+        agenda["title"] = "（保密议题）"
+        agenda["description"] = ""
+        agenda["restricted"] = True
+    return JSONResponse({"success": True, "agenda": agenda})
 
 
 @app.post("/api/meetings/{meeting_id}/agendas")
@@ -3100,6 +3129,82 @@ async def signature_hash_route(request: Request, meeting_id: str, body: MeetingS
         "success": True,
         "contentHash": compute_content_hash(safe_id, body.agendaId, body.targetId, body.version, body.content),
     })
+
+
+# ═══ 权限模型（§25-26 多角色；§57-59 保密议题 ACL）═══
+
+@app.get("/api/users/{user_id}/roles")
+async def list_user_roles_route(request: Request, user_id: str):
+    """用户全局角色列表。"""
+    _get_request_user(request, required=True)
+    return JSONResponse({"success": True, "roles": get_user_roles(user_id)})
+
+
+@app.post("/api/users/{user_id}/roles")
+async def add_user_role_route(request: Request, user_id: str):
+    """添加用户全局角色（admin 专属）。"""
+    _require_admin(request)
+    body = await request.json()
+    role = str(body.get("role", "")).strip()
+    try:
+        roles = add_user_role(user_id, role, granted_by=request.state.user.get("username") if hasattr(request.state, "user") else "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "roles": roles})
+
+
+@app.delete("/api/users/{user_id}/roles/{role}")
+async def remove_user_role_route(request: Request, user_id: str, role: str):
+    """移除用户全局角色（admin 专属）。"""
+    _require_admin(request)
+    remove_user_role(user_id, role)
+    return JSONResponse({"success": True, "roles": get_user_roles(user_id)})
+
+
+@app.get("/api/agendas/{agenda_id}/acl")
+async def list_agenda_acl_route(request: Request, agenda_id: str):
+    """议题访问控制列表。"""
+    _get_request_user(request, required=True)
+    return JSONResponse({"success": True, "acl": list_agenda_acl(agenda_id)})
+
+
+@app.post("/api/agendas/{agenda_id}/acl")
+async def grant_agenda_acl_route(request: Request, agenda_id: str):
+    """授予议题权限（view/edit/sign/admin），admin/主持人/秘书专属。"""
+    user = _get_request_user(request, required=True)
+    body = await request.json()
+    meeting_id = str(body.get("meetingId", ""))
+    target_user_id = str(body.get("userId", ""))
+    permission = str(body.get("permission", "view"))
+    if not target_user_id:
+        raise HTTPException(status_code=400, detail="缺少 userId")
+    meeting = _load_meetings().get(_safe_meeting_id(meeting_id)) or {}
+    if not _can_manage_agenda(user, meeting):
+        raise HTTPException(status_code=403, detail="仅管理员、主持人或会议秘书可以授予议题权限")
+    try:
+        acl = grant_agenda_acl(agenda_id, _safe_meeting_id(meeting_id), target_user_id, permission, granted_by=user.get("name") or user.get("username") or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "acl": acl})
+
+
+@app.delete("/api/agendas/{agenda_id}/acl/{user_id}/{permission}")
+async def revoke_agenda_acl_route(request: Request, agenda_id: str, user_id: str, permission: str):
+    """撤销议题权限。"""
+    user = _get_request_user(request, required=True)
+    meeting = _load_meetings().get("") or {}
+    # 权限校验：通过查询该议题所属会议判断治理者身份
+    from backend.services.agenda_service import get_meeting_agenda
+    target = None
+    for mid, m in _load_meetings().items():
+        ag = get_meeting_agenda(mid, agenda_id)
+        if ag:
+            target = m
+            break
+    if not _can_manage_agenda(user, target or {}):
+        raise HTTPException(status_code=403, detail="仅管理员、主持人或会议秘书可以撤销议题权限")
+    revoke_agenda_acl(agenda_id, user_id, permission)
+    return JSONResponse({"success": True})
 
 
 @app.get("/api/meetings/{meeting_id}/materials")
