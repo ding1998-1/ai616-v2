@@ -413,7 +413,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const audioChunksRef = useRef([]);
   const chunkIndexRef = useRef(0); // 流式上传 chunk 序号
   // P0-3 / V2: client_id — 设备级唯一 ID，持久化到 localStorage（刷新/断线重连不变，幂等可用）
-  const clientIdRef = useRef(() => {
+  const clientIdRef = useRef((() => {
     try {
       const existing = localStorage.getItem('ai616_recorder_client_id');
       if (existing) return existing;
@@ -423,7 +423,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     } catch (_) {
       return `phone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     }
-  }());
+  })());
   const recordingStartTimeRef = useRef(null); // 录音开始时间，用于 Whisper 时间戳对齐
   const recordingRef = useRef(false);
   const asrConfidenceRef = useRef(null);
