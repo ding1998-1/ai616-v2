@@ -1,9 +1,33 @@
-from sentence_transformers import SentenceTransformer, util
-import torch
+try:
+    from sentence_transformers import SentenceTransformer, util
+    import torch
+except Exception:  # 可选依赖：无 sentence_transformers/torch 环境下降级（与 backend_full 同类模式）
+    SentenceTransformer = None
+    util = None
+    torch = None
 from typing import List, Dict, Tuple
 from legal_case_db import LegalCase, LegalCaseDatabase
 
-class CaseSimilarityMatcher:
+if SentenceTransformer is None:
+    class _UnavailableCaseSimilarityMatcher:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("法务相似度比对不可用：缺少 sentence_transformers/torch 依赖")
+
+        def find_similar_cases(self, *a, **k):
+            raise RuntimeError("法务相似度比对不可用：缺少 sentence_transformers/torch 依赖")
+
+        def calculate_win_rate(self, *a, **k):
+            raise RuntimeError("法务相似度比对不可用：缺少 sentence_transformers/torch 依赖")
+
+        def analyze_case_risk(self, *a, **k):
+            raise RuntimeError("法务相似度比对不可用：缺少 sentence_transformers/torch 依赖")
+
+        def get_case_comparison_details(self, *a, **k):
+            raise RuntimeError("法务相似度比对不可用：缺少 sentence_transformers/torch 依赖")
+
+    CaseSimilarityMatcher = _UnavailableCaseSimilarityMatcher
+else:
+    class CaseSimilarityMatcher:
     def __init__(self, model_name: str = 'paraphrase-multilingual-mpnet-base-v2'):
         self.model = SentenceTransformer(model_name)
         self.case_db = LegalCaseDatabase()
