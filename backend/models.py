@@ -74,6 +74,9 @@ class MeetingTranscriptChunkRequest(BaseModel):
     speaker_dept: Optional[str] = None
     speaker_confidence: Optional[float] = None
     identified_by: Optional[str] = None  # "manual" / "voiceprint-realtime" / "voiceprint-diarization"
+    agenda_id: Optional[str] = None       # 议题 ID（未传时后端用 meeting.active_agenda_id）
+    audio_client_id: Optional[str] = None # 设备级录音客户端 ID
+    participant_id: Optional[str] = None  # meeting_participants.row_id
 
 
 class MeetingRecorderSessionRequest(BaseModel):
@@ -110,6 +113,7 @@ class MeetingUpsertRequest(BaseModel):
     agenda: str = ""
     date: str = ""
     type: str = "普通企业会议"
+    meetingNo: str = ""
     meetingMode: str = "normal"
     meeting_mode: str = ""
     phase: str = "问题收集中"
@@ -128,6 +132,7 @@ class MeetingPatchRequest(BaseModel):
     agenda: Optional[str] = None
     date: Optional[str] = None
     type: Optional[str] = None
+    meetingNo: Optional[str] = None
     meetingMode: Optional[str] = None
     meeting_mode: Optional[str] = None
     phase: Optional[str] = None
@@ -196,3 +201,28 @@ class ChatRequest(BaseModel):
     material_text: str = ""
     custom_rule_ids: Optional[List[str]] = None
     file_name: str = ""
+
+
+class AgendaCreateRequest(BaseModel):
+    """正式议题创建（含会中临时议题）"""
+    title: str
+    description: str = ""
+    agendaType: str = "standard"       # standard | temporary
+    source: str = "prepared"           # prepared | in_meeting
+    confidentialityLevel: str = "normal"  # normal | internal | confidential | secret
+    permissionLevel: str = ""
+    proposerUserId: str = ""
+    ownerUserId: str = ""
+
+
+class AgendaPatchRequest(BaseModel):
+    """正式议题字段级更新"""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    agendaType: Optional[str] = None
+    confidentialityLevel: Optional[str] = None
+    permissionLevel: Optional[str] = None
+    proposerUserId: Optional[str] = None
+    ownerUserId: Optional[str] = None
+    status: Optional[str] = None
+    sortOrder: Optional[int] = None

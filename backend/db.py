@@ -133,7 +133,8 @@ def _init_app_db():
                     agenda_frozen INTEGER NOT NULL DEFAULT 0,
                     review_done INTEGER NOT NULL DEFAULT 0,
                     archive_done INTEGER NOT NULL DEFAULT 0,
-                    generated_records_json TEXT NOT NULL DEFAULT ''
+                    generated_records_json TEXT NOT NULL DEFAULT '',
+                    meeting_no TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS meeting_issue_sources (
@@ -220,6 +221,46 @@ def _init_app_db():
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS meeting_agendas (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    agenda_no INTEGER NOT NULL DEFAULT 0,
+                    title TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    agenda_type TEXT NOT NULL DEFAULT 'standard',
+                    source TEXT NOT NULL DEFAULT 'prepared',
+                    confidentiality_level TEXT NOT NULL DEFAULT 'normal',
+                    permission_level TEXT NOT NULL DEFAULT '',
+                    proposer_user_id TEXT NOT NULL DEFAULT '',
+                    owner_user_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL DEFAULT '',
+                    ended_at TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS meeting_audio_clients (
+                    client_id TEXT NOT NULL,
+                    meeting_id TEXT NOT NULL,
+                    participant_row_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT NOT NULL DEFAULT '',
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    device_type TEXT NOT NULL DEFAULT 'mobile',
+                    device_label TEXT NOT NULL DEFAULT '手机麦克风',
+                    firmware_version TEXT NOT NULL DEFAULT '',
+                    transport TEXT NOT NULL DEFAULT 'web-mobile',
+                    first_seen_at TEXT NOT NULL DEFAULT '',
+                    last_seen_at TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (client_id, meeting_id)
+                );
                 """
             )
             # Migration: add meeting_mode column for databases created before 2026-06-15
@@ -233,6 +274,10 @@ def _init_app_db():
                 conn.execute("ALTER TABLE meetings ADD COLUMN agenda_duration_minutes INTEGER NOT NULL DEFAULT 15")
             if "generated_records_json" not in cols:
                 conn.execute("ALTER TABLE meetings ADD COLUMN generated_records_json TEXT NOT NULL DEFAULT ''")
+            if "meeting_no" not in cols:
+                conn.execute("ALTER TABLE meetings ADD COLUMN meeting_no TEXT NOT NULL DEFAULT ''")
+            if "active_agenda_id" not in cols:
+                conn.execute("ALTER TABLE meetings ADD COLUMN active_agenda_id TEXT NOT NULL DEFAULT ''")
             # notifications table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS notifications (
@@ -256,6 +301,15 @@ def _init_app_db():
                 conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN signature_data TEXT NOT NULL DEFAULT ''")
             if "corrected_transcript" not in t_cols:
                 conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN corrected_transcript TEXT NOT NULL DEFAULT ''")
+            # Migration: agenda/participant binding on meeting_transcripts (2026-08-20)
+            if "agenda_id" not in t_cols:
+                conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN agenda_id TEXT NOT NULL DEFAULT ''")
+            if "speaker_user_id" not in t_cols:
+                conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN speaker_user_id TEXT NOT NULL DEFAULT ''")
+            if "participant_id" not in t_cols:
+                conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN participant_id TEXT NOT NULL DEFAULT ''")
+            if "audio_client_id" not in t_cols:
+                conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN audio_client_id TEXT NOT NULL DEFAULT ''")
             # meeting_todos table (2026-07-10)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS meeting_todos (
@@ -372,7 +426,9 @@ def _meeting_from_row(row: sqlite3.Row) -> dict:
         "agenda": row["agenda"],
         "date": row["meeting_date"],
         "type": row["meeting_type"],
+        "meetingNo": row["meeting_no"] if "meeting_no" in row.keys() else "",
         "meetingMode": row["meeting_mode"],
+        "activeAgendaId": row["active_agenda_id"] if "active_agenda_id" in row.keys() else "",
         "creator": row["creator"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -412,6 +468,17 @@ def _db_fetch_meetings(include_details: bool = True) -> dict:
         meetings = {row["id"]: _meeting_from_row(row) for row in rows}
         if not include_details or not meetings:
             return meetings
+
+        # 参会人数：以 meeting_participants 为真实来源（预留表，未写入时返回 0）
+        try:
+            for row in conn.execute(
+                "SELECT meeting_id, COUNT(*) AS c FROM meeting_participants GROUP BY meeting_id"
+            ).fetchall():
+                meeting = meetings.get(row["meeting_id"])
+                if meeting:
+                    meeting["participantCount"] = int(row["c"])
+        except Exception:
+            pass
 
         for row in conn.execute("SELECT * FROM meeting_issue_sources ORDER BY sort_order, server_time, id").fetchall():
             meeting = meetings.get(row["meeting_id"])
@@ -527,8 +594,8 @@ def _db_insert_meeting_rows(conn, meeting: dict):
             id, title, project, project_code, agenda, meeting_date, meeting_type,
             meeting_mode, creator, created_at, updated_at, phase, archived,
             project_bound, agenda_frozen, review_done, archive_done,
-            generated_records_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            generated_records_json, meeting_no, active_agenda_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             normalized.get("id"),
@@ -549,6 +616,8 @@ def _db_insert_meeting_rows(conn, meeting: dict):
             int(bool(normalized.get("reviewDone", False))),
             int(bool(normalized.get("archiveDone", False))),
             _json_dumps(normalized.get("generatedRecords", {})),
+            normalized.get("meetingNo", ""),
+            normalized.get("activeAgendaId", ""),
         ),
     )
     _db_insert_issue_sources(conn, normalized)
@@ -833,8 +902,9 @@ def _db_insert_transcript_row(conn, record: dict, meeting_id: str, meeting: dict
             speaker_dept, seat, username, transcript, is_final, client_time,
             server_time, confidence, source, payload_json,
             correction_signed, correction_signed_at, signature_data, corrected_transcript,
-            speaker_confidence, identified_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            speaker_confidence, identified_by,
+            agenda_id, speaker_user_id, participant_id, audio_client_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.get("id") or f"tr_{uuid.uuid4().hex[:12]}",
@@ -859,6 +929,10 @@ def _db_insert_transcript_row(conn, record: dict, meeting_id: str, meeting: dict
             record.get("correctedTranscript") or "",
             float(record.get("speakerConfidence", 0) or 0),
             record.get("identifiedBy") or "manual",
+            record.get("agendaId") or "",
+            record.get("speakerUserId") or "",
+            record.get("participantId") or "",
+            record.get("audioClientId") or "",
         ),
     )
 
@@ -899,6 +973,68 @@ def _db_upsert_transcript(record: dict):
                 )
             else:
                 _db_insert_transcript_row(conn, record, record.get("meetingId", ""), record)
+
+
+def _db_upsert_audio_client(meeting_id: str, client_id: str, user: dict, extra: dict = None):
+    """注册/更新录音客户端（meeting_audio_clients），每人每设备一条。
+
+    Args:
+        meeting_id: 会议 ID
+        client_id: 前端生成的设备级唯一 ID（persisted，跨刷新不变）
+        user: 用户字典（参与者身份）
+        extra: 可选的 device_type/device_label/firmware_version/transport 等
+    """
+    _init_app_db()
+    if not client_id:
+        return None
+    extra = extra or {}
+    now = _now_text()
+    display = user.get("name") or user.get("username") or "参会人"
+    row_id = f"p_{meeting_id[:20]}_{(user.get('id') or 'x')[-16:]}"
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO meeting_audio_clients (
+                    client_id, meeting_id, participant_row_id, user_id, username,
+                    display_name, device_type, device_label, firmware_version,
+                    transport, first_seen_at, last_seen_at, status, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(client_id, meeting_id) DO UPDATE SET
+                    user_id = excluded.user_id, username = excluded.username,
+                    display_name = excluded.display_name,
+                    device_type = excluded.device_type, device_label = excluded.device_label,
+                    firmware_version = excluded.firmware_version, transport = excluded.transport,
+                    last_seen_at = excluded.last_seen_at, status = excluded.status,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    client_id, meeting_id, row_id,
+                    user.get("id", ""), user.get("username", ""), display,
+                    extra.get("device_type", "mobile"),
+                    extra.get("device_label", "手机麦克风"),
+                    extra.get("firmware_version", ""),
+                    extra.get("transport", "web-mobile"),
+                    now, now, "active", _json_dumps(extra or {}),
+                ),
+            )
+    return {"clientId": client_id, "meetingId": meeting_id, "displayName": display}
+
+
+def _db_find_participant_row(meeting_id: str, user_id: str) -> str:
+    """按 meeting_id + user_id 查询 meeting_participants 的 row_id（幂等读取）。"""
+    _init_app_db()
+    if not user_id:
+        return ""
+    try:
+        with _db_connect() as conn:
+            row = conn.execute(
+                "SELECT row_id FROM meeting_participants WHERE meeting_id = ? AND user_id = ? ORDER BY last_seen_at DESC LIMIT 1",
+                (meeting_id, user_id),
+            ).fetchone()
+            return row["row_id"] if row else ""
+    except Exception:
+        return ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
@@ -1355,13 +1491,16 @@ def _public_meeting(meeting: dict, include_detail: bool = False) -> dict:
         "agenda": normalized.get("agenda", ""),
         "date": normalized.get("date", ""),
         "type": normalized.get("type", "普通企业会议"),
+        "meetingNo": normalized.get("meetingNo", ""),
         "meetingMode": normalized.get("meetingMode", "normal"),
+        "activeAgendaId": normalized.get("activeAgendaId", ""),
         "creator": normalized.get("creator", ""),
         "createdAt": normalized.get("createdAt", ""),
         "updatedAt": normalized.get("updatedAt", ""),
         "phase": normalized.get("phase", "问题收集中"),
         "statusColor": normalized.get("statusColor", "default"),
         "issueCount": normalized.get("issueCount", 0),
+        "participantCount": normalized.get("participantCount", 0),
         "projectBound": normalized.get("projectBound", False),
         "agendaFrozen": normalized.get("agendaFrozen", False),
         "reviewDone": normalized.get("reviewDone", False),

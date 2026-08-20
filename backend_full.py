@@ -121,6 +121,11 @@ from backend.deps import (  # noqa: E402
     _append_meeting_activity_light,
     _save_departments, _load_departments,
 )
+from backend.services.agenda_service import (  # noqa: E402
+    list_meeting_agendas, get_meeting_agenda, get_meeting_active_agenda,
+    create_meeting_agenda, update_meeting_agenda, delete_meeting_agenda,
+    activate_meeting_agenda,
+)
 # ═══ 模块化导入结束 ═════════════════════════════════════════════════════════════
 
 
@@ -2422,6 +2427,119 @@ async def patch_meeting(request: Request, meeting_id: str, body: MeetingPatchReq
     return JSONResponse({"success": True, "meeting": _public_meeting(meeting, include_detail=True)})
 
 
+# ═══ 正式议题（meeting_agendas）—— 议题为最小业务单元 ═══
+
+def _can_manage_agenda(user: dict, meeting: dict) -> bool:
+    """agenda:activate / agenda:create_temporary —— admin、主持人、会议秘书。"""
+    if not user:
+        return False
+    if user.get("role") == "admin":
+        return True
+    creator = meeting.get("creator") or ""
+    if creator and (user.get("name") in creator or creator in (user.get("name") or "")):
+        return True
+    mr = (user.get("meetingRole") or user.get("role") or "").strip()
+    return mr in {"主持人", "会议秘书", "秘书", "host", "secretary"}
+
+
+@app.get("/api/meetings/{meeting_id}/agendas")
+async def list_agendas(request: Request, meeting_id: str):
+    """列出会议全部正式议题（含从 agendaDrafts 的兼容物化）。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    _check_meeting_access(user, _load_meetings().get(safe_id) or {})
+    agendas = list_meeting_agendas(safe_id)
+    active = get_meeting_active_agenda(safe_id)
+    return JSONResponse({
+        "success": True,
+        "agendas": agendas,
+        "activeAgendaId": (active or {}).get("id", ""),
+        "activeAgenda": active,
+    })
+
+
+@app.post("/api/meetings/{meeting_id}/agendas")
+async def create_agenda(request: Request, meeting_id: str, body: AgendaCreateRequest):
+    """新增议题；会中临时议题 agendaType=temporary 立即持久化。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
+    if body.agendaType == "temporary" and not _can_manage_agenda(user, meeting):
+        raise HTTPException(status_code=403, detail="仅主持人或会议秘书可以创建临时议题")
+    try:
+        agenda = create_meeting_agenda(
+            safe_id, body.title, body.description,
+            agenda_type=body.agendaType or "standard",
+            source=body.source or ("in_meeting" if body.agendaType == "temporary" else "prepared"),
+            confidentiality_level=body.confidentialityLevel or "normal",
+            permission_level=body.permissionLevel,
+            proposer_user_id=body.proposerUserId,
+            owner_user_id=body.ownerUserId,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _append_meeting_activity_light(safe_id, {"type": "agenda.created", "payload": {"agendaId": agenda["id"], "title": agenda["title"]}})
+    return JSONResponse({"success": True, "agenda": agenda})
+
+
+@app.patch("/api/meetings/{meeting_id}/agendas/{agenda_id}")
+async def patch_agenda(request: Request, meeting_id: str, agenda_id: str, body: AgendaPatchRequest):
+    """字段级更新议题（主持人/秘书/管理员）。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
+    if not _can_manage_agenda(user, meeting):
+        raise HTTPException(status_code=403, detail="仅主持人或会议秘书可以修改议题")
+    try:
+        agenda = update_meeting_agenda(safe_id, agenda_id, body.dict(exclude_unset=True))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="议题不存在")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"success": True, "agenda": agenda})
+
+
+@app.delete("/api/meetings/{meeting_id}/agendas/{agenda_id}")
+async def remove_agenda(request: Request, meeting_id: str, agenda_id: str):
+    """删除议题（主持人/秘书/管理员）。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
+    if not _can_manage_agenda(user, meeting):
+        raise HTTPException(status_code=403, detail="仅主持人或会议秘书可以删除议题")
+    delete_meeting_agenda(safe_id, agenda_id)
+    _append_meeting_activity_light(safe_id, {"type": "agenda.deleted", "payload": {"agendaId": agenda_id}})
+    return JSONResponse({"success": True})
+
+
+@app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/activate")
+async def activate_agenda(request: Request, meeting_id: str, agenda_id: str):
+    """切换当前议题：结束旧议题 → 新议题 started_at → active_agenda_id 持久化。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
+    if not _can_manage_agenda(user, meeting):
+        raise HTTPException(status_code=403, detail="仅主持人或会议秘书可以切换议题")
+    try:
+        agenda = activate_meeting_agenda(safe_id, agenda_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="议题不存在")
+    _append_meeting_activity_light(safe_id, {"type": "agenda.activated", "payload": {"agendaId": agenda_id, "previous": agenda.get("previousAgendaId")}})
+    return JSONResponse({"success": True, "agenda": agenda})
+
+
 @app.post("/api/meetings/{meeting_id}/issues")
 async def append_meeting_issue(request: Request, meeting_id: str, body: MeetingIssueRequest):
     user = _get_request_user(request, required=True)
@@ -3921,6 +4039,19 @@ async def meeting_recorder_session(request: Request, body: MeetingRecorderSessio
     user = _get_request_user(request, required=True)
     role = _resolve_meeting_role(user)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ── 录音客户端注册（user → meeting_participant → audio_client 链）──
+    client_id = (body.device_id or "").strip()
+    if client_id and body.action in ("start", "join", "resume"):
+        try:
+            from backend.db import _db_upsert_audio_client
+            _db_upsert_audio_client(_safe_meeting_id(body.meeting_id), client_id, user, {
+                "device_type": body.device_type or "mobile",
+                "device_label": body.device_label or "手机麦克风",
+                "firmware_version": body.firmware_version or "",
+                "transport": body.transport or "web-mobile",
+            })
+        except Exception:
+            pass
     event = {
         "id": f"session_{uuid.uuid4().hex[:12]}",
         "type": "session",
@@ -4278,6 +4409,22 @@ async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscrip
     speaker_role = getattr(body, "speaker_role", None) or role["meetingRole"]
     speaker_dept = getattr(body, "speaker_dept", None) or role["dept"]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ── 议题绑定：优先客户端显式 agenda_id，否则取后端持久化的 active_agenda_id（§32 手机不选议题）──
+    active_agenda_id = ""
+    try:
+        _m = _load_meetings().get(safe_id) or {}
+        active_agenda_id = _m.get("activeAgendaId") or ""
+    except Exception:
+        pass
+    agenda_id = getattr(body, "agenda_id", None) or active_agenda_id or ""
+    participant_id = getattr(body, "participant_id", None) or ""
+    audio_client_id = getattr(body, "audio_client_id", None) or ""
+    if not participant_id:
+        try:
+            from backend.db import _db_find_participant_row
+            participant_id = _db_find_participant_row(safe_id, role.get("userId") or "")
+        except Exception:
+            pass
     record = {
         "id": f"tr_{uuid.uuid4().hex[:12]}",
         "meetingId": body.meeting_id,
@@ -4296,7 +4443,20 @@ async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscrip
         "source": "mobile-recorder",
         "speakerConfidence": body.speaker_confidence or 0,
         "identifiedBy": body.identified_by or "manual",
+        "agendaId": agenda_id,
+        "speakerUserId": role.get("userId") or "",
+        "participantId": participant_id,
+        "audioClientId": audio_client_id,
     }
+    # 客户端心跳：更新 meeting_audio_clients 的 last_seen_at
+    if audio_client_id:
+        try:
+            from backend.db import _db_upsert_audio_client
+            _db_upsert_audio_client(safe_id, audio_client_id, user, {
+                "device_type": "mobile", "transport": "transcript-push",
+            })
+        except Exception:
+            pass
     # 去重：仅查询近 30 秒内的转写（避免大会议全量加载）
     cutoff = (datetime.now() - timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
     try:

@@ -179,6 +179,7 @@ def _build_meeting_from_request(body: MeetingUpsertRequest, user: dict, existing
         "project": project, "projectCode": project_code, "agenda": agenda,
         "date": body.date or (existing or {}).get("date") or _today_text(),
         "type": body.type or (existing or {}).get("type") or "普通企业会议",
+        "meetingNo": raw_body.get("meetingNo") or (existing or {}).get("meetingNo") or "",
         "meetingMode": meeting_mode if meeting_mode in {"normal", "major"} else "normal",
         "creator": body.creator or (existing or {}).get("creator") or _creator_from_user(user),
         "createdAt": (existing or {}).get("createdAt") or now,

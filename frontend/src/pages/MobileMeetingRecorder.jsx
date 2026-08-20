@@ -412,8 +412,18 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const audioProcessorRef = useRef(null);
   const audioChunksRef = useRef([]);
   const chunkIndexRef = useRef(0); // 流式上传 chunk 序号
-  // P0-3: client_id — 每次录音会话唯一，用于幂等判断
-  const clientIdRef = useRef(`phone-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
+  // P0-3 / V2: client_id — 设备级唯一 ID，持久化到 localStorage（刷新/断线重连不变，幂等可用）
+  const clientIdRef = useRef(() => {
+    try {
+      const existing = localStorage.getItem('ai616_recorder_client_id');
+      if (existing) return existing;
+      const created = `phone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      localStorage.setItem('ai616_recorder_client_id', created);
+      return created;
+    } catch (_) {
+      return `phone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+  }());
   const recordingStartTimeRef = useRef(null); // 录音开始时间，用于 Whisper 时间戳对齐
   const recordingRef = useRef(false);
   const asrConfidenceRef = useRef(null);
@@ -900,6 +910,9 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           transcript: cleanText,
           is_final: isFinal,
           client_time: optimisticLine.time,
+          // V2: 绑定音频客户端与参会人（议题由后端按 active_agenda_id 归属）
+          audio_client_id: clientIdRef.current,
+          ...(currentUser?.id ? { participant_id: currentUser.id } : {}),
           ...(confidence !== undefined ? { confidence } : {}),
           ...speakerOverride,
           ...voiceprintFields,
@@ -1134,6 +1147,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         meetingId,
         meetingTitle,
         agenda,
+        // V2: 手机只声明参会人与音频客户端；议题由后端 active_agenda_id 归属
+        ...(currentUser?.id ? { participant_id: currentUser.id } : {}),
+        ...(currentUser?.username ? { participant_username: currentUser.username } : {}),
+        audio_client_id: clientIdRef.current,
         ...(isReconnect ? { resume: '1' } : {}),
       });
       // WebSocket 直连后端（绕过不支持 WS 的外部代理）
