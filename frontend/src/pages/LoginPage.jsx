@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Card, Form, Input, Segmented, Space, Tag, Typography, message } from 'antd';
-import { IdcardOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Checkbox, Form, Input, Segmented, Space, Tag, Typography, message } from 'antd';
+import { CheckSquareOutlined, DatabaseOutlined, EditOutlined, IdcardOutlined, LockOutlined, MessageOutlined, MobileOutlined, SafetyCertificateOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { setStoredToken } from '../lib/auth';
 
 const { Title, Text } = Typography;
@@ -12,6 +12,16 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
   const [loading, setLoading] = useState(false);
   const [launchPhase, setLaunchPhase] = useState('idle');
   const [error, setError] = useState('');
+  const [rememberAccount, setRememberAccount] = useState(() => {
+    try { return window.localStorage.getItem('ai616_remember_account') === '1'; } catch (_) { return false; }
+  });
+  const [savedAccount] = useState(() => {
+    try {
+      return window.localStorage.getItem('ai616_remember_account') === '1'
+        ? (window.localStorage.getItem('ai616_login_username') || 'admin')
+        : 'admin';
+    } catch (_) { return 'admin'; }
+  });
   const [authMode, setAuthMode] = useState(isExternalMeetingEntry ? 'register' : 'login');
   const shellRef = useRef(null);
   const rafRef = useRef(null);
@@ -95,6 +105,15 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
       }
       throw new Error(errMsg);
     }
+    try {
+      if (rememberAccount) {
+        window.localStorage.setItem('ai616_login_username', values.username);
+        window.localStorage.setItem('ai616_remember_account', '1');
+      } else {
+        window.localStorage.removeItem('ai616_login_username');
+        window.localStorage.removeItem('ai616_remember_account');
+      }
+    } catch (_) {}
     await finishAuth(data);
   };
 
@@ -170,7 +189,7 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
       meeting_role: isIssueCollect ? '问题填报人' : '参会代表',
       meeting_seat: isIssueCollect ? '问题收集端' : '移动端席位',
     }
-    : { username: isExternalMeetingEntry ? '' : 'admin', password: '' };
+    : { username: isExternalMeetingEntry ? '' : savedAccount, password: '' };
 
   return (
     <div
@@ -224,8 +243,8 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
           }}
         >
           <div className={isExiting ? 'login-copy-panel is-exiting' : 'login-copy-panel'} style={{ padding: isExternalMeetingEntry ? '0 4px 2px' : '18px 12px 18px 8px' }}>
-            <Tag
-              bordered={false}
+            {isExternalMeetingEntry && <Tag
+              variant="filled"
               style={{
                 borderRadius: 999,
                 padding: '7px 12px',
@@ -236,9 +255,15 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
                 boxShadow: '0 8px 18px rgba(15,23,42,0.06)',
               }}
             >
-              {isIssueCollect ? '问题收集入口' : isMobileRecorder ? '会议录音入口' : 'Secure Internal Workspace'}
-            </Tag>
-            {!isMobileRecorder && <div
+              {isIssueCollect ? '问题收集入口' : isMobileRecorder ? '会议录音入口' : 'AI MEETING WORKSPACE'}
+            </Tag>}
+            {!isExternalMeetingEntry && (
+              <div className="login-brand-lockup">
+                <span><SafetyCertificateOutlined /></span>
+                <strong>AI 会议工作空间</strong>
+              </div>
+            )}
+            {isExternalMeetingEntry && !isMobileRecorder && <div
               style={{
                 width: 56,
                 height: 56,
@@ -270,9 +295,9 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
                 meetingTitle
               ) : (
                 <>
-                  合规系统
+                  AI 会议
                   <br />
-                  更安静地工作。
+                  从议题，到共识。
                 </>
               )}
             </Title>
@@ -288,32 +313,26 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
             >
               {isExternalMeetingEntry
                 ? `${meetingDate} · ${projectName} · ${agenda}`
-                : '登录后进入“三重一大”审查、合同比对、规则管理与知识联动工作台。背景会轻微跟随鼠标变化，但不会干扰表单操作。'}
+                : '把会前准备、现场讨论、决议签署和历史追溯放进一条清晰的工作流。普通会议直接开始，重大事项按需启用治理检查。'}
             </Text>
 
-            {!isMobileRecorder && <Space wrap size={10} style={{ marginTop: 26 }}>
-              {(isMobileRecorder ? ['账号实名', '角色绑定', '录音转写', '留痕归档'] : ['三重一大', '合同审查', '规则 PDF', '知识联动']).map((item) => (
-                <Tag
-                  key={item}
-                  bordered={false}
-                  style={{
-                    borderRadius: 999,
-                    padding: '8px 12px',
-                    background: 'rgba(255,255,255,0.62)',
-                    color: '#334155',
-                    boxShadow: 'inset 0 0 0 1px rgba(148,163,184,0.14)',
-                    backdropFilter: 'blur(10px)',
-                  }}
-                >
-                  {item}
-                </Tag>
-              ))}
-            </Space>}
+            {!isExternalMeetingEntry && (
+              <div className="login-capability-grid">
+                {[
+                  [<MessageOutlined />, '议题管理', '结构化议题收集与分级'],
+                  [<EditOutlined />, '实时记录', 'AI 转写与要点实时提炼'],
+                  [<CheckSquareOutlined />, '决议追踪', '任务分配与进度自动追踪'],
+                  [<DatabaseOutlined />, '知识沉淀', '会议资料归档与智能检索'],
+                ].map(([icon, title, desc]) => (
+                  <div key={title} className="login-capability-item"><span>{icon}</span><strong>{title}</strong><small>{desc}</small></div>
+                ))}
+              </div>
+            )}
           </div>
 
           <Card
             className={isExiting ? 'login-form-card is-exiting' : 'login-form-card'}
-            bordered={false}
+            variant="borderless"
             style={{
               borderRadius: isExternalMeetingEntry ? 18 : 30,
               background: 'linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.72))',
@@ -329,7 +348,7 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
 
             <div style={{ marginBottom: isExternalMeetingEntry ? 12 : 22, position: 'relative', zIndex: 1 }}>
               <Text style={{ display: 'block', color: '#94a3b8', fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
-                {isIssueCollect ? 'Issue Collect Sign In' : isMobileRecorder ? 'Recorder Sign In' : 'Sign In'}
+                {isIssueCollect ? 'Issue Collect Sign In' : isMobileRecorder ? 'Recorder Sign In' : 'WELCOME BACK'}
               </Text>
               <Title level={3} style={{ margin: 0, color: '#111827', letterSpacing: '-0.03em', fontWeight: 650 }}>
                 {isIssueCollect ? '进入问题填报' : isMobileRecorder ? '进入会议录音' : '登录'}
@@ -467,6 +486,15 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
                 />
               </Form.Item>
 
+              {!isExternalMeetingEntry && (
+                <div className="login-account-options">
+                  <Checkbox checked={rememberAccount} onChange={event => setRememberAccount(event.target.checked)}>
+                    记住账号
+                  </Checkbox>
+                  <button type="button" className="login-forgot-link" onClick={() => message.info('请联系系统管理员重置密码')}>忘记密码？</button>
+                </div>
+              )}
+
               <Button
                 htmlType="submit"
                 type="primary"
@@ -480,9 +508,9 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
                   minWidth: isAnimatingButton ? 56 : '100%',
                   borderRadius: isAnimatingButton ? 999 : 16,
                   marginTop: 8,
-                  background: '#111827',
-                  borderColor: '#111827',
-                  boxShadow: '0 14px 30px rgba(17,24,39,0.16)',
+                  background: '#0A65CC',
+                  borderColor: '#0A65CC',
+                  boxShadow: '0 14px 30px rgba(10,101,204,0.22)',
                   transition: 'width 820ms cubic-bezier(0.34, 1.56, 0.38, 1), min-width 820ms cubic-bezier(0.34, 1.56, 0.38, 1), border-radius 820ms cubic-bezier(0.34, 1.56, 0.38, 1), transform 260ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1)',
                   overflow: 'hidden',
                   display: 'flex',
@@ -511,7 +539,7 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {submitText}
+                    {isExternalMeetingEntry ? submitText : '登录'}
                   </span>
                   <span
                     style={{
@@ -528,12 +556,16 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
                 </span>
               </Button>
 
-              <Text style={{ display: 'block', marginTop: 14, fontSize: 12, color: '#94a3b8', lineHeight: 1.7 }}>
+              {!isExternalMeetingEntry && (
+                <div className="login-alt-entry"><span>其他登录方式</span><button type="button" aria-label="安全认证登录"><SafetyCertificateOutlined /></button></div>
+              )}
+
+              <Text className="login-legal-copy" style={{ display: 'block', marginTop: 14, fontSize: 12, color: '#94a3b8', lineHeight: 1.7 }}>
                 {isIssueCollect
                   ? '提交内容会写入当前会议的问题收集区，并进入 AI 议题梳理流程。'
                   : isMobileRecorder
                     ? '进入后系统会记录账号、角色、设备与录音状态，用于会后声纹分轨和审查溯源。'
-                  : '登录即表示进入内部受控工作区，所有审查行为将进入系统留痕。'}
+                  : <>登录即表示你同意我们的 <a href="#user-agreement">《用户协议》</a> 和 <a href="#privacy-policy">《隐私政策》</a></>}
               </Text>
             </Form>
           </Card>
@@ -568,6 +600,208 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
             radial-gradient(circle at calc(var(--mx) - 12%) calc(var(--my) + 8%), rgba(191,219,254,0.42), transparent 22%);
           pointer-events: none;
         }
+
+        .login-minimal-shell:not(.is-mobile-recorder) {
+          background:
+            radial-gradient(circle at 24% 34%, rgba(224,236,252,.82), transparent 31%),
+            radial-gradient(circle at 78% 15%, rgba(238,244,252,.92), transparent 34%),
+            linear-gradient(135deg, #f9fbfe 0%, #f4f7fb 52%, #eef3f9 100%) !important;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-minimal-ambient-b {
+          background: radial-gradient(circle, rgba(177,207,246,.46), rgba(216,232,252,.04) 72%);
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-hero-panel {
+          max-width: 1540px !important;
+          grid-template-columns: minmax(620px, 1fr) minmax(500px, 560px) !important;
+          gap: 96px !important;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-copy-panel {
+          position: relative;
+          min-height: 760px;
+          padding: 36px 28px 40px 24px !important;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-copy-panel::after {
+          content: '';
+          position: absolute;
+          z-index: -1;
+          left: -30px;
+          right: 30px;
+          bottom: -92px;
+          height: 260px;
+          border-radius: 50% 50% 12% 12% / 35% 35% 12% 12%;
+          background:
+            radial-gradient(ellipse at center, rgba(255,255,255,.95) 0 44%, rgba(211,222,236,.88) 45% 48%, transparent 49%),
+            linear-gradient(180deg, rgba(255,255,255,0), rgba(208,220,235,.55));
+          filter: drop-shadow(0 34px 38px rgba(60,86,118,.14));
+          opacity: .84;
+          pointer-events: none;
+        }
+
+        .login-brand-lockup {
+          position: absolute;
+          top: 18px;
+          left: 24px;
+          display: flex;
+          align-items: center;
+          gap: 13px;
+          color: #17243a;
+        }
+
+        .login-brand-lockup > span {
+          width: 38px;
+          height: 38px;
+          display: grid;
+          place-items: center;
+          border-radius: 11px;
+          color: #fff;
+          background: linear-gradient(145deg, #164c99, #0a2d67);
+          box-shadow: 0 10px 24px rgba(17,65,129,.2);
+          font-size: 20px;
+        }
+
+        .login-brand-lockup strong {
+          font-size: 18px;
+          font-weight: 700;
+          letter-spacing: -.01em;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-copy-panel h1.ant-typography {
+          margin: 0 0 22px !important;
+          max-width: 720px;
+          color: #0d1930 !important;
+          font-size: clamp(56px, 4.7vw, 78px) !important;
+          line-height: 1.32 !important;
+          letter-spacing: -.055em !important;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-copy-panel h1.ant-typography::after {
+          content: '';
+          display: block;
+          width: 42px;
+          height: 4px;
+          margin-top: 28px;
+          border-radius: 999px;
+          background: #4c83ff;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-copy-panel > .ant-typography {
+          max-width: 610px !important;
+          color: #536177 !important;
+          font-size: 17px !important;
+          line-height: 1.9 !important;
+        }
+
+        .login-capability-grid {
+          width: min(700px, 100%);
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 18px;
+          margin-top: 34px;
+        }
+
+        .login-capability-item {
+          display: grid;
+          grid-template-columns: 42px minmax(0, 1fr);
+          gap: 2px 10px;
+          min-width: 0;
+        }
+
+        .login-capability-item > span {
+          width: 42px;
+          height: 42px;
+          grid-row: 1 / 3;
+          display: grid;
+          place-items: center;
+          border-radius: 12px;
+          color: #3978dd;
+          background: rgba(255,255,255,.82);
+          box-shadow: 0 9px 24px rgba(43,74,112,.08);
+          font-size: 19px;
+        }
+
+        .login-capability-item:nth-child(2) > span { color: #39a877; background: rgba(238,251,245,.9); }
+        .login-capability-item:nth-child(3) > span { color: #ef9a31; background: rgba(255,248,235,.92); }
+        .login-capability-item:nth-child(4) > span { color: #7b61db; background: rgba(246,242,255,.92); }
+        .login-capability-item strong { align-self: end; color: #253248; font-size: 13px; white-space: nowrap; }
+        .login-capability-item small { color: #8793a5; font-size: 10px; line-height: 1.45; }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-form-card {
+          width: 100%;
+          border-radius: 40px !important;
+          background: rgba(255,255,255,.9) !important;
+          box-shadow: 0 32px 90px rgba(41,62,91,.13), inset 0 1px 0 #fff !important;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-form-card .ant-card-body {
+          padding: 54px 58px 44px !important;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-form-card h3.ant-typography {
+          font-size: 34px;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-form-card .ant-form-item {
+          margin-bottom: 22px;
+        }
+
+        .login-minimal-shell:not(.is-mobile-recorder) .login-field {
+          height: 58px !important;
+          border-radius: 13px !important;
+          font-size: 15px;
+        }
+
+        .login-forgot-link {
+          padding: 0;
+          border: 0;
+          color: #4b83e8;
+          background: transparent;
+          cursor: pointer;
+          font-size: 13px;
+        }
+
+        .login-alt-entry {
+          display: grid;
+          grid-template-columns: 1fr auto 1fr;
+          align-items: center;
+          gap: 16px;
+          margin-top: 32px;
+          color: #7b8799;
+          font-size: 12px;
+          text-align: center;
+        }
+
+        .login-alt-entry::before,
+        .login-alt-entry::after {
+          content: '';
+          height: 1px;
+          background: #e5e9ef;
+        }
+
+        .login-alt-entry button {
+          grid-column: 1 / -1;
+          justify-self: center;
+          width: 48px;
+          height: 48px;
+          display: grid;
+          place-items: center;
+          border: 1px solid #e0e6ee;
+          border-radius: 50%;
+          color: #31557f;
+          background: #fff;
+          cursor: pointer;
+          box-shadow: 0 8px 20px rgba(34,57,84,.06);
+          font-size: 19px;
+        }
+
+        .login-legal-copy { text-align: center; }
+        .login-legal-copy a { color: #4c83e8; text-decoration: none; }
 
         .login-minimal-shell {
           transition: opacity 560ms ease, transform 820ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -747,6 +981,30 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
           transform: translateY(-1px);
         }
 
+        .login-account-options {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin: -2px 0 4px;
+          color: #526176;
+          font-size: 12px;
+        }
+
+        .login-account-options .ant-checkbox-wrapper {
+          color: #526176;
+          font-size: 12px;
+        }
+
+        .login-account-options .ant-checkbox-inner {
+          border-radius: 5px;
+        }
+
+        .login-account-help {
+          color: #9aa3b1;
+          white-space: nowrap;
+        }
+
         .login-launch-button:hover {
           transform: translateY(-1px) scale(1.002);
           box-shadow: 0 18px 34px rgba(17,24,39,0.18) !important;
@@ -835,6 +1093,18 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
           50% {
             transform: scale(1);
             opacity: 1;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .login-minimal-shell,
+          .login-hero-panel,
+          .login-copy-panel,
+          .login-form-card,
+          .login-minimal-ambient,
+          .login-launch-spinner.is-spinning {
+            animation: none !important;
+            transition: none !important;
           }
         }
       `}</style>

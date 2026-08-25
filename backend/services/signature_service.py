@@ -46,6 +46,53 @@ def _signature_from_row(row) -> dict:
     }
 
 
+def _resolve_target(conn, meeting_id: str, agenda_id: str, target_type: str, target_id: str) -> dict:
+    """从数据库解析可签署目标，禁止客户端自带正文/版本充当事实来源。"""
+    if not target_id:
+        raise ValueError("签字目标不能为空")
+    if target_type == "decision":
+        row = conn.execute(
+            """SELECT id, meeting_id, agenda_id, version, title, content, status
+               FROM meeting_agenda_decisions
+               WHERE id = ? AND meeting_id = ? AND agenda_id = ?""",
+            (target_id, meeting_id, agenda_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("签字目标不存在或不属于当前议题")
+        if row["status"] in {"archived", "deleted"}:
+            raise ValueError("该成果已归档，不能再次签署")
+        return {
+            "targetId": row["id"], "agendaId": row["agenda_id"],
+            "version": int(row["version"]),
+            "content": f"{row['title']}\n{row['content']}".strip(),
+        }
+    if target_type == "minutes":
+        row = conn.execute(
+            """SELECT id, version, records_json FROM meeting_record_versions
+               WHERE id = ? AND meeting_id = ?""",
+            (target_id, meeting_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("会议纪要版本不存在")
+        return {
+            "targetId": row["id"], "agendaId": agenda_id or "",
+            "version": int(row["version"]), "content": row["records_json"] or "{}",
+        }
+    if target_type == "meeting_result":
+        row = conn.execute(
+            "SELECT id, generated_records_json FROM meetings WHERE id = ?", (meeting_id,)
+        ).fetchone()
+        if not row or not row["generated_records_json"]:
+            raise ValueError("会议成果尚未生成，不能签署")
+        if target_id not in {meeting_id, "meeting_result"}:
+            raise ValueError("会议成果目标不匹配")
+        return {
+            "targetId": target_id, "agendaId": agenda_id or "",
+            "version": 1, "content": row["generated_records_json"],
+        }
+    raise ValueError(f"不支持的签字对象类型: {target_type}")
+
+
 def list_signatures(meeting_id: str, agenda_id: str = "", target_type: str = "", target_id: str = "") -> list:
     """列出签字记录；可按议题/目标过滤。"""
     _init_app_db()
@@ -79,15 +126,32 @@ def sign_target(
     _init_app_db()
     if target_type not in SIGN_TARGETS:
         raise ValueError(f"不支持的签字对象类型: {target_type}")
-    if not content or not content.strip():
-        raise ValueError("签字内容不能为空")
     if not signer_name:
         raise ValueError("签署人姓名不能为空")
-    content_hash = compute_content_hash(meeting_id, agenda_id, target_id, version, content)
     now = _now_text()
     sid = f"sig-{uuid.uuid4().hex[:10]}"
     with APP_DB_LOCK:
         with _db_connect() as conn:
+            if target_type == "decision":
+                decision_row = conn.execute(
+                    """SELECT status FROM meeting_agenda_decisions
+                       WHERE id = ? AND meeting_id = ? AND agenda_id = ?""",
+                    (target_id, meeting_id, agenda_id),
+                ).fetchone()
+                if not decision_row:
+                    raise ValueError("签字目标不存在或不属于当前议题")
+                if decision_row["status"] not in {"confirmed", "signing"}:
+                    raise ValueError("决议必须先确认，才能发起签字")
+            target = _resolve_target(conn, meeting_id, agenda_id, target_type, target_id)
+            expected_content = target["content"]
+            # 版本和正文只允许来自数据库；客户端正文仅作为一致性校验输入。
+            if int(version) != int(target["version"]):
+                raise ValueError(f"签字版本已变化，请刷新后签署（当前版本 V{target['version']}）")
+            if not content or content.strip() != expected_content.strip():
+                raise ValueError("签字内容已变化，请刷新后重新确认")
+            content_hash = compute_content_hash(
+                meeting_id, target["agendaId"], target["targetId"], target["version"], expected_content,
+            )
             # 同一签署人对同一目标的新签字：先作废旧签字（§51 版本/内容变化后重新签）
             conn.execute(
                 """UPDATE meeting_signatures SET status = 'invalidated'
@@ -103,13 +167,40 @@ def sign_target(
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    sid, meeting_id, agenda_id, target_type, target_id, int(version),
+                    sid, meeting_id, target["agendaId"], target_type, target["targetId"], target["version"],
                     content_hash, signer_user_id, signer_name, signer_role,
                     signature_data, "valid", now,
                     json.dumps({"hash_input": "meeting_id|agenda_id|target_id|version|content"}, ensure_ascii=False),
                 ),
             )
+            if target_type == "decision":
+                required_row = conn.execute(
+                    "SELECT COUNT(DISTINCT user_id) AS c FROM meeting_participants WHERE meeting_id = ?",
+                    (meeting_id,),
+                ).fetchone()
+                signed_row = conn.execute(
+                    """SELECT COUNT(DISTINCT signer_user_id) AS c
+                       FROM meeting_signatures
+                       WHERE meeting_id = ? AND target_type = 'decision'
+                         AND target_id = ? AND version = ? AND status = 'valid'""",
+                    (meeting_id, target_id, target["version"]),
+                ).fetchone()
+                required = int(required_row["c"] or 0) if required_row else 0
+                signed = int(signed_row["c"] or 0) if signed_row else 0
+                next_status = "signed" if required == 0 or signed >= required else "signing"
+                conn.execute(
+                    "UPDATE meeting_agenda_decisions SET status = ?, updated_at = ? WHERE id = ?",
+                    (next_status, now, target_id),
+                )
     return _signature_from_row(conn_row(meeting_id, sid))
+
+
+def resolve_sign_target(meeting_id: str, agenda_id: str, target_type: str, target_id: str) -> dict:
+    """返回后端当前可签署目标，供签字预览和 hash 接口使用。"""
+    _init_app_db()
+    with APP_DB_LOCK:
+        with _db_connect() as conn:
+            return _resolve_target(conn, meeting_id, agenda_id, target_type, target_id)
 
 
 def conn_row(meeting_id: str, sig_id: str):

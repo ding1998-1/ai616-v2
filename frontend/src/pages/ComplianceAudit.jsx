@@ -13,7 +13,6 @@ import {
 import { Welcome, Sender, Prompts } from '@ant-design/x';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import OfficeEditor from '../components/OfficeEditor';
 import { authFetch, authFetchJson } from '../lib/auth';
 
 const { Text } = Typography;
@@ -591,12 +590,6 @@ export default function ComplianceAudit({ isDarkMode = true, currentUser, onNavi
   // Audit document for 定位修改
   const [auditDoc, setAuditDoc] = useState(null); // { savedName, name, paragraphs: [] }
   const auditDocRef = useRef(null);
-
-  // OfficeEditor state
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editorIssues, setEditorIssues] = useState([]);
-  const [editorSavedName, setEditorSavedName] = useState('');
-  const [editorTargetPara, setEditorTargetPara] = useState(null);
 
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [templateLoading, setTemplateLoading] = useState(false);
@@ -1667,16 +1660,6 @@ export default function ComplianceAudit({ isDarkMode = true, currentUser, onNavi
           50% { transform: scaleY(1.45); }
         }
       `}</style>
-
-      {/* OnlyOffice 文档编辑器（边审边改） */}
-      <OfficeEditor
-        open={editorOpen}
-        savedName={editorSavedName}
-        issues={editorIssues}
-        targetParaIndex={editorTargetPara}
-        onClose={() => { setEditorOpen(false); setEditorTargetPara(null); }}
-        onSave={() => antMessage.success('文档已保存')}
-      />
 
       <Drawer
         title="三重一大制度流程与风险控制"

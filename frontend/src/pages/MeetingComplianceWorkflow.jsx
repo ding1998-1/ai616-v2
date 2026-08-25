@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Timeline, Typography, message } from 'antd';
+import { Button, Drawer, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Timeline, Tooltip, Typography, message } from 'antd';
 import {
   AudioOutlined,
+  CalendarOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
   DeleteOutlined,
@@ -35,6 +36,32 @@ const { Text, Title, Paragraph } = Typography;
 const { Paragraph: ArcoParagraph } = ArcoTypography;
 
 const MEETING_TYPE_OPTIONS = ['普通企业会议', '经营例会', '董事会', '总经理办公会', '专题会', '党委会', '党组会'];
+
+const CREATE_MEETING_TYPES = [
+  { value: '普通企业会议', label: '普通会议', duration: 60, primary: true },
+  { value: '总经理办公会', label: '办公会', duration: 90, primary: true },
+  { value: '专题会', label: '专题会', duration: 60, primary: true },
+  { value: '项目会', label: '项目会', duration: 45 },
+  { value: '评审会', label: '评审会', duration: 60 },
+  { value: '经营例会', label: '经营例会', duration: 60 },
+  { value: '董事会', label: '董事会', duration: 90 },
+  { value: '党委会', label: '党委会', duration: 90 },
+  { value: '其他', label: '其他', duration: 60 },
+];
+
+function meetingDurationForType(type) {
+  return CREATE_MEETING_TYPES.find(item => item.value === type)?.duration || 60;
+}
+
+function getStoredMeetingType() {
+  if (typeof window === 'undefined') return '普通企业会议';
+  try {
+    const stored = window.localStorage.getItem('ai-meeting:last-create-type');
+    return CREATE_MEETING_TYPES.some(item => item.value === stored) ? stored : '普通企业会议';
+  } catch {
+    return '普通企业会议';
+  }
+}
 
 const STAGES = [
   { key: 'meeting', no: '01', title: '会中采集与校对', desc: '录音、认人、标事件' },
@@ -172,6 +199,36 @@ function createLocalDate() {
   const now = new Date();
   const pad = value => String(value).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+function createLocalDateTime() {
+  const now = new Date();
+  if (now.getMinutes() >= 30) now.setHours(now.getHours() + 1);
+  now.setMinutes(0, 0, 0);
+  const pad = value => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`;
+}
+
+function normalizeMeetingDateTime(value) {
+  const text = String(value || '').trim();
+  if (!text) return createLocalDateTime();
+  const normalized = text.replace(' ', 'T');
+  return normalized.length >= 16 ? normalized.slice(0, 16) : `${normalized}T10:00`.slice(0, 16);
+}
+
+function meetingTitleFromDate(value) {
+  const date = normalizeMeetingDateTime(value).slice(0, 10);
+  const [year, month, day] = date.split('-');
+  return `${year}年${Number(month)}月${Number(day)}日会议`;
+}
+
+function meetingDateLabel(value) {
+  return normalizeMeetingDateTime(value).slice(5, 10).replace('-', '/');
+}
+
+function meetingTimeLabel(value) {
+  const text = String(value || '').trim();
+  return /(?:T|\s)\d{2}:\d{2}/.test(text) ? normalizeMeetingDateTime(text).slice(11, 16) : '';
 }
 
 function inferMeetingMode(record) {
@@ -480,7 +537,6 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const directCollectEntry = initialSearchParams.get('collect') === '1';
   const [meetingWorkspaceOpen, setMeetingWorkspaceOpen] = useState(directCollectEntry);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createStep, setCreateStep] = useState(1);
   const [meetingRecords, setMeetingRecords] = useState([]);
   const [transcriptTab, setTranscriptTab] = useState('chronicle'); // chronicle | minutes | todos
   const [manualTodos, setManualTodos] = useState([]);  // 手动添加的待办
@@ -493,12 +549,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [currentMeetingId, setCurrentMeetingId] = useState(() => initialSearchParams.get('meetingId') || (directCollectEntry ? createLocalMeetingId() : ''));
   const [projectName, setProjectName] = useState(initialSearchParams.get('project') || '');
   const [projectCode, setProjectCode] = useState(initialSearchParams.get('projectCode') || '');
-  const [meetingDate, setMeetingDate] = useState(initialSearchParams.get('date') || createLocalDate());
-  const [meetingTitle, setMeetingTitle] = useState(initialSearchParams.get('meeting') || '');
-  const [meetingOrg, setMeetingOrg] = useState('普通企业会议');
+  const initialMeetingDate = normalizeMeetingDateTime(initialSearchParams.get('date') || createLocalDateTime());
+  const [meetingDate, setMeetingDate] = useState(initialMeetingDate);
+  const [meetingTitle, setMeetingTitle] = useState(initialSearchParams.get('meeting') || meetingTitleFromDate(initialMeetingDate));
+  const initialMeetingOrg = getStoredMeetingType();
+  const [meetingOrg, setMeetingOrg] = useState(initialMeetingOrg);
+  const [meetingDurationMinutes, setMeetingDurationMinutes] = useState(meetingDurationForType(initialMeetingOrg));
+  const [showMoreMeetingTypes, setShowMoreMeetingTypes] = useState(false);
+  const [participantSetupOpen, setParticipantSetupOpen] = useState(false);
+  const [createAgendaEditingId, setCreateAgendaEditingId] = useState('');
   const [meetingNo, setMeetingNo] = useState('');
   const [meetingMode, setMeetingMode] = useState(initialSearchParams.get('mode') === 'major' ? 'major' : 'normal');
-  const [showGovernance, setShowGovernance] = useState(false);
+  const [showImportOptions, setShowImportOptions] = useState(false);
   const [agendaTitle, setAgendaTitle] = useState(initialSearchParams.get('agenda') || '');
   const [selectedIssueId, setSelectedIssueId] = useState('');
   const [selectedIssueIds, setSelectedIssueIds] = useState([]);
@@ -507,7 +569,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [chatMessages, setChatMessages] = useState([]);
   const [agendaDrafts, setAgendaDrafts] = useState([]);
   const [agendaEditModal, setAgendaEditModal] = useState({ open: false, mode: 'list', item: null });
-  const [agendaEditForm, setAgendaEditForm] = useState({ title: '', type: '普通', durationMinutes: 15 });
+  const [agendaEditForm, setAgendaEditForm] = useState({ title: '', type: '普通', durationMinutes: 15, insertPosition: 'after-current' });
+  const [agendaSaving, setAgendaSaving] = useState(false);
   const [meetingMaterials, setMeetingMaterials] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [expandedIssueGroups, setExpandedIssueGroups] = useState({});
@@ -539,6 +602,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   // 正式议题实体（后端 meeting_agendas 持久化，active_agenda_id 为唯一事实来源）
   const [formalAgendas, setFormalAgendas] = useState([]);
   const [formalActiveAgendaId, setFormalActiveAgendaId] = useState('');
+  const [activatingAgendaId, setActivatingAgendaId] = useState('');
   const [meetingAgendaMarkers, setMeetingAgendaMarkers] = useState({});
   const [agendaRealtimeChecks, setAgendaRealtimeChecks] = useState({});
   const [agendaRealtimeProvider, setAgendaRealtimeProvider] = useState('');
@@ -560,15 +624,20 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [meetingFilterStage, setMeetingFilterStage] = useState('');
   const [meetingFilterMode, setMeetingFilterMode] = useState('');
   const [meetingFilterSearch, setMeetingFilterSearch] = useState('');
+  const [meetingSearchResults, setMeetingSearchResults] = useState([]);
+  const [meetingSearchLoading, setMeetingSearchLoading] = useState(false);
+  const [locatedAgendaId, setLocatedAgendaId] = useState('');
+  const meetingSearchRequestRef = useRef(0);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [meetingNotes, setMeetingNotes] = useState('');
+  const issueInputRef = useRef(null);
   const [speakerEditingId, setSpeakerEditingId] = useState(null);
   const [speakerEditName, setSpeakerEditName] = useState('');
   const [speakerEditRole, setSpeakerEditRole] = useState('');
   const [pendingMarkerTranscriptIndex, setPendingMarkerTranscriptIndex] = useState(0);
   const [archiveGenerating, setArchiveGenerating] = useState(false);
-  const [agendaExpandOpen, setAgendaExpandOpen] = useState(false);
+  const agendaDragRef = useRef('');
   const recordingStartedAtRef = useRef(null);
   const audioPlayerRef = useRef(null); // 音频播放器引用，用于转写联动
   const transcriptScrollRef = useRef(null);
@@ -959,12 +1028,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const handleBackToList = () => {
+    const defaultDraftDate = createLocalDateTime();
+    const hasCustomTitle = meetingTitle.trim() !== meetingTitleFromDate(meetingDate);
     const hasContent = !meetingCreated && (
       chatInput.trim() !== ''
       || chatMessages.length > 0
       || agendaTitle.trim() !== ''
       || projectName.trim() !== ''
-      || meetingTitle.trim() !== ''
+      || hasCustomTitle
+      || meetingDate !== defaultDraftDate
       || meetingMode !== 'normal'
       || agendaGenerated
     );
@@ -1010,7 +1082,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
   const filteredMeetingRecords = useMemo(() => {
     let result = meetingRecords;
-    if (meetingFilterStage) result = result.filter(r => r.phase === meetingFilterStage);
+    if (meetingFilterStage === 'post_meeting') {
+      result = result.filter(record => ['会后终审', '待签署', '待归档'].includes(record.phase));
+    } else if (meetingFilterStage) {
+      result = result.filter(record => record.phase === meetingFilterStage);
+    }
     if (meetingFilterMode) result = result.filter(r => r.meetingMode === meetingFilterMode);
     if (meetingFilterSearch) {
       const keyword = meetingFilterSearch.toLowerCase();
@@ -1022,6 +1098,35 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
     return result;
   }, [meetingRecords, meetingFilterStage, meetingFilterMode, meetingFilterSearch]);
+
+  useEffect(() => {
+    const keyword = meetingFilterSearch.trim();
+    if (meetingWorkspaceOpen || keyword.length < 2) {
+      meetingSearchRequestRef.current += 1;
+      setMeetingSearchResults([]);
+      setMeetingSearchLoading(false);
+      return undefined;
+    }
+    const requestId = meetingSearchRequestRef.current + 1;
+    meetingSearchRequestRef.current = requestId;
+    const timer = window.setTimeout(async () => {
+      setMeetingSearchLoading(true);
+      try {
+        const data = await authFetchJson(`/api/meetings/search?q=${encodeURIComponent(keyword)}&limit=40`);
+        if (meetingSearchRequestRef.current === requestId) {
+          setMeetingSearchResults(Array.isArray(data.results) ? data.results : []);
+        }
+      } catch (error) {
+        if (meetingSearchRequestRef.current === requestId) {
+          setMeetingSearchResults([]);
+          message.warning(`会议与议题搜索失败：${error.message}`);
+        }
+      } finally {
+        if (meetingSearchRequestRef.current === requestId) setMeetingSearchLoading(false);
+      }
+    }, 260);
+    return () => window.clearTimeout(timer);
+  }, [meetingFilterSearch, meetingWorkspaceOpen]);
 
   const palette = {
     pageBg: 'var(--ui-bg-page)',
@@ -1144,7 +1249,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             </button>
 
             {expanded && (
-              <div style={{ display: 'grid', gap: 8, padding: '0 10px 10px', maxHeight: 236, overflowY: 'auto', overscrollBehavior: 'contain', background: isDarkMode ? '#0d1422' : '#fbfdff' }}>
+              <div style={{ display: 'grid', gap: 8, padding: '0 10px 10px', background: isDarkMode ? '#0d1422' : '#fbfdff' }}>
                 {group.items.map(item => {
                   const metaInfo = parseIssueMeta(item.meta);
                   const images = metaInfo.attachments.filter(attachment => attachment.type === 'image' && attachment.imageDataUrl);
@@ -1391,6 +1496,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     [agendaDrafts, agendaGenerated, meetingCreated],
   );
 
+  // 会中及会后只消费正式议题；agendaDrafts 只承担会前收集与编排。
+  const meetingAgendaItems = useMemo(() => {
+    if (!formalAgendas.length) return activeIssueCards;
+    return formalAgendas.map((agenda, index) => ({
+      ...agenda,
+      title: agenda.title || `议题 ${index + 1}`,
+      durationMinutes: Number(agenda.payload?.durationMinutes || agenda.durationMinutes || 15),
+      legacyDraftId: agenda.payload?.draft_id || '',
+      isFormalAgenda: true,
+    }));
+  }, [activeIssueCards, formalAgendas]);
+
   const selectedIssueCards = useMemo(
     () => activeIssueCards.filter(item => selectedIssueIds.includes(item.id)),
     [activeIssueCards, selectedIssueIds],
@@ -1430,8 +1547,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     const normalized = normalizeMeetingRecord(meeting);
     setCurrentMeetingId(normalized.id);
     setProjectName(normalized.project);
-    setProjectCode(normalized.projectCode || `LOCAL-${normalized.date.replaceAll('-', '')}-001`);
-    setMeetingDate(normalized.date);
+    setProjectCode(normalized.projectCode || `LOCAL-${normalized.date.slice(0, 10).replaceAll('-', '')}-001`);
+    setMeetingDate(normalizeMeetingDateTime(normalized.date));
     setMeetingTitle(normalized.title);
     setMeetingOrg(normalized.type);
     setMeetingMode(normalized.meetingMode === 'normal' ? 'normal' : 'major');
@@ -1464,6 +1581,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       会前确认: 'meeting',
       会中记录: 'meeting',
       会后终审: 'audit',
+      待签署: 'archive',
+      待归档: 'archive',
       已归档: 'archive',
     };
     setActiveStage(stageByPhase[normalized.phase] || 'meeting');
@@ -1471,38 +1590,98 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   // 正式议题（meeting_agendas）：拉取后端持久化的当前议题，刷新/多端重连后可恢复
   const loadFormalAgendas = async (meetingId) => {
-    if (!meetingId) return;
+    if (!meetingId) return [];
     try {
       const data = await authFetchJson(`/api/meetings/${meetingId}/agendas`);
       if (data?.success) {
-        setFormalAgendas(data.agendas || []);
+        const agendas = data.agendas || [];
+        setFormalAgendas(agendas);
         setFormalActiveAgendaId(data.activeAgendaId || '');
         if (data.activeAgendaId) setActiveMeetingAgendaId(data.activeAgendaId);
+        return agendas;
       }
-    } catch {
-      // 后端未升级时静默降级为纯前端模式
+      return [];
+    } catch (err) {
+      message.warning(`正式议题同步失败：${err.message}。当前仅显示本地草稿，请勿开始录音。`);
+      return [];
     }
   };
 
   // 切换当前议题：乐观更新 UI，同时向后端持久化 active_agenda_id
   const persistActivateAgenda = async (agendaId) => {
-    if (!currentMeetingId || !agendaId) return;
+    if (!currentMeetingId || !agendaId || activatingAgendaId) return false;
+    const previousAgendaId = formalActiveAgendaId || activeMeetingAgendaId;
+    setActivatingAgendaId(agendaId);
     setActiveMeetingAgendaId(agendaId);
     try {
       await authFetchJson(`/api/meetings/${currentMeetingId}/agendas/${agendaId}/activate`, { method: 'POST' });
       setFormalActiveAgendaId(agendaId);
       setAgendaTimerActive(true);
       setAgendaTimerSeconds(0);
-    } catch {
-      // 网络失败时保留本地切换，下一次操作会重新同步
+      return true;
+    } catch (err) {
+      setActiveMeetingAgendaId(previousAgendaId || '');
+      setFormalActiveAgendaId(previousAgendaId || '');
+      message.error(`议题切换失败：${err.message}。已恢复到原议题。`);
+      return false;
+    } finally {
+      setActivatingAgendaId('');
     }
   };
 
-  // 会中临时议题：立即持久化（agenda_type=temporary, source=in_meeting）
-  const quickCreateTemporaryAgenda = async () => {
-    if (!currentMeetingId) return;
-    const title = (window.prompt('请输入临时议题名称', '临时议题') || '').trim();
+  const closeAgendaDrawer = () => {
+    setAgendaEditModal({ open: false, mode: 'list', item: null });
+    setAgendaEditForm({ title: '', type: '普通', durationMinutes: 15, insertPosition: 'after-current' });
+    setLocatedAgendaId('');
+  };
+
+  const openAgendaDrawer = (mode = 'list') => {
+    setAgendaEditForm({
+      title: mode === 'temporary' ? '临时议题' : '',
+      type: '普通',
+      durationMinutes: 15,
+      insertPosition: 'after-current',
+    });
+    setAgendaEditModal({ open: true, mode, item: null });
+  };
+
+  const addAgendaDraftFromDrawer = () => {
+    const title = agendaEditForm.title.trim();
     if (!title) return;
+    const newId = `agenda-manual-${Date.now()}`;
+    const newItem = {
+      id: newId,
+      title,
+      type: agendaEditForm.type,
+      risk: '低',
+      durationMinutes: agendaEditForm.durationMinutes,
+      source: '会中手动添加',
+    };
+    setAgendaDrafts(prev => {
+      const currentIndex = prev.findIndex(item => item.id === activeMeetingAgendaId);
+      const insertIndex = agendaEditForm.insertPosition === 'after-current' && currentIndex >= 0
+        ? currentIndex + 1
+        : prev.length;
+      const next = [...prev];
+      next.splice(insertIndex, 0, newItem);
+      saveAgendaDrafts(next);
+      return next;
+    });
+    setActiveMeetingAgendaId(newId);
+    closeAgendaDrawer();
+    message.success('议题已添加并设为当前议题');
+  };
+
+  // 会中临时议题：用侧边抽屉完成，保存后立即持久化并切换当前议题。
+  const quickCreateTemporaryAgenda = () => {
+    if (!currentMeetingId) return;
+    openAgendaDrawer('temporary');
+  };
+
+  const submitTemporaryAgenda = async () => {
+    const title = agendaEditForm.title.trim();
+    if (!currentMeetingId || !title) return;
+    setAgendaSaving(true);
     try {
       const data = await authFetchJson(`/api/meetings/${currentMeetingId}/agendas`, {
         method: 'POST',
@@ -1515,11 +1694,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       });
       if (data?.success) {
         await loadFormalAgendas(currentMeetingId);
-        await persistActivateAgenda(data.agenda.id);
-        message.success('临时议题已创建并切换到当前议题');
+        const activated = await persistActivateAgenda(data.agenda.id);
+        closeAgendaDrawer();
+        if (activated) message.success('临时议题已创建，并开始记录该议题');
+        else message.warning('临时议题已经保存，但尚未切换。请在议题列表中重新选择。');
       }
     } catch (err) {
       message.warning(`创建临时议题失败：${err.message}`);
+    } finally {
+      setAgendaSaving(false);
     }
   };
 
@@ -1539,6 +1722,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       setMeetingsLoading(false);
     }
   };
+
+  // A newly opened draft has a client-side ID but does not exist on the backend yet.
+  // Do not start detail, transcript, SSE, or marker polling until it is persisted.
+  const currentMeetingPersisted = meetingCreated || meetingRecords.some(item => item.id === currentMeetingId);
 
   const loadMeetingDetail = async (meetingId, { createIfMissing = false } = {}) => {
     try {
@@ -1596,6 +1783,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   useEffect(() => {
     if (!meetingWorkspaceOpen) return undefined;
     if (meetingCreated && activeStage !== 'collect') return undefined;
+    if (!currentMeetingPersisted) return undefined;
     let alive = true;
     const syncCurrentMeetingIssues = async () => {
       try {
@@ -1614,7 +1802,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       alive = false;
       window.clearInterval(timer);
     };
-  }, [activeStage, agendaDrafts.length, chatMessages.length, currentMeetingId, meetingCreated, meetingWorkspaceOpen]);
+  }, [activeStage, agendaDrafts.length, chatMessages.length, currentMeetingId, currentMeetingPersisted, meetingCreated, meetingWorkspaceOpen]);
 
   useEffect(() => {
     if (!issueImportStatus.running) return undefined;
@@ -1641,7 +1829,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   useEffect(() => {
-    if (!currentMeetingId) return;
+    if (!currentMeetingId || !currentMeetingPersisted) return;
     setRemoteEvents([]);
     setRemoteTranscripts([]);
     setTranscriptUpdatedAt('');
@@ -1757,7 +1945,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       if (pollTimer) window.clearInterval(pollTimer);
       if (sseReconnectTimer) window.clearTimeout(sseReconnectTimer);
     };
-  }, [currentMeetingId]);
+  }, [currentMeetingId, currentMeetingPersisted]);
 
   const loadGeneratedMeetingRecords = async (force = false) => {
     if (!currentMeetingId) return null;
@@ -1820,7 +2008,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       setAgendaRealtimeProvider('');
       return undefined;
     }
-    const agendaRows = (activeIssueCards.length ? activeIssueCards : [{ id: 'agenda-current', title: agendaTitle }])
+    const agendaRows = (meetingAgendaItems.length ? meetingAgendaItems : [{ id: 'agenda-current', title: agendaTitle }])
       .slice(0, 8)
       .map((item, index) => ({
         id: item.id || `agenda-${index}`,
@@ -1870,7 +2058,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       window.clearTimeout(timer);
       window.clearInterval(interval);
     };
-  }, [activeStage, activeIssueCards, agendaTitle, currentMeetingId, meetingMode, remoteTranscripts.length]);
+  }, [activeStage, meetingAgendaItems, agendaTitle, currentMeetingId, meetingMode, remoteTranscripts.length]);
 
   useEffect(() => {
     const parseMeetingTimestamp = value => {
@@ -2338,6 +2526,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
+  const selectCreateMeetingType = (type) => {
+    setMeetingOrg(type);
+    setMeetingDurationMinutes(meetingDurationForType(type));
+    try {
+      window.localStorage.setItem('ai-meeting:last-create-type', type);
+    } catch {
+      // A local preference write failure must not block meeting creation.
+    }
+  };
+
+  const changeCreateMeetingDate = (value) => {
+    const nextDate = normalizeMeetingDateTime(value);
+    setMeetingTitle(currentTitle => currentTitle === meetingTitleFromDate(meetingDate) ? meetingTitleFromDate(nextDate) : currentTitle);
+    setMeetingDate(nextDate);
+  };
+
   const createMeeting = async () => {
     if (!meetingDate) {
       message.warning('请选择会议日期');
@@ -2353,6 +2557,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       message.warning('请至少添加一个议题（勾选 AI 议题或手动输入）');
       return;
     }
+    const defaultAgendaDuration = Math.max(5, Math.round((meetingDurationMinutes / Math.max(1, allAgendaItems.length)) / 5) * 5);
+    const agendaItemsWithDuration = allAgendaItems.map(item => ({
+      ...item,
+      durationMinutes: Number(item.durationMinutes || defaultAgendaDuration),
+    }));
     const meetingAgendaTitle = (selectedAgendaTitle || agendaTitle || allAgendaItems.map(i => i.title).join('；')).trim();
     const resolvedMeetingSubject = projectName.trim() || allAgendaItems[0]?.title || meetingAgendaTitle || '本次会议';
     // 新建会议始终生成新 ID，不复用 URL 带入的旧 meetingId
@@ -2372,7 +2581,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           meetingMode,
           phase: '会前确认',
           issueSources: chatMessages,
-          agendaDrafts: [...selectedIssueCards, ...manualAgendaItems],
+          agendaDrafts: agendaItemsWithDuration,
         }),
       });
       hydrateMeetingDetail(data.meeting);
@@ -2416,13 +2625,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const openNewMeetingDraft = () => {
     setMeetingWorkspaceOpen(true);
     setMeetingCreated(false);
-    const nextDate = createLocalDate();
+    const nextDate = createLocalDateTime();
     setCurrentMeetingId(createLocalMeetingId());
     setProjectName('');
-    setProjectCode(`LOCAL-${nextDate.replaceAll('-', '')}-001`);
+    setProjectCode(`LOCAL-${nextDate.slice(0, 10).replaceAll('-', '')}-001`);
     setMeetingDate(nextDate);
-    setMeetingTitle('');
-    setMeetingOrg('普通企业会议');
+    setMeetingTitle(meetingTitleFromDate(nextDate));
+    const preferredType = getStoredMeetingType();
+    setMeetingOrg(preferredType);
+    setMeetingDurationMinutes(meetingDurationForType(preferredType));
+    setShowMoreMeetingTypes(false);
+    setParticipantSetupOpen(false);
+    setCreateAgendaEditingId('');
     setMeetingMode('normal');
     setAgendaTitle('');
     setSelectedIssueId('issue-001');
@@ -2442,14 +2656,47 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     setNewAgendaInput('');
   };
 
-  const openMeetingRecord = async (record) => {
+  const openMeetingRecord = async (record, options = {}) => {
     setMeetingWorkspaceOpen(true);
     hydrateMeetingDetail({
       ...record,
       issueSources: chatMessages,
       agendaDrafts: activeIssueCards,
     });
-    await loadMeetingDetail(record.id);
+    const detail = await loadMeetingDetail(record.id);
+    if (detail && options.agendaId) {
+      setLocatedAgendaId(options.agendaId);
+      const normalized = normalizeMeetingRecord(detail);
+      if (['问题收集中', '待创建会议'].includes(normalized.phase)) {
+        const agendas = await loadFormalAgendas(record.id);
+        if (agendas.length) {
+          const draftRows = agendas.map(item => ({
+            ...item,
+            type: item.agendaType === 'temporary' ? '临时议题' : '普通',
+            risk: '低',
+            durationMinutes: item.durationMinutes || 15,
+          }));
+          setAgendaDrafts(draftRows);
+          setAgendaGenerated(true);
+          setSelectedIssueIds(draftRows.map(item => item.id));
+          setSelectedIssueId(options.agendaId);
+        }
+      } else {
+        setAgendaEditModal({ open: true, mode: 'list', item: null });
+      }
+    }
+  };
+
+  const openMeetingSearchResult = async (result) => {
+    const record = meetingRecords.find(item => item.id === result.meetingId)
+      || normalizeMeetingRecord({
+        id: result.meetingId,
+        title: result.meetingTitle,
+        date: result.meetingDate,
+        type: result.meetingType,
+        phase: result.meetingPhase,
+      });
+    await openMeetingRecord(record, result.type === 'agenda' ? { agendaId: result.agendaId } : {});
   };
 
   const deleteMeetingRecord = async (recordId) => {
@@ -2670,12 +2917,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           return updated ? { ...d, ...updated } : d;
         }));
       }
-      if (action === 'advance' && data.activeAgendaId) {
-        setActiveMeetingAgendaId(data.activeAgendaId);
-        // 自动为新议题开始计时
-        setAgendaTimerActive(true);
-        setAgendaTimerSeconds(0);
-        message.success('已切换到下一个议题，自动开始计时');
+      if (action === 'advance') {
+        if (formalAgendas.length) {
+          const currentIndex = formalAgendas.findIndex(item => item.id === activeMeetingAgendaId);
+          const nextAgenda = formalAgendas[currentIndex + 1];
+          if (nextAgenda) {
+            const activated = await persistActivateAgenda(nextAgenda.id);
+            if (activated) message.success(`已进入下一议题：${nextAgenda.title}`);
+          } else {
+            message.info('当前已经是最后一个议题');
+          }
+        } else if (data.activeAgendaId) {
+          setActiveMeetingAgendaId(data.activeAgendaId);
+          setAgendaTimerActive(true);
+          setAgendaTimerSeconds(0);
+          message.success('已切换到下一个议题，自动开始计时');
+        }
       } else if (action === 'extend') {
         message.success(`议题已延长 ${extra.extend_minutes || 5} 分钟`);
       }
@@ -2764,8 +3021,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       }
       setReviewDone(true);
       setActiveStage('archive');
-      await persistStage('archive', '已归档');
-      message.success(isMajorMeeting ? '材料缺口已补齐，终审通过' : '会后材料已整理，进入归档');
+      await persistStage('archive', '待归档');
+      message.success(isMajorMeeting ? '材料缺口已补齐，进入归档确认' : '纪要已确认，进入归档确认');
       return;
     }
     setArchiveDone(true);
@@ -2784,79 +3041,155 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   if (!meetingWorkspaceOpen) {
+    const activeMeetingCount = meetingRecords.filter(item => ['会前确认', '会中记录', '进行中'].includes(item.phase)).length;
+    const pendingMeetingCount = meetingRecords.filter(item => ['会后终审', '待签署', '待归档'].includes(item.phase)).length;
+    const archiveMeetingCount = meetingRecords.filter(item => item.archived || item.phase === '已归档').length;
+    const stageFilters = [
+      { key: '', label: '全部' },
+      { key: '会前确认', label: '待召开' },
+      { key: '会中记录', label: '进行中' },
+      { key: 'post_meeting', label: '待整理' },
+      { key: '已归档', label: '已归档' },
+    ];
+    const remoteSearchActive = meetingFilterSearch.trim().length >= 2;
+    const meetingSearchMatches = meetingSearchResults.filter(item => item.type === 'meeting');
+    const agendaSearchMatches = meetingSearchResults.filter(item => item.type === 'agenda');
     return (
-      <div className="meeting-compliance-page" style={{ height: '100%', padding: 16, boxSizing: 'border-box', overflow: 'hidden', background: palette.pageBg, color: palette.text }}>
-        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
-          <section style={{ ...panelStyle, padding: 16, flex: '0 0 auto' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 14, alignItems: 'center' }}>
+      <div className="meeting-compliance-page meeting-home" style={{ height: '100%', padding: 24, boxSizing: 'border-box', overflow: 'hidden', background: '#fbfbfc', color: palette.text }}>
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 20, minHeight: 0, maxWidth: 1380, margin: '0 auto' }}>
+          <section className="meeting-home-hero">
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 24, alignItems: 'end' }}>
               <div>
-                <Space size={8} wrap style={{ marginBottom: 8 }}>
-                  <StatusPill color="blue">AI 会议管理</StatusPill>
-                  <StatusPill color="default">{meetingRecords.length} 个会议批次</StatusPill>
-                  <StatusPill color={meetingDataReady ? 'green' : 'orange'}>{meetingsLoading ? '同步中' : meetingDataReady ? '已连接真实数据' : '本地兜底'}</StatusPill>
-                </Space>
-                <Title level={3} style={{ margin: 0, color: palette.ink }}>会议列表</Title>
-                <div style={{ marginTop: 7, color: palette.muted, fontSize: 13, lineHeight: 1.65 }}>
-                  从议题准备、多人录音、实时转写到决议签署与归档。普通会议与三重一大会议统一在此管理，按状态推进每一步。
+                <div className="meeting-home-eyebrow">MEETINGS</div>
+                <Title level={2} style={{ margin: '8px 0 0', color: palette.ink, fontSize: 34, lineHeight: 1.15, letterSpacing: '-0.045em', fontWeight: 680 }}>今天，从哪场会议继续？</Title>
+                <div style={{ marginTop: 10, color: palette.muted, fontSize: 14, lineHeight: 1.7 }}>
+                  每场会议都按议题推进。进入后，系统会直接带你回到上次停留的步骤。
                 </div>
               </div>
-              <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} style={{ height: 44, fontWeight: 600 }}>
-                创建 AI 会议
+              <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} className="meeting-home-create">
+                新建会议
               </Button>
+            </div>
+            <div className="meeting-home-metrics" aria-label="会议概览">
+              <div className="meeting-home-metric metric-active">
+                <strong>{activeMeetingCount}</strong><span>正在推进</span><small>需要你继续处理</small>
+              </div>
+              <div className="meeting-home-metric metric-pending">
+                <strong>{pendingMeetingCount}</strong><span>等待整理</span><small>生成纪要与确认</small>
+              </div>
+              <div className="meeting-home-metric metric-archived">
+                <strong>{archiveMeetingCount}</strong><span>已经归档</span><small>可随时回溯</small>
+              </div>
+              <div className={`meeting-home-sync ${meetingDataReady ? 'is-online' : 'is-offline'}`}>
+                <i /> <span>{meetingsLoading ? '正在同步会议数据' : meetingDataReady ? '会议数据已连接' : '数据连接异常'}</span>
+              </div>
             </div>
           </section>
 
-          <main style={{ ...panelStyle, flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
-            {meetingsLoading ? (
-              <div style={{ display: 'grid', gap: 10 }}>
+          <div className="meeting-home-toolbar">
+            <div className="meeting-home-filters">
+              {stageFilters.map(filter => (
+                <button key={filter.key || 'all'} type="button" className={meetingFilterStage === filter.key ? 'is-active' : ''} onClick={() => setMeetingFilterStage(filter.key)}>{filter.label}</button>
+              ))}
+            </div>
+            <Input allowClear value={meetingFilterSearch} onChange={event => setMeetingFilterSearch(event.target.value)} prefix={<SearchOutlined />} suffix={meetingSearchLoading ? <Spin size="small" /> : null} placeholder="搜索会议或议题" className="meeting-home-search" />
+          </div>
+
+          <main style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '2px 4px 16px' }}>
+            {meetingsLoading || (remoteSearchActive && meetingSearchLoading && !meetingSearchResults.length) ? (
+              <div style={{ display: 'grid', gap: 12 }}>
                 {[1, 2, 3].map(n => (
                   <Skeleton key={n} active paragraph={{ rows: 2 }} />
                 ))}
               </div>
+            ) : remoteSearchActive ? (
+              <div className="meeting-search-results" aria-live="polite">
+                {meetingSearchMatches.length > 0 && (
+                  <section className="meeting-search-group">
+                    <div className="meeting-search-group-head"><strong>会议</strong><span>{meetingSearchMatches.length} 条</span></div>
+                    {meetingSearchMatches.map(result => (
+                      <button key={`meeting-${result.meetingId}`} type="button" className="meeting-search-result" onClick={() => openMeetingSearchResult(result)}>
+                        <span className="meeting-search-type">会议</span>
+                        <div>
+                          <strong>{result.meetingTitle}</strong>
+                          <p>{result.matchText || '会议名称命中'}</p>
+                        </div>
+                        <aside>{result.meetingDate ? meetingDateLabel(result.meetingDate) : '时间待定'}<b>{result.meetingPhase || '查看会议'}</b></aside>
+                      </button>
+                    ))}
+                  </section>
+                )}
+                {agendaSearchMatches.length > 0 && (
+                  <section className="meeting-search-group">
+                    <div className="meeting-search-group-head"><strong>议题</strong><span>{agendaSearchMatches.length} 条</span></div>
+                    {agendaSearchMatches.map(result => (
+                      <button key={`agenda-${result.agendaId}`} type="button" className="meeting-search-result is-agenda" onClick={() => openMeetingSearchResult(result)}>
+                        <span className="meeting-search-type">议题</span>
+                        <div>
+                          <strong>{result.agendaTitle}</strong>
+                          <p>{result.matchText || '议题名称命中'}</p>
+                          <em>属于：{result.meetingTitle}</em>
+                        </div>
+                        <aside>{result.meetingDate ? meetingDateLabel(result.meetingDate) : '时间待定'}<b>{result.agendaStatus || '查看议题'}</b></aside>
+                      </button>
+                    ))}
+                  </section>
+                )}
+                {!meetingSearchResults.length && (
+                  <div className="meeting-search-empty">
+                    <Empty description={`没有找到与“${meetingFilterSearch.trim()}”相关的会议或议题`} />
+                  </div>
+                )}
+              </div>
             ) : (
-            <div style={{ display: 'grid', gap: 10 }}>
-              {meetingRecords.map(record => (
-                <div key={record.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(320px,1fr) 150px 130px 120px 190px', gap: 12, alignItems: 'center', padding: 14, borderRadius: 12, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <Text strong style={{ color: palette.ink, fontSize: 15 }}>{record.title}</Text>
-                      <Tag color="blue" style={{ margin: 0 }}>{record.meetingType || '会议'}</Tag>
-                      {record.meetingMode === 'major' && <Tag color="gold" style={{ margin: 0 }}>三重一大</Tag>}
-                      <Tag color={record.statusColor} style={{ margin: 0 }}>{record.phase}</Tag>
+            <div className="meeting-home-list">
+              {filteredMeetingRecords.map(record => (
+                <article
+                  key={record.id}
+                  className="meeting-home-row"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openMeetingRecord(record)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openMeetingRecord(record);
+                    }
+                  }}
+                >
+                  <div className="meeting-home-date">
+                    <strong>{record.date ? meetingDateLabel(record.date) : '待定'}</strong>
+                    <span>{meetingTimeLabel(record.date) ? `${meetingTimeLabel(record.date)} · ` : ''}{record.meetingType || '会议'}</span>
+                  </div>
+                  <div className="meeting-home-main">
+                    <div className="meeting-home-title-line">
+                      <Text strong>{record.title}</Text>
+                      <Tag color={record.statusColor}>{record.phase}</Tag>
+                      {record.meetingMode === 'major' && <Tag color="gold">重大事项治理</Tag>}
                     </div>
-                    <div style={{ marginTop: 6, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
-                      {record.meetingNo ? <span style={{ color: palette.ink, fontWeight: 600 }}>{record.meetingNo}</span> : null}
-                      {record.meetingNo ? ' · ' : ''}{record.project} · {record.agenda}
-                    </div>
+                    <p>{record.meetingNo ? `${record.meetingNo} · ` : ''}{record.project || '未关联项目'}</p>
+                    <div className="meeting-home-next"><span>下一步</span>{record.phase === '会中记录' ? '继续当前议题与实时记录' : record.phase === '会后终审' ? '整理议题成果并发起确认' : ['待签署', '待归档'].includes(record.phase) ? '核对签字与材料并完成归档' : record.phase === '已归档' ? '查看归档成果' : '确认议题与参会人员'}</div>
                   </div>
-                  <div>
-                    <div style={{ color: palette.muted, fontSize: 12 }}>会议日期</div>
-                    <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{record.date}</div>
+                  <div className="meeting-home-facts">
+                    <span><strong>{record.issueCount || 0}</strong> 个议题</span>
+                    <span><strong>{record.participantCount || 0}</strong> 位参会人</span>
                   </div>
-                  <div>
-                    <div style={{ color: palette.muted, fontSize: 12 }}>议题数</div>
-                    <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{record.issueCount} 个</div>
+                  <div className="meeting-home-actions" onClick={event => event.stopPropagation()}>
+                    <Button type="primary" onClick={() => openMeetingRecord(record)}>{record.phase === '已归档' ? '查看' : '继续'}</Button>
+                    <Tooltip title="编辑会议">
+                      <Button type="text" icon={<EditOutlined />} aria-label="编辑会议" onClick={() => openMeetingRecord(record)} />
+                    </Tooltip>
+                    <Tooltip title="归档会议">
+                      <Button type="text" icon={<FolderOpenOutlined />} aria-label="归档会议" onClick={() => confirmDeleteMeetingRecord(record)} />
+                    </Tooltip>
                   </div>
-                  <div>
-                    <div style={{ color: palette.muted, fontSize: 12 }}>参会人数</div>
-                    <div style={{ marginTop: 4, color: palette.ink, fontWeight: 600 }}>{(record.participantCount ?? 0) > 0 ? `${record.participantCount} 人` : '—'}</div>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                    <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => openMeetingRecord(record)}>编辑</Button>
-                    <Button size="small" icon={<FolderOpenOutlined />} onClick={() => openMeetingRecord(record)}>进入</Button>
-                    <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDeleteMeetingRecord(record)}>删除</Button>
-                  </div>
-                  <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: '150px 1fr', gap: 12, paddingTop: 10, borderTop: `1px solid ${palette.line}` }}>
-                    <span style={{ color: palette.muted, fontSize: 12 }}>创建时间</span>
-                    <span style={{ color: palette.text, fontSize: 12 }}>{record.createdAt}</span>
-                  </div>
-                </div>
+                </article>
               ))}
-              {!meetingRecords.length && (
+              {!filteredMeetingRecords.length && (
                 <div style={{ padding: 48, textAlign: 'center' }}>
-                  <Empty description="暂无会议批次" />
+                  <Empty description={meetingRecords.length ? '没有符合当前条件的会议' : '还没有会议'} />
                   <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} style={{ marginTop: 16 }}>
-                    创建第一个 AI 会议
+                    新建第一场会议
                   </Button>
                 </div>
               )}
@@ -2864,57 +3197,56 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             )}
           </main>
         </div>
-        
       </div>
     );
   }
 
   if (!meetingCreated) {
-    const ArrowIcon = () => (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
-    );
     const InfoCircleIcon = () => (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h0" strokeWidth="2"/></svg>
-    );
-    const CheckIcon = () => (
-      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5 9-11"/></svg>
-    );
-    const PlusIcon = () => (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
     );
     const SparkleIcon = () => (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z"/></svg>
     );
 
     const plannedItems = [...selectedIssueCards, ...manualAgendaItems];
+    const canCreateMeeting = Boolean(meetingTitle.trim() && meetingDate && plannedItems.length);
+    const selectedTypeLabel = CREATE_MEETING_TYPES.find(item => item.value === meetingOrg)?.label || meetingOrg;
 
     return (
-      <div className="meeting-compliance-page" style={{ height: '100%', padding: '16px 36px', boxSizing: 'border-box', overflow: 'hidden', background: palette.pageBg, color: palette.text, display: 'flex', flexDirection: 'column' }}>
-        {/* 顶部：返回按钮 */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, flexShrink: 0 }}>
-          <button type="button" className="ant-btn ant-btn-sm ant-btn-default" style={{ borderRadius: 8, height: 32, paddingInline: 15, cursor: 'pointer', border: '1px solid #d9d9d9', background: '#fff', fontWeight: 500, fontSize: 14 }} onClick={handleBackToList}>返回列表</button>
+      <div className="meeting-compliance-page meeting-create-refined" style={{ height: '100%', padding: '18px 30px 20px', boxSizing: 'border-box', overflow: 'hidden', background: palette.pageBg, color: palette.text, display: 'flex', flexDirection: 'column' }}>
+        {/* 创建页采用议题优先的双栏工作台。 */}
+        <div className="ref-create-context">
+          <div className="ref-create-intro">
+            <div className="ref-create-title">新建会议</div>
+            <div className="ref-create-subtitle">从议题准备、多人录音、实时转写到决议签署与归档，全流程高效协同。</div>
+          </div>
         </div>
 
-        {/* 三栏主体 */}
-        <div className="ref-create-layout" style={{ flex: 1, minHeight: 0 }}>
-          {/* ── Column 01：事项收集 ── */}
-          <div className="ref-col">
-            <div className="ref-col-head">
-              <div className="ref-num-badge">01</div>
+        {/* 主工作区：事项与议题为主，会议设置保持精简 */}
+        <div className="ref-create-layout ref-create-layout-v2 meeting-create-layout" style={{ flex: 1, minHeight: 0 }}>
+          <section className="ref-col ref-main-workspace">
+            <section className="ref-discussion-workspace">
+            <div className="ref-workspace-head">
               <div>
-                <div className="ref-col-title">收集会议事项</div>
-                <div className="ref-col-desc">从各部门收集事项，整理进入议题池</div>
+                <div className="ref-col-title ref-workspace-question">讨论内容</div>
+                <div className="ref-col-desc">粘贴聊天记录、表格、文件或问题描述，作为会议的原始讨论事项。</div>
               </div>
-            </div>
-
-            <div className="ref-tabs">
-              <div className="ref-tab active">事项收集</div>
-              <div className="ref-tab">群聊 / 图片 / 单据</div>
-            </div>
-
-            <div className="ref-action-row">
-              <div className="ref-action-btn" onClick={downloadIssueTemplate} role="button" tabIndex={0}>
-                <DownloadOutlined /> 下载模板
+              <div className="ref-import-actions">
+                <button type="button" className="ref-btn-primary ref-add-item-button" onClick={() => chatInput.trim() ? addChatMessage() : issueInputRef.current?.focus()}>
+                  <PlusOutlined /> 添加事项
+                </button>
+                <button type="button" className="ref-more-button" onClick={() => setShowImportOptions(value => !value)} aria-expanded={showImportOptions}>
+                  更多导入方式 <span aria-hidden="true">⌄</span>
+                </button>
+                {showImportOptions && (
+                  <div className="ref-import-menu">
+                    <button type="button" onClick={() => { downloadIssueTemplate(); setShowImportOptions(false); }}><DownloadOutlined /> 下载模板</button>
+                    <button type="button" disabled={issueImportRunning || issueGenerationRunning} onClick={() => { document.getElementById('meeting-issue-excel-input')?.click(); setShowImportOptions(false); }}><FileExcelOutlined /> 上传台账</button>
+                    <button type="button" onClick={async () => { await copyIssueCollectUrl(); setShowImportOptions(false); }}><ShareAltOutlined /> 复制收集链接</button>
+                    <div className="ref-import-menu-note">群聊、图片、单据可直接粘贴到下方输入框</div>
+                  </div>
+                )}
               </div>
               <input
                 id="meeting-issue-excel-input"
@@ -2927,287 +3259,218 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   importExcelIssues(file);
                 }}
               />
-              <div
-                className="ref-action-btn"
-                onClick={() => !issueImportRunning && !issueGenerationRunning && document.getElementById('meeting-issue-excel-input')?.click()}
-                role="button"
-                tabIndex={0}
-                style={{ opacity: issueImportRunning || issueGenerationRunning ? 0.5 : 1, cursor: issueImportRunning || issueGenerationRunning ? 'not-allowed' : 'pointer' }}
-              >
-                <FileExcelOutlined /> {issueImportRunning ? 'AI 提炼中' : '上传台账'}
-              </div>
-              <div className="ref-action-btn" onClick={copyIssueCollectUrl} role="button" tabIndex={0}>
-                <ShareAltOutlined /> 复制收集链接
-              </div>
             </div>
 
-            <div className="ref-info-box">
-              <InfoCircleIcon />
-              <p>请将事项按模板填写或粘贴内容后提交。部门人员填写并提交后，事项将自动汇总到议题池中。</p>
-            </div>
-
-            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'grid', gap: 9 }}>
-              {renderIssueSourceGroups()}
-            </div>
-
-            <textarea
-              className="ref-textarea"
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addChatMessage(); } }}
-              placeholder="粘贴群聊、表格或表单内容..."
-            />
-            <div className="ref-submit-row">
-              <button className="ref-btn-primary" onClick={addChatMessage}>
-                <SendOutlined /> 提交
-              </button>
-            </div>
-            <div className="ref-foot-cap">支持直接粘贴，系统将自动解析结构化内容</div>
-          </div>
-
-          {/* 箭头 01→02 */}
-          <div className="ref-arrow"><ArrowIcon /></div>
-
-          {/* ── Column 02：议题准备 ── */}
-          <div className="ref-col">
-            <div className="ref-col-head">
-              <div className="ref-num-badge">02</div>
-              <div>
-                <div className="ref-col-title">议题准备</div>
-                <div className="ref-col-desc">将收集事项整理为会议议题</div>
+            <div className="ref-add-item-box">
+              <textarea
+                ref={issueInputRef}
+                className="ref-textarea ref-main-textarea"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addChatMessage(); } }}
+                placeholder="粘贴群聊、表格、图片说明或直接输入一个事项…"
+              />
+              <div className="ref-add-item-footer">
+                <span><LinkOutlined /> 支持粘贴或拖拽上传文件</span>
+                <em>{chatInput.length} / 10000</em>
               </div>
             </div>
+            <div className="ref-discussion-hint"><InfoCircleIcon /> 支持粘贴微信、钉钉等聊天记录；Shift + Enter 换行，Enter 提交。</div>
+            </section>
 
-            <div className="ref-col-center">
-              {!agendaGenerated && !issueGenerationRunning && (
-                <>
-                  <div style={{ color: '#3a4557', fontWeight: 600, fontSize: 16 }}>尚未生成议题</div>
-                  <div style={{ marginTop: 10, color: '#949dab', fontSize: 13.5, lineHeight: 1.7, maxWidth: 280 }}>
-                    先在左侧收集事项，选择需要讨论的事项，<br />再生成会议议题。
-                  </div>
-                  <div className="ref-btn-ghost-disabled" style={{ cursor: chatMessages.length ? 'pointer' : 'not-allowed', opacity: chatMessages.length ? 1 : 0.6 }}
-                    onClick={() => chatMessages.length && generateAgendaFromCollectedIssues()}>
-                    <RobotOutlined /> 生成会议议题
-                  </div>
-                </>
+            <div className="ref-create-content-scroll">
+              {chatMessages.length > 0 && (
+                <div className="ref-source-list">
+                  <div className="ref-section-label"><span>已添加事项</span><em>{chatMessages.length} 条</em></div>
+                  {renderIssueSourceGroups({ compact: true })}
+                </div>
+              )}
+
+              <section className="ref-agenda-workspace">
+              <div className="ref-section-heading">
+                <div>
+                  <div className="ref-col-title">本次会议议题</div>
+                  <div className="ref-col-desc">先把今天要讨论的内容梳理清楚，便于会议高效聚焦。</div>
+                </div>
+                <button type="button" className="ref-ai-generate-top" onClick={() => chatMessages.length ? generateAgendaFromCollectedIssues() : issueInputRef.current?.focus()} disabled={issueGenerationRunning}>
+                  <SparkleIcon /> AI 生成议题
+                </button>
+              </div>
+
+              {plannedItems.length === 0 && !agendaGenerated && !issueGenerationRunning && (
+                <div className="ref-agenda-empty-line">
+                  <FileTextOutlined />
+                  <strong>暂无议题</strong>
+                  <span>{chatMessages.length ? '事项已就绪，可由 AI 生成议题。' : '添加议题，明确会议重点，引导高效讨论。'}</span>
+                </div>
               )}
 
               {issueGenerationRunning && (
-                <div className="meeting-ai-generating-card" style={{ width: '100%' }}>
-                  <div className="meeting-ai-generating-orb">
-                    <MeetingAiPulse active />
-                    <span />
-                    <span />
-                  </div>
+                <div className="meeting-ai-generating-card ref-generating-inline">
+                  <div className="meeting-ai-generating-orb"><MeetingAiPulse active /><span /><span /></div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                      <div style={{ color: palette.ink, fontWeight: 700, fontSize: 15 }}>DeepSeek 正在生成议题</div>
-                      <StatusPill color="processing">{ISSUE_IMPORT_STEPS[issueImportStatus.step]}</StatusPill>
-                    </div>
-                    <div style={{ marginTop: 7, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
-                      已收到《{issueImportStatus.fileName}》，正在读取事项、梳理议题、按会议类型生成候选项。请保持页面打开。
-                    </div>
-                    <div className="meeting-ai-generating-track" style={{ marginTop: 12 }}>
-                      <i style={{ width: `${Math.max(18, ((issueImportStatus.step + 1) / ISSUE_IMPORT_STEPS.length) * 100)}%` }} />
-                    </div>
-                    <div className="meeting-ai-generating-steps">
-                      {ISSUE_IMPORT_STEPS.map((step, index) => (
-                        <span key={step} className={index <= issueImportStatus.step ? 'is-active' : ''}>{step}</span>
-                      ))}
-                    </div>
+                    <div className="ref-generating-title-row"><strong>正在整理议题</strong><StatusPill color="processing">{ISSUE_IMPORT_STEPS[issueImportStatus.step]}</StatusPill></div>
+                    <div className="ref-generating-copy">正在读取事项、判断类型并生成候选议题，请稍候。</div>
+                    <div className="meeting-ai-generating-track"><i style={{ width: `${Math.max(18, ((issueImportStatus.step + 1) / ISSUE_IMPORT_STEPS.length) * 100)}%` }} /></div>
                   </div>
                 </div>
               )}
 
               {agendaGenerated && (
-                <div style={{ width: '100%', display: 'grid', gap: 8, alignContent: 'start' }}>
+                <div className="ref-agenda-list">
                   {activeIssueCards.map((item, index) => {
                     const selected = selectedIssueIds.includes(item.id);
-                    const dynamicTitle = item.title;
                     const dynamicProject = item.id === 'issue-001' ? (projectName || '本次会议') : item.project;
                     const todoText = item.todoText || (item.changes || []).find(c => String(c).startsWith('生成待办：'))?.replace('生成待办：', '') || (isMajorMeeting ? '补材料、定责任人、安排会议审议' : '确认讨论范围，安排会议讨论');
                     const riskColor = isMajorMeeting ? (item.risk === '高风险' ? 'red' : 'orange') : 'blue';
                     const riskText = isMajorMeeting ? item.risk : '普通议题';
                     return (
-                      <button key={item.id} type="button"
-                        className={selected ? 'meeting-issue-row is-selected' : 'meeting-issue-row'}
-                        aria-pressed={selected} onClick={() => toggleIssueSelection(item)}>
+                      <div
+                        key={item.id}
+                        className={`${selected ? 'meeting-issue-row is-selected is-editable' : 'meeting-issue-row is-editable'} ${item.id === locatedAgendaId ? 'is-located' : ''}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={selected}
+                        draggable={createAgendaEditingId !== item.id}
+                        onDragStart={() => { agendaDragRef.current = item.id; }}
+                        onDragOver={event => event.preventDefault()}
+                        onDrop={() => {
+                          const sourceId = agendaDragRef.current;
+                          if (!sourceId || sourceId === item.id) return;
+                          setAgendaDrafts(prev => {
+                            const sourceIndex = prev.findIndex(draft => draft.id === sourceId);
+                            const targetIndex = prev.findIndex(draft => draft.id === item.id);
+                            if (sourceIndex < 0 || targetIndex < 0) return prev;
+                            const next = [...prev];
+                            const [moved] = next.splice(sourceIndex, 1);
+                            next.splice(targetIndex, 0, moved);
+                            return next;
+                          });
+                          agendaDragRef.current = '';
+                        }}
+                        onClick={() => createAgendaEditingId !== item.id && toggleIssueSelection(item)}
+                        onKeyDown={event => {
+                          if (['Enter', ' '].includes(event.key) && createAgendaEditingId !== item.id) {
+                            event.preventDefault();
+                            toggleIssueSelection(item);
+                          }
+                        }}
+                      >
+                        <span className="meeting-issue-drag-handle" aria-hidden="true">⋮⋮</span>
                         <div className="meeting-issue-row-index">{String(index + 1).padStart(2, '0')}</div>
                         <div className="meeting-issue-row-main">
                           <div className="meeting-issue-row-top">
-                            <div className="meeting-issue-row-title">{dynamicTitle}</div>
+                            {createAgendaEditingId === item.id ? (
+                              <Input
+                                size="small"
+                                defaultValue={item.title}
+                                autoFocus
+                                onClick={event => event.stopPropagation()}
+                                onPressEnter={event => event.currentTarget.blur()}
+                                onBlur={event => {
+                                  const title = event.target.value.trim();
+                                  if (title) setAgendaDrafts(prev => prev.map(draft => draft.id === item.id ? { ...draft, title } : draft));
+                                  setCreateAgendaEditingId('');
+                                }}
+                              />
+                            ) : <div className="meeting-issue-row-title">{item.title}</div>}
                             <Tag color={riskColor} className="meeting-issue-risk-tag">{riskText}</Tag>
                           </div>
-                          <div className="meeting-issue-row-meta">
-                            <span>{isMajorMeeting ? '事项' : '来源'}：<strong>{dynamicProject}</strong></span>
-                            <span>{item.type}</span>
-                            <span>{item.source}</span>
-                          </div>
-                          <div className="meeting-issue-row-todo">
-                            <span>下一步</span>
-                            <strong>{todoText}</strong>
-                          </div>
+                          <div className="meeting-issue-row-meta"><span>来源：<strong>{dynamicProject}</strong></span><span>{item.type}</span><span>{item.source}</span></div>
+                          <div className="meeting-issue-row-todo"><span>下一步</span><strong>{todoText}</strong></div>
                         </div>
-                        <span className="meeting-issue-row-check" aria-hidden="true">
-                          {selected ? <CheckCircleOutlined /> : null}
-                        </span>
-                      </button>
+                        <div className="meeting-issue-row-actions">
+                          <button type="button" aria-label="修改议题" onClick={event => { event.stopPropagation(); setCreateAgendaEditingId(item.id); }}><EditOutlined /></button>
+                          <button type="button" aria-label="删除议题" onClick={event => {
+                            event.stopPropagation();
+                            setAgendaDrafts(prev => prev.filter(draft => draft.id !== item.id));
+                            setSelectedIssueIds(prev => prev.filter(id => id !== item.id));
+                          }}><DeleteOutlined /></button>
+                          <span className="meeting-issue-row-check" aria-hidden="true">{selected ? <CheckCircleOutlined /> : null}</span>
+                        </div>
+                      </div>
                     );
                   })}
-                  {!activeIssueCards.length && (
-                    <div style={{ padding: 22, borderRadius: 12, background: palette.panelSoft, border: `1px dashed ${palette.line}`, color: palette.muted, lineHeight: 1.7, textAlign: 'center' }}>
-                      还没有生成议题。先在左侧粘贴问题，或下载 Excel 模板后上传台账，AI 会把素材整理成可上会事项。
-                    </div>
-                  )}
-                  <div style={{ textAlign: 'center', paddingTop: 4 }}>
-                    <Button type="link" icon={<RobotOutlined />} onClick={generateAgendaFromCollectedIssues} loading={agendaGenerating} disabled={!chatMessages.length || issueGenerationRunning}>
-                      {agendaGenerating ? '生成中' : '重新生成'}
-                    </Button>
-                  </div>
+                  <button type="button" className="ref-regenerate-button" onClick={generateAgendaFromCollectedIssues} disabled={!chatMessages.length || issueGenerationRunning}><RobotOutlined /> {agendaGenerating ? '重新整理中' : '重新生成议题'}</button>
                 </div>
               )}
 
-              <div className="ref-green-box">
-                <div className="ref-green-check"><CheckIcon /></div>
-                <div>
-                  <div className="ref-gb-title">已选择 <b>{plannedItems.length}</b> 个问题</div>
-                  <div className="ref-gb-sub">确认后将生成会议议题，系统会智能归类并优化表述，便于会议高效讨论。</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* 箭头 02→03 */}
-          <div className="ref-arrow"><ArrowIcon /></div>
-
-          {/* ── Column 03：创建 AI 会议 ── */}
-          <div className="ref-col">
-            <div className="ref-col-head">
-              <div className="ref-num-badge">03</div>
-              <div>
-                <div className="ref-col-title">创建 AI 会议</div>
-                <div className="ref-col-desc">完善会议信息，生成会议并开始记录</div>
-              </div>
-            </div>
-
-            <div className="ref-col3-form">
-              <div className="ref-field">
-                <div className="ref-field-label">会议名称 <span className="ref-req">*</span></div>
-                <input className="ref-input" type="text" value={meetingTitle} onChange={e => setMeetingTitle(e.target.value)}
-                  placeholder="例如：2026年第12次总经理办公会" autoFocus />
-              </div>
-
-              <div className="ref-field">
-                <div className="ref-field-label">会议类型 <span className="ref-req">*</span></div>
-                <select className="ref-input" value={meetingOrg} onChange={e => setMeetingOrg(e.target.value)} style={{ appearance: 'auto', height: 38 }}>
-                  {['总经理办公会', '董事会', '股东会', '党委会', '党组会', '经营例会', '专题会', '项目会', '部门会议', '普通企业会议'].map(t => (
-                    <option key={t} value={t}>{t}</option>
+              {manualAgendaItems.length > 0 && (
+                <div className="ref-manual-agenda-list">
+                  {manualAgendaItems.map((item, index) => (
+                    <div key={item.id} className="ref-manual-agenda-item"><span>{index + 1}</span><strong>{item.title}</strong><Tag color="green">手动</Tag><button type="button" onClick={() => setManualAgendaItems(prev => prev.filter(x => x.id !== item.id))} aria-label="移除议题">×</button></div>
                   ))}
-                </select>
-              </div>
+                </div>
+              )}
 
-              <div className="ref-field-row">
-                <div className="ref-field">
-                  <div className="ref-field-label">会议日期 <span className="ref-req">*</span></div>
-                  <input className="ref-input" type="date" value={meetingDate} onChange={e => setMeetingDate(e.target.value)} />
-                </div>
-                <div className="ref-field">
-                  <div className="ref-field-label">会议文号</div>
-                  <input className="ref-input" type="text" value={meetingNo} onChange={e => setMeetingNo(e.target.value)}
-                    placeholder="如：总经〔2026〕第12号" />
-                </div>
+              <div className="ref-quick-agenda-add">
+                <input className="ref-input" type="text" value={newAgendaInput} onChange={e => setNewAgendaInput(e.target.value)} placeholder="直接添加一个议题，回车确认" onKeyDown={e => { if (e.key === 'Enter' && newAgendaInput.trim()) { setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]); setNewAgendaInput(''); } }} />
+                <button type="button" className="ref-btn-outline" onClick={() => { if (newAgendaInput.trim()) { setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]); setNewAgendaInput(''); } }}><PlusOutlined /> 添加议题</button>
               </div>
+              <div className="ref-agenda-hint"><InfoCircleIcon /> 提示：可按回车快速添加议题，拖拽可调整顺序。</div>
+              </section>
+            </div>
+          </section>
+
+          <aside className="ref-col ref-settings-workspace ref-meeting-info-panel">
+            <div className="ref-settings-head"><div><div className="ref-col-title">会议信息</div><div className="ref-col-desc">完善会议信息，便于参会人了解安排。</div></div></div>
+            <div className="ref-settings-form">
+              <div className="ref-field"><div className="ref-field-label is-required">会议名称</div><input className="ref-input ref-title-input" type="text" value={meetingTitle} onChange={e => setMeetingTitle(e.target.value)} placeholder="例如：2026年8月20日会议" /></div>
 
               <div className="ref-field">
-                <div className="ref-field-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => setShowGovernance(v => !v)}>
-                  <span>会议治理模式</span>
-                  <span style={{ color: '#86909c', fontSize: 12, fontWeight: 400 }}>{showGovernance ? '收起' : '展开高级选项'} {meetingMode === 'major' ? '· 当前：三重一大' : ''}</span>
+                <div className="ref-field-label is-required">会议类型</div>
+                <div className="ref-type-quick-grid">
+                  {CREATE_MEETING_TYPES.filter(item => item.primary).map(item => (
+                    <button key={item.value} type="button" className={meetingOrg === item.value ? 'is-selected' : ''} onClick={() => selectCreateMeetingType(item.value)}>{item.label}</button>
+                  ))}
+                  <button type="button" className={showMoreMeetingTypes || !CREATE_MEETING_TYPES.find(item => item.value === meetingOrg)?.primary ? 'is-selected' : ''} onClick={() => setShowMoreMeetingTypes(value => !value)}>
+                    {CREATE_MEETING_TYPES.find(item => item.value === meetingOrg)?.primary ? '更多' : selectedTypeLabel}
+                    <span>⌄</span>
+                  </button>
                 </div>
-                {showGovernance && (
-                  <div className="ref-radio-group" style={{ marginTop: 8, padding: 12, border: '1px solid #e5e6eb', borderRadius: 10, background: '#fafbfc' }}>
-                    <div style={{ color: '#4e5969', fontSize: 13, marginBottom: 8 }}>普通会议拥有完整会议能力；三重一大为重大事项会议启用增强合规检查。</div>
-                    <div className={`ref-radio ${meetingMode === 'normal' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('normal')} style={{ marginBottom: 6 }}>
-                      <span className="ref-radio-box" /> 普通会议（默认）
-                    </div>
-                    <div className={`ref-radio ${meetingMode === 'major' ? 'is-checked' : ''}`} onClick={() => setMeetingMode('major')}>
-                      <span className="ref-radio-box" /> 重大事项 / 三重一大
-                    </div>
-                    {meetingMode === 'major' && (
-                      <div style={{ marginTop: 8, color: '#b25e09', fontSize: 12, lineHeight: 1.7, background: '#fff7e6', border: '1px solid #ffe7ba', borderRadius: 8, padding: '8px 10px' }}>
-                        启用后将展开：制度依据 · 材料完整性 · 决策程序 · 风险检查 · 合规审核
-                      </div>
-                    )}
+                {showMoreMeetingTypes && (
+                  <div className="ref-more-type-panel">
+                    {CREATE_MEETING_TYPES.filter(item => !item.primary).map(item => (
+                      <button key={item.value} type="button" className={meetingOrg === item.value ? 'is-selected' : ''} onClick={() => { selectCreateMeetingType(item.value); setShowMoreMeetingTypes(false); }}>{item.label}</button>
+                    ))}
                   </div>
                 )}
               </div>
 
-              <div className="ref-subhead">
-                <div className="ref-sh-title">待上会议题</div>
-                <div className="ref-sh-sub">议题将来自左侧生成或下方手动添加</div>
-              </div>
+              <div className="ref-field"><div className="ref-field-label is-required">会议时间</div><input className="ref-input" type="datetime-local" value={meetingDate} onChange={e => changeCreateMeetingDate(e.target.value)} /></div>
 
-              {plannedItems.length > 0 ? (
-                <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
-                  {plannedItems.map((item, i) => {
-                    const isManual = item.source === 'manual';
-                    return (
-                      <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: '#f7faff', border: '1px solid #d8e7ff', borderRadius: 8, fontSize: 13 }}>
-                        <span style={{ width: 22, height: 22, borderRadius: 999, background: '#e8f3ff', color: '#3b5bff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>{i + 1}</span>
-                        <span style={{ flex: 1, color: '#1d2129', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
-                        <Tag color={isManual ? 'green' : 'blue'} style={{ margin: 0, fontSize: 11 }}>{isManual ? '手动' : 'AI'}</Tag>
-                        {isManual && (
-                          <span onClick={() => setManualAgendaItems(prev => prev.filter(x => x.id !== item.id))}
-                            style={{ cursor: 'pointer', color: '#94a3b8', fontSize: 14, lineHeight: 1 }} title="删除">×</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>
-                    ⏱ 预计总时长：{plannedItems.reduce((sum, item) => sum + (item.durationMinutes || 15), 0)} 分钟
-                  </div>
-                </div>
-              ) : (
-                <div className="ref-empty-state">
-                  <div className="ref-es-title">暂无议题</div>
-                  <div className="ref-es-sub">请先生成会议议题或手动添加议题</div>
+              <div className="ref-participant-row">
+                <div><span>参会人员</span><strong>暂不指定</strong></div>
+                <button type="button" onClick={() => setParticipantSetupOpen(value => !value)}><PlusOutlined /> 添加</button>
+              </div>
+              {participantSetupOpen && (
+                <div className="ref-participant-note">
+                  <UserOutlined />
+                  <span>会议创建后可从用户库选择人员，或直接发送手机接入邀请；现在无需补齐。</span>
                 </div>
               )}
 
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-                <input className="ref-input" type="text" value={newAgendaInput} onChange={e => setNewAgendaInput(e.target.value)}
-                  placeholder="手动输入议题后回车添加"
-                  style={{ flex: 1 }}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && newAgendaInput.trim()) {
-                      setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]);
-                      setNewAgendaInput('');
-                    }
-                  }} />
-                <button className="ref-btn-outline" style={{ padding: '10px 16px', flexShrink: 0 }}
-                  onClick={() => {
-                    if (newAgendaInput.trim()) {
-                      setManualAgendaItems(prev => [...prev, { id: `m-${Date.now()}`, title: newAgendaInput.trim(), type: '手动', risk: '普通', source: 'manual' }]);
-                      setNewAgendaInput('');
-                    }
-                  }}>
-                  <PlusOutlined /> 添加
-                </button>
+              <div className="ref-secondary-settings-row">
+                <label><span>预计</span><input type="number" min="15" max="480" step="15" value={meetingDurationMinutes} onChange={event => setMeetingDurationMinutes(Number(event.target.value) || 60)} /><span>分钟</span></label>
+                <i />
+                <button type="button" onClick={event => event.currentTarget.closest('.ref-settings-form')?.querySelector('.ref-advanced-settings')?.toggleAttribute('open')}>更多设置</button>
               </div>
 
-              <div className="ref-col3-actions">
-                <button className="ref-btn-white" onClick={() => setMeetingWorkspaceOpen(false)}>取消</button>
-                <button className="ref-btn-primary" onClick={createMeeting} disabled={!meetingTitle.trim()}>
-                  <SparkleIcon /> {meetingTitle.trim() ? '创建会议' : '请先输入会议名称'}
-                </button>
-              </div>
+              <details className="ref-advanced-settings">
+                <summary><span>更多设置</span><small>归档与权限类信息</small></summary>
+                <div className="ref-advanced-body">
+                  <div className="ref-field"><div className="ref-field-label">归档文号 <span className="ref-optional">可会后填写</span></div><input className="ref-input" type="text" value={meetingNo} onChange={e => setMeetingNo(e.target.value)} placeholder="归档或正式发文时再补充" /></div>
+                  <div className="ref-advanced-note">会议地点、归档分类、治理模式、纪要模板、录音规则、权限范围和保密级别可在创建后按需补充。</div>
+                </div>
+              </details>
             </div>
-          </div>
-        </div>
 
-        {/* 底部信息横幅 */}
-        <div className="ref-footer-banner">
-          <InfoCircleIcon />
-          <p>AI 将为会议自动生成议题、记录要点、生成纪要，并归档相关资料，确保会议合规可追溯。</p>
+            <div className="ref-settings-footer">
+              <div className="ref-create-readiness"><span>{plannedItems.length ? `${plannedItems.length} 个议题已准备` : '还没有待上会议题'}</span><em>{selectedTypeLabel} · 预计 {meetingDurationMinutes} 分钟</em></div>
+              <button className="ref-btn-primary ref-create-submit" onClick={createMeeting} disabled={!canCreateMeeting}><CalendarOutlined /> 创建会议</button>
+              <div className="ref-create-note"><InfoCircleIcon /> 创建后仍可邀请参会人、补充材料和调整议题。</div>
+            </div>
+          </aside>
         </div>
 
         <Modal
@@ -3302,7 +3565,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     <StatusPill color={agendaFrozen ? 'green' : 'gold'}>{agendaFrozen ? '议程已冻结' : '议程待确认'}</StatusPill>
                   </Space>
                   <div style={{ marginTop: 9, color: palette.ink, fontWeight: 600, fontSize: 16 }}>当前议题：{agendaTitle}</div>
-                  <div style={{ marginTop: 5, color: palette.muted, fontSize: 12 }}>{meetingDate} · {isMajorMeeting ? '三重一大' : '普通会议'} · {projectName || '本次会议'}</div>
+                  <div style={{ marginTop: 5, color: palette.muted, fontSize: 12 }}>{meetingDate.replace('T', ' ')} · {isMajorMeeting ? '三重一大' : '普通会议'} · {projectName || '本次会议'}</div>
                   <div style={{ marginTop: 5, color: palette.muted, fontSize: 13 }}>{isMajorMeeting ? 'AI 正在实时转写、提炼阶段结论，并同步检查三重一大触发条件。' : 'AI 正在实时转写、提炼阶段结论，并对照会前待办生成纪实、纪要和决议。'}</div>
                 </div>
                 <MeetingAiPulse active={recording} />
@@ -3529,8 +3792,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const getActionText = () => {
     if (activeStage === 'collect') return '确认议题并开始会议';
     if (activeStage === 'meeting') return isMajorMeeting ? '结束会议，进入终审' : '结束会议，整理纪要';
-    if (activeStage === 'audit') return isMajorMeeting ? '补齐材料并通过终审' : '确认纪要并归档';
-    return archiveDone ? '已完成归档' : '生成红头文件并归档';
+    if (activeStage === 'audit') return isMajorMeeting ? '确认材料，进入归档' : '确认纪要，进入归档';
+    return archiveDone ? '已完成归档' : '确认归档并完成';
   };
 
   const stageCopyMap = {
@@ -3541,33 +3804,30 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
   const currentStageCopy = stageCopyMap[activeStage];
 
-  const renderStageTimeline = () => (
-    <div className="meeting-stage-strip">
-      {STAGES.map(stage => {
-        const state = getStageState(stage.key);
-        const isActive = state === 'active';
-        const isComplete = state === 'complete';
-        return (
-          <div
-            key={stage.key}
-            className={`meeting-stage-card is-${state}`}
-            style={{
-              border: `1px solid ${isActive ? '#93c5fd' : palette.line}`,
-              background: isActive ? (isDarkMode ? '#10213a' : '#eff6ff') : palette.panelSoft,
-              opacity: state === 'locked' ? 0.58 : 1,
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <span style={{ color: isActive ? palette.blue : isComplete ? palette.green : palette.muted, fontWeight: 600, fontSize: 12 }}>{stage.no}</span>
-              {isComplete ? <CheckCircleOutlined style={{ color: palette.green }} /> : isActive ? <SyncOutlined spin style={{ color: palette.blue }} /> : <ClockCircleOutlined style={{ color: palette.muted }} />}
+  const renderStageTimeline = () => {
+    const steps = [
+      { title: '会后整理', desc: '生成纪要、决议与待办' },
+      { title: '纪要确认', desc: '核对内容、签字与材料' },
+      { title: '归档完成', desc: '确认清单并正式归档' },
+    ];
+    const currentIndex = activeStage === 'archive' ? 2 : meetingGeneratedRecords?.generated ? 1 : 0;
+    return (
+      <div className="post-meeting-stepper" aria-label="会后处理进度">
+        {steps.map((step, index) => {
+          const archiveIsComplete = activeStage === 'archive' && archiveDone;
+          const isComplete = index < currentIndex || (index === 2 && archiveIsComplete);
+          const isActive = index === currentIndex && !(index === 2 && archiveIsComplete);
+          return (
+            <div key={step.title} className={`post-meeting-step ${isComplete ? 'is-complete' : ''} ${isActive ? 'is-active' : ''}`}>
+              <span>{isComplete ? <CheckCircleOutlined /> : index + 1}</span>
+              <div><strong>{step.title}</strong><em>{step.desc}</em></div>
+              {index < steps.length - 1 && <i />}
             </div>
-            <div style={{ color: palette.ink, fontWeight: 600, marginTop: 5 }}>{stage.title}</div>
-            <div style={{ color: palette.muted, fontSize: 12, marginTop: 3, lineHeight: 1.35 }}>{stage.desc}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
+          );
+        })}
+      </div>
+    );
+  };
 
   const renderChatPanel = () => (
     <section style={{ ...panelStyle, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
@@ -3992,7 +4252,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         <div className="meeting-header-participant-strip">
           {participantStrip.map((item, index) => (
             <div key={`${item.name}-${index}`} className={`meeting-voice-chip ${item.active ? 'is-speaking' : ''} ${item.empty ? 'is-empty' : ''}`} style={{ background: item.color }}>
-              <div className="meeting-video-face">{item.empty ? '+' : item.name.slice(0, 1)}</div>
+              <div className="meeting-video-face">{item.empty ? <UserOutlined /> : item.name.slice(0, 1)}</div>
               <div className="meeting-voice-chip-text">
                 <strong>{item.name}</strong>
                 <span>{item.empty ? '待接入' : item.role || '参会人'}</span>
@@ -4000,6 +4260,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               {item.active && <em>说话中</em>}
             </div>
           ))}
+          <button type="button" className="meeting-participant-add" onClick={() => setRecorderInviteOpen(true)}><PlusOutlined /><span>添加参会人</span></button>
         </div>
       </div>
     );
@@ -4039,8 +4300,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     ];
     const meetingLiveRows = liveTranscriptRows;
 
-    const agendaCheckRows = activeIssueCards.length ? activeIssueCards.slice(0, 6).map((item, index) => {
-      const title = item.id === 'issue-001' ? agendaDisplayTitle : item.title;
+    const agendaCheckRows = meetingAgendaItems.length ? meetingAgendaItems.slice(0, 6).map((item, index) => {
+      const title = item.title || agendaDisplayTitle;
       const id = item.id || `agenda-${index}`;
       const realtimeCheck = agendaRealtimeChecks[id];
       const relation = realtimeCheck?.relation || (remoteTranscripts.length ? 'checking' : 'waiting');
@@ -4066,6 +4327,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       relation: agendaRealtimeChecks['agenda-current']?.relation || 'waiting',
     }];
     const activeAgendaId = activeMeetingAgendaId || agendaCheckRows[0]?.id;
+    const activeAgendaItem = meetingAgendaItems.find(item => item.id === activeAgendaId) || meetingAgendaItems[0] || agendaCheckRows[0];
+    const currentAgendaTitle = activeAgendaItem?.title || agendaDisplayTitle;
     const triggerAgendaMarker = (label, agendaItem = agendaCheckRows.find(item => item.id === activeAgendaId) || agendaCheckRows[0]) => {
       if (!agendaItem) return;
       setActiveMeetingAgendaId(agendaItem.id);
@@ -4088,15 +4351,17 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         <section className="meeting-call-shell" style={{ ...panelStyle, background: isDarkMode ? '#0f172a' : '#ffffff', border: `1px solid ${palette.line}` }}>
           <div className="meeting-share-toolbar" style={{ borderBottom: `1px solid ${palette.line}` }}>
             <div className="meeting-share-topic">
-              <span>当前议题：{agendaDisplayTitle}</span>
-              <Button size="small" type={!isMajorMeeting ? 'primary' : 'default'} onClick={() => handleMeetingModeChange('normal')}>普通会议</Button>
-              <Button size="small" danger={isMajorMeeting} type={isMajorMeeting ? 'primary' : 'default'} onClick={() => handleMeetingModeChange('major')}>三重一大</Button>
+              <span className="meeting-share-kicker">当前议题</span>
+              <strong>{currentAgendaTitle}</strong>
+              <StatusPill color="blue">正在讨论</StatusPill>
             </div>
             <div className="meeting-share-mode-actions">
+              <span className={`meeting-live-state ${recording ? 'is-recording' : ''}`}><i />{recording ? '录制中' : '待录制'}</span>
+              <span>{connectedCount} 人已接入</span>
               <ClockCircleOutlined />
               <span>已讨论 {hasMeetingSpeech || recording ? meetingElapsed : '00:00:00'}</span>
-              {activeIssueCards.length > 0 && (() => {
-                const activeAgenda = activeIssueCards.find(a => a.id === activeMeetingAgendaId) || activeIssueCards[0];
+              {meetingAgendaItems.length > 0 && (() => {
+                const activeAgenda = meetingAgendaItems.find(a => a.id === activeMeetingAgendaId) || meetingAgendaItems[0];
                 const dur = activeAgenda?.durationMinutes || 15;
                 const min = Math.floor(agendaTimerSeconds / 60);
                 const sec = agendaTimerSeconds % 60;
@@ -4105,21 +4370,24 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   <>
                     <span style={{ marginLeft: 12, fontSize: 12 }}>
                       <span style={{ color: remain <= 2 ? '#c24135' : remain <= 5 ? '#b45309' : '#64748b' }}>
-                        议题{activeIssueCards.findIndex(a => a.id === (activeMeetingAgendaId || activeIssueCards[0]?.id)) + 1 || 1} · {String(min).padStart(2,'0')}:{String(sec).padStart(2,'0')} / {dur}分
+                        议题{meetingAgendaItems.findIndex(a => a.id === (activeMeetingAgendaId || meetingAgendaItems[0]?.id)) + 1 || 1} · {String(min).padStart(2,'0')}:{String(sec).padStart(2,'0')} / {dur}分
                         {agendaTimerActive && remain <= 5 && remain > 0 && ` ⚠️ 剩余${remain}分`}
                         {agendaTimerActive && remain <= 0 && ' ⏰ 已超时'}
                       </span>
                     </span>
                     <Space size={4} style={{ marginLeft: 8 }}>
                       {!agendaTimerActive ? (
-                        <Button size="small" type="primary" onClick={() => { setActiveMeetingAgendaId(activeAgenda.id); handleAgendaTimer(activeAgenda.id, 'start'); }}>开始计时</Button>
+                        <Button size="small" type="primary" loading={activatingAgendaId === activeAgenda.id} onClick={async () => {
+                          const activated = activeAgenda.isFormalAgenda ? await persistActivateAgenda(activeAgenda.id) : true;
+                          if (activated) handleAgendaTimer(activeAgenda.legacyDraftId || activeAgenda.id, 'start');
+                        }}>开始计时</Button>
                       ) : (
                         <>
-                          <Button size="small" onClick={() => handleAgendaTimer(activeAgenda.id, 'extend', { extend_minutes: 5 })}>+5分</Button>
-                          {activeIssueCards.length > 1 && (
-                            <Button size="small" onClick={() => handleAgendaTimer(activeAgenda.id, 'advance')}>下一议题</Button>
+                          <Button size="small" onClick={() => handleAgendaTimer(activeAgenda.legacyDraftId || activeAgenda.id, 'extend', { extend_minutes: 5 })}>+5分</Button>
+                          {meetingAgendaItems.length > 1 && (
+                            <Button size="small" onClick={() => handleAgendaTimer(activeAgenda.legacyDraftId || activeAgenda.id, 'advance')}>下一议题</Button>
                           )}
-                          <Button size="small" onClick={() => handleAgendaTimer(activeAgenda.id, 'reset')}>重置</Button>
+                          <Button size="small" onClick={() => handleAgendaTimer(activeAgenda.legacyDraftId || activeAgenda.id, 'reset')}>重置</Button>
                         </>
                       )}
                     </Space>
@@ -4185,6 +4453,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     </div>
                   ) : (
                     <div className="meeting-runtime-empty">
+                      <div className="meeting-runtime-empty-icon"><FileTextOutlined /><AudioOutlined /></div>
                       <strong>等待手机端实时转写</strong>
                       <span>点击"扫码邀请录音"，参会人登录手机录音页并开始说话后，文本会实时回传到 PC。</span>
                     </div>
@@ -4298,15 +4567,17 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 </div>
                 {/* 会中议题编辑区 */}
                 <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => setAgendaEditModal({ open: true, mode: 'add', item: null })}>
-                    添加议题
-                  </Button>
                   <Button size="small" type="dashed" icon={<ThunderboltOutlined />} onClick={quickCreateTemporaryAgenda}>
                     临时议题
                   </Button>
-                  <Button size="small" icon={<EditOutlined />} onClick={() => setAgendaEditModal({ open: true, mode: 'list', item: null })}>
-                    编辑议题
-                  </Button>
+                  {formalAgendas.length ? (
+                    <span style={{ color: palette.muted, fontSize: 11 }}>会议进行中，正式议题已锁定；新增内容将作为临时议题留痕。</span>
+                  ) : (
+                    <>
+                      <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => openAgendaDrawer('add')}>添加议题</Button>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openAgendaDrawer('list')}>管理议题</Button>
+                    </>
+                  )}
                 </div>
                 <div className="meeting-agenda-timeline">
                   {(agendaCheckRows.length > 2 ? agendaCheckRows.slice(0, 2) : agendaCheckRows).map((item, index) => {
@@ -4328,17 +4599,19 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                         key={item.id}
                         type="button"
                         className={`agenda-timeline-row ${rowClass}`}
-                        onClick={() => { setActiveMeetingAgendaId(item.id); persistActivateAgenda(item.id); }}
+                        disabled={Boolean(activatingAgendaId)}
+                        onClick={() => persistActivateAgenda(item.id)}
                       >
                         <span className="agenda-tl-node">{isResolved ? '✓' : index + 1}</span>
                         <div className="agenda-tl-body">
                           <div className="agenda-tl-title-row">
                             {isActive && <span className="agenda-tl-badge">正在讨论</span>}
+                            {activatingAgendaId === item.id && <span className="agenda-tl-badge">切换中…</span>}
                             <strong>{item.title}</strong>
                           </div>
                           {item.hint && <em>✨ {item.hint}</em>}
                         </div>
-                        <span style={{ fontSize: 10, color: '#94a3b8', marginRight: 4 }}>{(activeIssueCards.find(a => a.id === item.id) || item).durationMinutes || 15}分</span>
+                        <span style={{ fontSize: 10, color: '#94a3b8', marginRight: 4 }}>{(meetingAgendaItems.find(a => a.id === item.id) || item).durationMinutes || 15}分</span>
                         <span className={`agenda-tl-status ${statusTone}`}>{statusText}</span>
                         <div className="agenda-tl-actions" aria-label="议题快捷标记">
                           <b onClick={(e) => { e.stopPropagation(); triggerAgendaMarker('标决议', item); }}><CheckCircleOutlined />决议</b>
@@ -4352,7 +4625,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     <button
                       type="button"
                       className="agenda-timeline-row agenda-expand-row"
-                      onClick={() => setAgendaExpandOpen(true)}
+                      onClick={() => openAgendaDrawer('list')}
                     >
                       <span className="agenda-tl-node">+{agendaCheckRows.length - 2}</span>
                       <div className="agenda-tl-body">
@@ -4362,200 +4635,183 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     </button>
                   )}
                 </div>
-                {/* 议题编辑弹窗 */}
-                <Modal
-                  title={agendaEditModal.mode === 'add' ? '添加议题' : '编辑议题'}
+                <Drawer
+                  title={agendaEditModal.mode === 'temporary' ? '新增临时议题' : agendaEditModal.mode === 'add' ? '添加议题' : `议题管理 · ${meetingAgendaItems.length || agendaDrafts.length} 项`}
                   open={agendaEditModal.open}
-                  onCancel={() => setAgendaEditModal({ open: false, mode: 'list', item: null })}
-                  footer={null}
-                  width={480}
+                  onClose={closeAgendaDrawer}
+                  placement="right"
+                  size={480}
+                  className="agenda-management-drawer"
+                  destroyOnClose
                 >
-                  {agendaEditModal.mode === 'add' ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      <div>
-                        <Text style={{ display: 'block', marginBottom: 4 }}>议题名称</Text>
+                  {['add', 'temporary'].includes(agendaEditModal.mode) ? (
+                    <div className="agenda-drawer-form">
+                      <div className={`agenda-drawer-context ${agendaEditModal.mode === 'temporary' ? 'is-temporary' : ''}`}>
+                        <strong>{agendaEditModal.mode === 'temporary' ? '不会打断会议' : '在当前工作区完成'}</strong>
+                        <span>{agendaEditModal.mode === 'temporary' ? '保存后自动切换到该议题，后续发言立即归入新议题。' : '保存后直接插入议题列表，无需离开会中页面。'}</span>
+                      </div>
+                      <label className="agenda-drawer-field">
+                        <span>议题名称</span>
                         <Input
-                          placeholder="输入议题名称"
+                          placeholder="例如：确认下一阶段资源安排"
                           value={agendaEditForm.title}
-                          onChange={e => setAgendaEditForm(f => ({ ...f, title: e.target.value }))}
-                          onPressEnter={() => {
-                            if (!agendaEditForm.title.trim()) return;
-                            const newId = `agenda-manual-${Date.now()}`;
-                            const newItem = {
-                              id: newId, title: agendaEditForm.title.trim(),
-                              type: agendaEditForm.type, risk: '低',
-                              durationMinutes: agendaEditForm.durationMinutes,
-                              source: '会中手动添加',
-                            };
+                          onChange={e => setAgendaEditForm(form => ({ ...form, title: e.target.value }))}
+                          onPressEnter={agendaEditModal.mode === 'temporary' ? submitTemporaryAgenda : addAgendaDraftFromDrawer}
+                          autoFocus
+                        />
+                      </label>
+                      <div className="agenda-drawer-grid">
+                        {agendaEditModal.mode !== 'temporary' && (
+                          <label className="agenda-drawer-field">
+                            <span>议题类型</span>
+                            <Select value={agendaEditForm.type} onChange={value => setAgendaEditForm(form => ({ ...form, type: value }))}>
+                              <Select.Option value="普通">普通</Select.Option>
+                              <Select.Option value="重大决策">重大决策</Select.Option>
+                              <Select.Option value="重大项目">重大项目</Select.Option>
+                              <Select.Option value="人事任免">人事任免</Select.Option>
+                              <Select.Option value="资金运作">资金运作</Select.Option>
+                            </Select>
+                          </label>
+                        )}
+                        <label className="agenda-drawer-field">
+                          <span>预计时长</span>
+                          <Input
+                            type="number"
+                            suffix="分钟"
+                            value={agendaEditForm.durationMinutes}
+                            min={5}
+                            max={120}
+                            onChange={e => setAgendaEditForm(form => ({ ...form, durationMinutes: parseInt(e.target.value, 10) || 15 }))}
+                          />
+                        </label>
+                      </div>
+                      <label className="agenda-drawer-field">
+                        <span>插入位置</span>
+                        <Select value={agendaEditForm.insertPosition} onChange={value => setAgendaEditForm(form => ({ ...form, insertPosition: value }))}>
+                          <Select.Option value="after-current">当前议题之后</Select.Option>
+                          <Select.Option value="end">议题列表末尾</Select.Option>
+                        </Select>
+                      </label>
+                      <div className="agenda-insert-preview">
+                        <span>位置预览</span>
+                        <strong>{currentAgendaTitle}</strong>
+                        <em>↓</em>
+                        <b>{agendaEditForm.title.trim() || '新议题将显示在这里'}</b>
+                      </div>
+                      <div className="agenda-drawer-actions">
+                        <Button onClick={closeAgendaDrawer}>取消</Button>
+                        <Button
+                          type="primary"
+                          loading={agendaSaving}
+                          disabled={!agendaEditForm.title.trim()}
+                          onClick={agendaEditModal.mode === 'temporary' ? submitTemporaryAgenda : addAgendaDraftFromDrawer}
+                        >
+                          {agendaEditModal.mode === 'temporary' ? '添加并切换议题' : '确认添加'}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : formalAgendas.length ? (
+                    <div className="agenda-drawer-list">
+                      <div className="agenda-drawer-context">
+                        <strong>正式议题已锁定</strong>
+                        <span>点击任一议题即可切换。会议中新增内容会自动作为临时议题留痕。</span>
+                      </div>
+                      {meetingAgendaItems.map((item, index) => {
+                        const isActive = item.id === activeAgendaId;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={`agenda-drawer-row ${isActive ? 'is-active' : ''} ${item.id === locatedAgendaId ? 'is-located' : ''}`}
+                            onClick={async () => {
+                              const activated = await persistActivateAgenda(item.id);
+                              if (activated) closeAgendaDrawer();
+                            }}
+                          >
+                            <span>{String(index + 1).padStart(2, '0')}</span>
+                            <div><strong>{item.title}</strong><em>{item.agendaType === 'temporary' ? '临时议题' : '正式议题'} · {item.durationMinutes || 15} 分钟</em></div>
+                            <b>{isActive ? '正在讨论' : '切换'}</b>
+                          </button>
+                        );
+                      })}
+                      <Button type="primary" ghost block icon={<ThunderboltOutlined />} onClick={() => openAgendaDrawer('temporary')}>
+                        新增临时议题
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="agenda-drawer-list">
+                      <div className="agenda-drawer-context">
+                        <strong>议题顺序会直接影响会中流程</strong>
+                        <span>拖动左侧把手调整顺序；名称离开输入框后自动保存。</span>
+                      </div>
+                      {agendaDrafts.map((item, index) => (
+                        <div
+                          key={item.id}
+                          className="agenda-drawer-edit-row"
+                          draggable
+                          onDragStart={() => { agendaDragRef.current = item.id; }}
+                          onDragOver={event => event.preventDefault()}
+                          onDrop={() => {
+                            const sourceId = agendaDragRef.current;
+                            if (!sourceId || sourceId === item.id) return;
                             setAgendaDrafts(prev => {
-                              const next = [...prev, newItem];
+                              const sourceIndex = prev.findIndex(draft => draft.id === sourceId);
+                              const targetIndex = prev.findIndex(draft => draft.id === item.id);
+                              if (sourceIndex < 0 || targetIndex < 0) return prev;
+                              const next = [...prev];
+                              const [moved] = next.splice(sourceIndex, 1);
+                              next.splice(targetIndex, 0, moved);
                               saveAgendaDrafts(next);
                               return next;
                             });
-                            setActiveMeetingAgendaId(newId);
-                            setAgendaEditForm({ title: '', type: '普通', durationMinutes: 15 });
-                            setAgendaEditModal({ open: false, mode: 'list', item: null });
-                            message.success('议题已添加');
+                            agendaDragRef.current = '';
                           }}
-                          autoFocus
-                        />
-                      </div>
-                      <div style={{ display: 'flex', gap: 12 }}>
-                        <div style={{ flex: 1 }}>
-                          <Text style={{ display: 'block', marginBottom: 4 }}>类型</Text>
-                          <Select value={agendaEditForm.type} onChange={v => setAgendaEditForm(f => ({ ...f, type: v }))} style={{ width: '100%' }}>
-                            <Select.Option value="普通">普通</Select.Option>
-                            <Select.Option value="重大决策">重大决策</Select.Option>
-                            <Select.Option value="重大项目">重大项目</Select.Option>
-                            <Select.Option value="人事任免">人事任免</Select.Option>
-                            <Select.Option value="资金运作">资金运作</Select.Option>
-                          </Select>
-                        </div>
-                        <div style={{ flex: 1 }}>
-                          <Text style={{ display: 'block', marginBottom: 4 }}>预计时长（分钟）</Text>
-                          <Input type="number" value={agendaEditForm.durationMinutes} min={5} max={120}
-                            onChange={e => setAgendaEditForm(f => ({ ...f, durationMinutes: parseInt(e.target.value) || 15 }))} />
-                        </div>
-                      </div>
-                      <Button type="primary" block disabled={!agendaEditForm.title.trim()} onClick={() => {
-                        const newId = `agenda-manual-${Date.now()}`;
-                        const newItem = {
-                          id: newId, title: agendaEditForm.title.trim(),
-                          type: agendaEditForm.type, risk: '低',
-                          durationMinutes: agendaEditForm.durationMinutes,
-                          source: '会中手动添加',
-                        };
-                        setAgendaDrafts(prev => {
-                          const next = [...prev, newItem];
-                          saveAgendaDrafts(next);
-                          return next;
-                        });
-                        setActiveMeetingAgendaId(newId);
-                        setAgendaEditForm({ title: '', type: '普通', durationMinutes: 15 });
-                        setAgendaEditModal({ open: false, mode: 'list', item: null });
-                        message.success('议题已添加');
-                      }}>确认添加</Button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflowY: 'auto' }}>
-                      {agendaDrafts.map((item, idx) => (
-                        <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#f8f9fa', borderRadius: 8 }}>
-                          <span style={{ color: '#999', fontSize: 12, minWidth: 20 }}>{idx + 1}</span>
-                          <Input size="small" defaultValue={item.title} style={{ flex: 1 }}
-                            onPressEnter={e => {
-                              const v = e.target.value.trim();
-                              if (v && v !== item.title) {
+                        >
+                          <span className="agenda-drag-handle">⋮⋮</span>
+                          <b>{String(index + 1).padStart(2, '0')}</b>
+                          <Input
+                            size="small"
+                            defaultValue={item.title}
+                            onBlur={event => {
+                              const title = event.target.value.trim();
+                              if (title && title !== item.title) {
                                 setAgendaDrafts(prev => {
-                                  const next = prev.map(d => d.id === item.id ? { ...d, title: v } : d);
-                                  saveAgendaDrafts(next);
-                                  return next;
-                                });
-                                message.success('已更新');
-                              }
-                            }}
-                            onBlur={e => {
-                              const v = e.target.value.trim();
-                              if (v && v !== item.title) {
-                                setAgendaDrafts(prev => {
-                                  const next = prev.map(d => d.id === item.id ? { ...d, title: v } : d);
+                                  const next = prev.map(draft => draft.id === item.id ? { ...draft, title } : draft);
                                   saveAgendaDrafts(next);
                                   return next;
                                 });
                               }
                             }}
                           />
-                          <Select size="small" value={item.type || '普通'} style={{ width: 90 }}
-                            onChange={v => setAgendaDrafts(prev => {
-                              const next = prev.map(d => d.id === item.id ? { ...d, type: v } : d);
-                              saveAgendaDrafts(next);
-                              return next;
-                            })}>
-                            <Select.Option value="普通">普通</Select.Option>
-                            <Select.Option value="重大决策">重大决策</Select.Option>
-                            <Select.Option value="重大项目">重大项目</Select.Option>
-                          </Select>
                           <Popconfirm title="确认删除此议题？" onConfirm={() => {
                             setAgendaDrafts(prev => {
-                              const next = prev.filter(d => d.id !== item.id);
+                              const next = prev.filter(draft => draft.id !== item.id);
                               saveAgendaDrafts(next);
                               return next;
                             });
-                            message.success('已删除');
                           }} okText="删除" cancelText="取消">
                             <Button size="small" danger type="text" icon={<DeleteOutlined />} />
                           </Popconfirm>
                         </div>
                       ))}
                       {!agendaDrafts.length && <Empty description="暂无议题" />}
-                      <Button type="dashed" block icon={<PlusOutlined />} onClick={() => setAgendaEditModal({ open: true, mode: 'add', item: null })}>
+                      <Button type="dashed" block icon={<PlusOutlined />} onClick={() => openAgendaDrawer('add')}>
                         添加新议题
                       </Button>
                     </div>
                   )}
-                </Modal>
-                {/* 议题全部展开弹窗 */}
-                <Modal
-                  title={`本次会议议题（${agendaCheckRows.length} 项）`}
-                  open={agendaExpandOpen}
-                  onCancel={() => setAgendaExpandOpen(false)}
-                  footer={null}
-                  width={560}
-                  centered
-                  styles={{ body: { padding: '0 12px 12px', maxHeight: '60vh', overflow: 'auto' } }}
-                >
-                  {agendaCheckRows.map((item, index) => {
-                    const isActive = item.id === activeAgendaId;
-                    const rel = item.relation || 'waiting';
-                    const isMatched = rel === 'matched';
-                    const isIrrelevant = rel === 'irrelevant';
-                    const isResolved = rel === 'resolved';
-                    const isChecking = rel === 'checking';
-                    const statusText = isResolved ? '已讨论' : isMatched ? '已命中' : isIrrelevant ? '未命中' : isChecking ? '判断中' : '待讨论';
-                    const statusTone = isResolved ? 'is-green' : isMatched ? 'is-blue' : isIrrelevant ? 'is-orange' : isChecking ? 'is-orange' : 'is-gray';
-                    const rowClass = [
-                      isActive ? 'is-active' : '',
-                      isResolved ? 'is-completed' : '',
-                      isMatched ? 'is-matched' : '',
-                    ].filter(Boolean).join(' ');
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={`agenda-timeline-row ${rowClass}`}
-                        style={{ width: '100%', marginTop: 4 }}
-                        onClick={() => { setActiveMeetingAgendaId(item.id); setAgendaExpandOpen(false); }}
-                      >
-                        <span className="agenda-tl-node">{isResolved ? '✓' : index + 1}</span>
-                        <div className="agenda-tl-body">
-                          <div className="agenda-tl-title-row">
-                            {isActive && <span className="agenda-tl-badge">正在讨论</span>}
-                            <strong>{item.title}</strong>
-                          </div>
-                          {item.hint && <em style={{ animation: 'none' }}>✨ {item.hint}</em>}
-                        </div>
-                        <span className={`agenda-tl-status ${statusTone}`}>{statusText}</span>
-                        <div className="agenda-tl-actions" aria-label="议题快捷标记">
-                          <b onClick={(e) => { e.stopPropagation(); triggerAgendaMarker('标决议', item); }}><CheckCircleOutlined />决议</b>
-                          <b onClick={(e) => { e.stopPropagation(); triggerAgendaMarker('记待办', item); }}><ClockCircleOutlined />待办</b>
-                          <b onClick={(e) => { e.stopPropagation(); triggerAgendaMarker('有争议', item); }}><MessageOutlined />争议</b>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </Modal>
+                </Drawer>
               </section>
             </div>
           </div>
 
           <div className="meeting-bottom-bar" style={{ background: isDarkMode ? '#111827' : '#f8fafc', borderTop: `1px solid ${palette.line}` }}>
             {[
-              ['麦克风', <AudioOutlined />, recording ? 'is-on' : '', 'mic'],
+              [recording ? '录音中' : '开始录音', <AudioOutlined />, recording ? 'is-on' : '', 'record'],
               ['手机接入', <MobileOutlined />, '', 'mobile'],
-              ['权限设置', <CheckCircleOutlined />, '', 'permission'],
               [`参会人 ${connectedCount}`, <UserOutlined />, '', 'participants'],
-              ['聊天', <MessageOutlined />, '', 'chat'],
-              ['停止共享', <ShareAltOutlined />, 'is-stop-share', 'stopShare'],
-              ['录制', <ClockCircleOutlined />, recording ? 'is-on' : '', 'record'],
+              ['会中备注', <MessageOutlined />, '', 'chat'],
+              ['证据底稿', <FolderOpenOutlined />, '', 'evidence'],
             ].map(([label, icon, mode, action]) => (
               <button
                 key={label}
@@ -4567,10 +4823,6 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <span>{label}</span>
               </button>
             ))}
-            <button type="button" className="meeting-control-button" onClick={() => setMeetingActionType('evidence')}>
-              <FolderOpenOutlined />
-              <span>证据底稿</span>
-            </button>
             <button type="button" className="meeting-leave-button" onClick={() => setMeetingActionType('endMeeting')}>结束会议</button>
           </div>
 
@@ -5005,8 +5257,27 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
-  const renderArchiveWorkspace = () => (
-    <div className="meeting-workspace archive-workspace">
+  const renderArchiveWorkspace = () => {
+    const archiveItems = isMajorMeeting
+      ? [
+          { title: '聊天碎片与图片 OCR 原件', ready: chatMessages.length > 0 },
+          { title: '议题聚类、拆分和变更明细', ready: meetingAgendaItems.length > 0 },
+          { title: '录音原件、声纹分轨和校对日志', ready: remoteTranscripts.length > 0 && recordingPlaybackRows.length > 0 },
+          { title: '三重一大合规报告与催办闭环', ready: effectiveMissingMaterialCount === 0 && reviewDone },
+          { title: '红头纪要、电子签、显性水印与盲水印', ready: signedTranscriptRows.length > 0 },
+        ]
+      : [
+          { title: '聊天碎片与图片 OCR 原件', ready: chatMessages.length > 0 },
+          { title: '议题聚类、拆分和变更明细', ready: meetingAgendaItems.length > 0 },
+          { title: '录音原件、转写底稿和校对日志', ready: remoteTranscripts.length > 0 && recordingPlaybackRows.length > 0 },
+          { title: '会议纪实、会议纪要和会议决议', ready: Boolean(meetingGeneratedRecords?.generated) },
+          { title: '电子签、显性水印与归档包', ready: signedTranscriptRows.length > 0 },
+        ];
+    const archiveReadyCount = archiveItems.filter(item => item.ready).length;
+    const archivePercent = Math.round((archiveReadyCount / archiveItems.length) * 100);
+    return (
+    <div className="meeting-workspace archive-workspace archive-workspace-v2">
+      <div className="archive-primary-stack">
       {/* 归档文档 */}
       <section style={{ ...panelStyle, padding: 16, minHeight: 0, overflow: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
@@ -5075,25 +5346,17 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           </div>
         </div>
       </section>
-      <section style={{ ...panelStyle, padding: 16, minHeight: 0, overflow: 'auto' }}>
-          <Text strong style={{ color: palette.ink }}><FolderOpenOutlined style={{ color: palette.blue, marginRight: 8 }} />防伪归档包</Text>
+      </div>
+      <section className="archive-readiness-panel" style={{ ...panelStyle, padding: 16, minHeight: 0, overflow: 'auto' }}>
+          <div className="archive-readiness-head">
+            <div>
+              <Text strong style={{ color: palette.ink }}><FolderOpenOutlined style={{ color: palette.blue, marginRight: 8 }} />归档准备度</Text>
+              <span>确认材料完整性后再正式完成归档</span>
+            </div>
+            <Progress type="circle" size={58} percent={archivePercent} strokeColor={archivePercent === 100 ? palette.green : palette.blue} />
+          </div>
           <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
-            {(isMajorMeeting
-            ? [
-                { title: '聊天碎片与图片 OCR 原件', ready: chatMessages.length > 0 },
-                { title: '议题聚类、拆分和变更明细', ready: activeIssueCards.length > 0 },
-                { title: '录音原件、声纹分轨和校对日志', ready: remoteTranscripts.length > 0 && recordingPlaybackRows.length > 0 },
-                { title: '三重一大合规报告与催办闭环', ready: effectiveMissingMaterialCount === 0 && reviewDone },
-                { title: '红头纪要、电子签、显性水印与盲水印', ready: signedTranscriptRows.length > 0 && archiveDone },
-              ]
-            : [
-                { title: '聊天碎片与图片 OCR 原件', ready: chatMessages.length > 0 },
-                { title: '议题聚类、拆分和变更明细', ready: activeIssueCards.length > 0 },
-                { title: '录音原件、转写底稿和校对日志', ready: remoteTranscripts.length > 0 && recordingPlaybackRows.length > 0 },
-                { title: '会议纪实、会议纪要和会议决议', ready: Boolean(meetingGeneratedRecords?.generated) },
-                { title: '电子签、显性水印与归档包', ready: signedTranscriptRows.length > 0 && archiveDone },
-              ]
-          ).map((item, index) => (
+            {archiveItems.map((item, index) => (
             <div key={item.title} style={{ display: 'grid', gridTemplateColumns: '26px 1fr auto', gap: 9, alignItems: 'center', padding: 11, borderRadius: 10, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
               <span style={{ width: 22, height: 22, borderRadius: 999, background: item.ready ? '#dcfce7' : '#f1f5f9', color: item.ready ? palette.green : palette.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600 }}>{index + 1}</span>
               <span style={{ color: palette.text }}>{item.title}</span>
@@ -5101,9 +5364,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             </div>
           ))}
         </div>
+        <div className="archive-readiness-summary">
+          <strong>{archiveReadyCount}/{archiveItems.length} 项材料已就绪</strong>
+          <span>{archivePercent === 100 ? '材料齐全，可以完成归档。' : `仍有 ${archiveItems.length - archiveReadyCount} 项待补齐；系统会保留缺口提示。`}</span>
+        </div>
       </section>
     </div>
-  );
+    );
+  };
 
   const renderCurrentWorkspace = () => {
     if (activeStage === 'collect') return renderCollectWorkspace();
@@ -5129,7 +5397,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
     const markerLabel = meetingActionType.startsWith('marker:') ? meetingActionType.replace('marker:', '') : '';
     if (markerLabel) {
-      const markerAgenda = activeIssueCards.find(item => item.id === activeMeetingAgendaId) || { title: agendaTitle };
+      const markerAgenda = meetingAgendaItems.find(item => item.id === activeMeetingAgendaId) || { title: agendaTitle };
       const candidateTranscripts = liveTranscriptRows.slice(0, 8);
       const selectedIndex = Math.min(pendingMarkerTranscriptIndex, Math.max(0, candidateTranscripts.length - 1));
       const selectedTranscript = candidateTranscripts[selectedIndex] || null;
@@ -5522,7 +5790,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 {activeStage === 'meeting' ? (
                   <div className="meeting-compact-meta">
                     <StatusPill color="blue">AI 会议</StatusPill>
-                    <StatusPill color="default">{meetingDate}</StatusPill>
+                    <StatusPill color="default">{meetingDate.replace('T', ' ')}</StatusPill>
                     <StatusPill color="default">ID：{meetingIdMeta}</StatusPill>
                     <StatusPill color="green">议题已锁定</StatusPill>
                   </div>
@@ -5534,7 +5802,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <Space size={7} wrap className="meeting-compact-stage-tags">
                   <StatusPill color="blue">AI 会议</StatusPill>
                   <StatusPill color={isMajorMeeting ? 'gold' : 'green'}>{isMajorMeeting ? '三重一大' : '普通会议'}</StatusPill>
-                  <StatusPill color="default">{meetingDate}</StatusPill>
+                      <StatusPill color="default">{meetingDate.replace('T', ' ')}</StatusPill>
                   <Button size="small" onClick={backToMeetingList}>返回会议列表</Button>
                 </Space>
               )}
@@ -5554,7 +5822,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         </section>
 
         {activeStage !== 'meeting' && (
-          <section style={{ ...panelStyle, padding: 12, flex: '0 0 auto' }}>
+          <section className="post-meeting-progress-shell" style={{ ...panelStyle, padding: 12, flex: '0 0 auto' }}>
             {renderStageTimeline()}
           </section>
         )}
@@ -5564,7 +5832,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         </main>
 
         {activeStage !== 'meeting' && (
-          <section style={{ ...panelStyle, padding: 12, flex: '0 0 auto', display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+          <section className="post-meeting-actionbar" style={{ ...panelStyle, padding: 12, flex: '0 0 auto', display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               {activeStage !== 'collect' && (
                 <Button
@@ -5573,7 +5841,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     const prevStage = { audit: 'meeting', archive: 'audit' }[activeStage];
                     if (prevStage) {
                       setActiveStage(prevStage);
-                      const phaseMap = { collect: '会前确认', meeting: '会中记录', audit: '会后终审', archive: '已归档' };
+                      const phaseMap = { collect: '会前确认', meeting: '会中记录', audit: '会后终审', archive: '待归档' };
                       await persistStage(prevStage, phaseMap[prevStage] || '');
                       message.info(`已返回${STAGES.find(s => s.key === prevStage)?.title || prevStage}`);
                     }
@@ -5586,7 +5854,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 {activeStage === 'archive' && archiveDone ? '已完成归档' : ''}
               </Text>
             </div>
-            <Button type="primary" icon={<SyncOutlined />} onClick={runStageAction} disabled={activeStage === 'archive' && archiveDone} style={{ fontWeight: 600 }}>
+            <Button type="primary" icon={activeStage === 'archive' ? <FolderOpenOutlined /> : <CheckCircleOutlined />} onClick={runStageAction} disabled={activeStage === 'archive' && archiveDone} style={{ fontWeight: 600 }}>
               {getActionText()}
             </Button>
           </section>

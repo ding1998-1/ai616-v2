@@ -96,6 +96,8 @@ import {
   UserOutlined,
   SafetyCertificateOutlined,
   ScheduleOutlined,
+  SettingOutlined,
+  BellOutlined,
 } from '@ant-design/icons';
 import LoginPage from './pages/LoginPage';
 import { authFetchJson, getStoredToken, setStoredToken } from './lib/auth';
@@ -117,7 +119,7 @@ const TodoDashboard = lazy(() => import('./pages/TodoDashboard'));
 
 const { Sider, Content, Header } = Layout;
 const { Text, Title } = Typography;
-const UI_PRIMARY = '#165DFF';
+const UI_PRIMARY = '#0A65CC';
 const UI_PAGE_BG = 'var(--ui-bg-page)';
 const UI_PANEL_BG = 'var(--ui-bg-panel)';
 const UI_BORDER = 'var(--ui-border-2)';
@@ -227,9 +229,9 @@ function SidebarStatus({ online }) {
   const dotColor = online === null ? '#f59e0b' : online ? '#22c55e' : '#ef4444';
   return (
     <Tooltip title={online ? '后端 API 在线' : '无法连接到后端，请检查服务是否启动'}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 12px', padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.62)' }}>
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, boxShadow: `0 0 0 4px ${dotColor}22` }} />
-        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>{label}</span>
+        <span style={{ fontSize: 11, color: '#7c8798' }}>{label}</span>
       </div>
     </Tooltip>
   );
@@ -264,21 +266,31 @@ function AppShell({ currentUser, onLogout }) {
 
   const menuItems = useMemo(() => {
     const items = [
-      { key: 'ai_meeting', icon: <AudioOutlined />, label: '会议管理' },
-      { key: 'todos', icon: <ScheduleOutlined />, label: '待办事项' },
-      { type: 'divider' },
-      { key: 'dashboard', icon: <DashboardOutlined />, label: '处置工作台' },
-      { key: 'compliance_focus', icon: <SafetyCertificateOutlined />, label: '快速审查' },
-      { key: 'compliance', icon: <FileTextOutlined />, label: '三重一大审查' },
-      { key: 'oa', icon: <DesktopOutlined />, label: 'OA 审批' },
-      { key: 'archive', icon: <FolderOpenOutlined />, label: '归档中心' },
-      { key: 'knowledge', icon: <DatabaseOutlined />, label: '会议知识库' },
-      { key: 'cases', icon: <ExperimentOutlined />, label: '合同审查' },
-      { key: 'library', icon: <BookOutlined />, label: '知识文库' },
+      { key: 'ai_meeting', icon: <AudioOutlined />, label: '会议' },
+      { key: 'todos', icon: <ScheduleOutlined />, label: '待办' },
+      { key: 'knowledge', icon: <DatabaseOutlined />, label: '知识' },
     ];
     if (currentUser?.role === 'admin') {
-      items.push({ key: 'rules', icon: <SafetyCertificateOutlined />, label: '制度规则库' });
-      items.push({ key: 'users', icon: <TeamOutlined />, label: '用户管理' });
+      items.push({ type: 'divider' });
+      items.push({
+        key: 'management',
+        icon: <SettingOutlined />,
+        label: '管理',
+        children: [
+          { key: 'users', icon: <TeamOutlined />, label: '用户与角色' },
+          { key: 'rules', icon: <BookOutlined />, label: '制度资料' },
+          {
+            key: 'extensions',
+            icon: <FolderOpenOutlined />,
+            label: '扩展工具',
+            children: [
+              { key: 'compliance_focus', icon: <SafetyCertificateOutlined />, label: '快速审查' },
+              { key: 'cases', icon: <ExperimentOutlined />, label: '合同审查' },
+              { key: 'oa', icon: <DesktopOutlined />, label: 'OA 联动' },
+            ],
+          },
+        ],
+      });
     }
     return items;
   }, [currentUser]);
@@ -356,63 +368,62 @@ function AppShell({ currentUser, onLogout }) {
     >
       <Layout className="app-shell" style={{ height: '100vh', background: UI_PAGE_BG }}>
         <Sider
-          width={218}
-          theme="dark"
+          width={236}
+          theme="light"
           style={{
             position: 'fixed',
             inset: 0,
             display: 'flex',
             flexDirection: 'column',
-            background: 'var(--ui-bg-sidebar)',
-            borderRight: '1px solid rgba(255,255,255,0.05)',
-            boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.03)',
+            background: 'rgba(248,248,250,0.94)',
+            borderRight: '1px solid rgba(15,23,42,0.06)',
+            backdropFilter: 'blur(24px)',
           }}
         >
-          <div style={{ padding: '14px 16px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ padding: '22px 18px 16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <SidebarBrandMark />
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>AI 会议管理</div>
-                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>会议 · 议题 · 决议 · 归档</div>
+                <div style={{ fontSize: 15, fontWeight: 650, color: '#172033', letterSpacing: '-0.01em' }}>AI 会议工作台</div>
+                <div style={{ fontSize: 11, color: '#8b95a7', marginTop: 2 }}>从议题到决议</div>
               </div>
             </div>
-            <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ marginTop: 20, padding: '11px 12px', borderRadius: 16, background: 'rgba(255,255,255,0.72)', border: '1px solid rgba(15,23,42,0.05)', boxShadow: '0 8px 24px rgba(15,23,42,0.04)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Avatar size={34} icon={<UserOutlined />} style={{ background: UI_PRIMARY }} />
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ color: '#fff', fontWeight: 500 }}>{currentUser?.name}</div>
-                  <div style={{ color: 'rgba(255,255,255,0.48)', fontSize: 11 }}>{currentUser?.dept}</div>
+                  <div style={{ color: '#172033', fontWeight: 600 }}>{currentUser?.name}</div>
+                  <div style={{ color: '#8b95a7', fontSize: 11, marginTop: 2 }}>{currentUser?.dept || '未设置部门'}</div>
                 </div>
               </div>
             </div>
           </div>
 
           <Menu
-            theme="dark"
+            theme="light"
             mode="inline"
             selectedKeys={[currentPage]}
             items={menuItems}
             onClick={({ key }) => handleNavigate(key)}
-            style={{ borderRight: 0, flex: 1, background: 'transparent', marginTop: 8, paddingInline: 4 }}
+            style={{ borderRight: 0, flex: 1, background: 'transparent', marginTop: 4, paddingInline: 10 }}
           />
 
-          <div style={{ flexShrink: 0 }}>
-            <SidebarClock isDarkMode={isDarkMode} notificationCount={notificationCount} />
+          <div style={{ flexShrink: 0, paddingBottom: 12 }}>
             <SidebarStatus online={backendOnline} />
           </div>
         </Sider>
 
-        <Layout style={{ marginLeft: 218, minHeight: 0 }}>
-          <Header style={{ height: 'auto', lineHeight: 'normal', padding: '10px 16px 0', background: 'transparent', flex: '0 0 auto' }}>
-            <div style={{ background: UI_PANEL_BG, borderRadius: 16, border: `1px solid ${UI_BORDER}`, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: 'var(--ui-shadow-panel)' }}>
+        <Layout style={{ marginLeft: 236, minHeight: 0, background: 'var(--ui-bg-page)' }}>
+          <Header style={{ height: 'auto', lineHeight: 'normal', padding: '20px 28px 12px', background: 'transparent', flex: '0 0 auto' }}>
+            <div style={{ padding: '0 2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
-                <Title level={4} style={{ margin: 0, fontSize: 'var(--ui-font-page-title)', fontWeight: 600, color: 'var(--ui-text-1)' }}>{pageMeta.title}</Title>
-                <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <Text type="secondary">{pageMeta.desc}</Text>
-                  <Tag color="blue" style={{ margin: 0, borderRadius: 999, fontWeight: 500 }}>{currentUser?.role === 'admin' ? '管理员视图' : '业务视图'}</Tag>
-                </div>
+                <Title level={4} style={{ margin: 0, fontSize: 24, fontWeight: 650, letterSpacing: '-0.035em', color: 'var(--ui-text-1)' }}>{pageMeta.title}</Title>
+                <Text type="secondary" style={{ display: 'block', marginTop: 5, fontSize: 13 }}>{pageMeta.desc}</Text>
               </div>
               <Space size={10}>
+                <Tooltip title={notificationCount ? `${notificationCount} 条待处理通知` : '暂无新通知'}>
+                  <Badge dot={notificationCount > 0} offset={[-3, 3]}><Button shape="circle" icon={<BellOutlined />} aria-label="通知" /></Badge>
+                </Tooltip>
                 <Tooltip title="切换主题">
                   <Button shape="circle" icon={isDarkMode ? <BulbFilled /> : <BulbOutlined />} onClick={() => setIsDarkMode(v => !v)} />
                 </Tooltip>
@@ -428,8 +439,8 @@ function AppShell({ currentUser, onLogout }) {
             </div>
           </Header>
 
-          <Content style={{ padding: '10px 16px 16px', minHeight: 0, display: 'flex' }}>
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', background: UI_PANEL_BG, borderRadius: 16, border: `1px solid ${UI_BORDER}`, boxShadow: 'var(--ui-shadow-panel)' }}>
+          <Content style={{ padding: '0 28px 24px', minHeight: 0, display: 'flex' }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', background: UI_PANEL_BG, borderRadius: 20, border: `1px solid ${UI_BORDER}`, boxShadow: '0 18px 55px rgba(20,29,43,0.055)' }}>
               {pageContent}
             </div>
           </Content>
@@ -441,29 +452,30 @@ function AppShell({ currentUser, onLogout }) {
           font-size: 14px;
         }
 
-        .app-shell .ant-menu-dark .ant-menu-item {
+        .app-shell .ant-menu-light .ant-menu-item,
+        .app-shell .ant-menu-light .ant-menu-submenu-title {
           border-radius: 10px;
           margin-block: 4px;
           margin-inline: 5px;
           height: 40px;
           line-height: 40px;
-          color: rgba(255,255,255,0.72);
+          color: #5d687a;
           transition: background 180ms ease, color 180ms ease, transform 180ms ease;
         }
 
-        .app-shell .ant-menu-dark .ant-menu-item:hover {
-          background: rgba(255,255,255,0.06) !important;
-          color: #fff !important;
-          transform: translateX(1px);
+        .app-shell .ant-menu-light .ant-menu-item:hover,
+        .app-shell .ant-menu-light .ant-menu-submenu-title:hover {
+          background: rgba(10,101,204,0.06) !important;
+          color: #0a65cc !important;
         }
 
-        .app-shell .ant-menu-dark .ant-menu-item-selected {
-          background: linear-gradient(90deg, rgba(22, 93, 255, 0.3), rgba(22, 93, 255, 0.12)) !important;
-          color: #fff !important;
-          box-shadow: inset 0 0 0 1px rgba(22, 93, 255, 0.22);
+        .app-shell .ant-menu-light .ant-menu-item-selected {
+          background: #eaf3fd !important;
+          color: #0a65cc !important;
+          font-weight: 650;
         }
 
-        .app-shell .ant-menu-dark .ant-menu-item-selected::after {
+        .app-shell .ant-menu-light .ant-menu-item-selected::after {
           display: none;
         }
       `}</style>

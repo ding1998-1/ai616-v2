@@ -244,6 +244,19 @@ def _init_app_db():
                     FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS meeting_search_documents (
+                    document_key TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL CHECK (entity_type IN ('meeting', 'agenda')),
+                    entity_id TEXT NOT NULL,
+                    meeting_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    confidentiality_level TEXT NOT NULL DEFAULT 'normal',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS meeting_audio_clients (
                     client_id TEXT NOT NULL,
                     meeting_id TEXT NOT NULL,
@@ -436,6 +449,109 @@ def _init_app_db():
                 conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN speaker_confidence REAL NOT NULL DEFAULT 0")
             if "identified_by" not in t_cols:
                 conn.execute("ALTER TABLE meeting_transcripts ADD COLUMN identified_by TEXT NOT NULL DEFAULT 'manual'")
+
+            # Migration: meeting/agenda unified search documents (2026-08-24).
+            # Triggers keep the denormalized search rows synchronized after the
+            # one-time backfill, so callers never need to remember a second write.
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_meeting_agendas_meeting_sort
+                    ON meeting_agendas(meeting_id, sort_order);
+                CREATE INDEX IF NOT EXISTS idx_meeting_search_type_updated
+                    ON meeting_search_documents(entity_type, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_meeting_search_meeting_type
+                    ON meeting_search_documents(meeting_id, entity_type);
+                CREATE INDEX IF NOT EXISTS idx_meeting_search_entity
+                    ON meeting_search_documents(entity_id, entity_type);
+
+                CREATE TRIGGER IF NOT EXISTS trg_meeting_search_insert
+                AFTER INSERT ON meetings
+                BEGIN
+                    INSERT OR REPLACE INTO meeting_search_documents (
+                        document_key, entity_type, entity_id, meeting_id, title,
+                        content, status, confidentiality_level, updated_at
+                    ) VALUES (
+                        'meeting:' || NEW.id, 'meeting', NEW.id, NEW.id, NEW.title,
+                        trim(NEW.project || ' ' || NEW.creator || ' ' || NEW.meeting_type || ' ' || NEW.agenda),
+                        NEW.phase, 'normal', NEW.updated_at
+                    );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_meeting_search_update
+                AFTER UPDATE OF title, project, creator, meeting_type, agenda, phase, updated_at ON meetings
+                BEGIN
+                    INSERT OR REPLACE INTO meeting_search_documents (
+                        document_key, entity_type, entity_id, meeting_id, title,
+                        content, status, confidentiality_level, updated_at
+                    ) VALUES (
+                        'meeting:' || NEW.id, 'meeting', NEW.id, NEW.id, NEW.title,
+                        trim(NEW.project || ' ' || NEW.creator || ' ' || NEW.meeting_type || ' ' || NEW.agenda),
+                        NEW.phase, 'normal', NEW.updated_at
+                    );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_meeting_search_delete
+                AFTER DELETE ON meetings
+                BEGIN
+                    DELETE FROM meeting_search_documents WHERE meeting_id = OLD.id;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_agenda_search_insert
+                AFTER INSERT ON meeting_agendas
+                BEGIN
+                    INSERT OR REPLACE INTO meeting_search_documents (
+                        document_key, entity_type, entity_id, meeting_id, title,
+                        content, status, confidentiality_level, updated_at
+                    ) VALUES (
+                        'agenda:' || NEW.id, 'agenda', NEW.id, NEW.meeting_id, NEW.title,
+                        NEW.description, NEW.status, NEW.confidentiality_level, NEW.updated_at
+                    );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_agenda_search_update
+                AFTER UPDATE OF meeting_id, title, description, status, confidentiality_level, updated_at ON meeting_agendas
+                BEGIN
+                    INSERT OR REPLACE INTO meeting_search_documents (
+                        document_key, entity_type, entity_id, meeting_id, title,
+                        content, status, confidentiality_level, updated_at
+                    ) VALUES (
+                        'agenda:' || NEW.id, 'agenda', NEW.id, NEW.meeting_id, NEW.title,
+                        NEW.description, NEW.status, NEW.confidentiality_level, NEW.updated_at
+                    );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_agenda_search_delete
+                AFTER DELETE ON meeting_agendas
+                BEGIN
+                    DELETE FROM meeting_search_documents WHERE document_key = 'agenda:' || OLD.id;
+                END;
+                """
+            )
+            if _metadata_get(conn, "meeting_search_documents_v1") != "complete":
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO meeting_search_documents (
+                        document_key, entity_type, entity_id, meeting_id, title,
+                        content, status, confidentiality_level, updated_at
+                    )
+                    SELECT 'meeting:' || id, 'meeting', id, id, title,
+                           trim(project || ' ' || creator || ' ' || meeting_type || ' ' || agenda),
+                           phase, 'normal', updated_at
+                    FROM meetings
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO meeting_search_documents (
+                        document_key, entity_type, entity_id, meeting_id, title,
+                        content, status, confidentiality_level, updated_at
+                    )
+                    SELECT 'agenda:' || id, 'agenda', id, meeting_id, title,
+                           description, status, confidentiality_level, updated_at
+                    FROM meeting_agendas
+                    """
+                )
+                _metadata_set(conn, "meeting_search_documents_v1", "complete")
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
@@ -1097,6 +1213,26 @@ def _db_upsert_audio_client(meeting_id: str, client_id: str, user: dict, extra: 
     return {"clientId": client_id, "meetingId": meeting_id, "displayName": display}
 
 
+def _db_get_audio_client(meeting_id: str, client_id: str) -> dict | None:
+    """读取会议录音设备归属，用于阻止跨参会人冒用设备 ID。"""
+    _init_app_db()
+    if not meeting_id or not client_id:
+        return None
+    with _db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT client_id, meeting_id, participant_row_id, user_id, username,
+                   display_name, device_type, device_label, firmware_version,
+                   transport, first_seen_at, last_seen_at, status, payload_json
+            FROM meeting_audio_clients
+            WHERE meeting_id = ? AND client_id = ?
+            LIMIT 1
+            """,
+            (meeting_id, client_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def _db_find_participant_row(meeting_id: str, user_id: str) -> str:
     """按 meeting_id + user_id 查询 meeting_participants 的 row_id（幂等读取）。"""
     _init_app_db()
@@ -1486,6 +1622,22 @@ def _check_meeting_access(user: dict, meeting: dict):
     # For demo: allow admin to access any meeting
     if user.get("role") == "admin":
         return
+    # 正式参会人也属于本场会议的访问主体。仅依赖 creator 会导致手机扫码
+    # 注册后无法读取议题、上传录音或完成签字。
+    user_id = (user.get("id") or user.get("username") or "").strip()
+    meeting_id = (meeting.get("id") or "").strip()
+    if user_id and meeting_id:
+        try:
+            with _db_connect() as conn:
+                participant = conn.execute(
+                    "SELECT 1 FROM meeting_participants WHERE meeting_id = ? AND user_id = ? LIMIT 1",
+                    (meeting_id, user_id),
+                ).fetchone()
+            if participant:
+                return
+        except Exception:
+            # 兼容未完成旧库初始化；此时继续按原有 creator/admin 规则判断。
+            pass
     raise HTTPException(status_code=403, detail="您不是该会议的创建人或参与人，无权操作此会议。")
 
 

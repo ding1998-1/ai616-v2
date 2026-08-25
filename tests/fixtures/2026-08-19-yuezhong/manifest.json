@@ -1,0 +1,45 @@
+{
+  "case": "2026-08-19-yuezhong",
+  "meetingId": "meeting-local-20260819131104",
+  "title": "悦仲业务二部周例会",
+  "date": "2026-08-19",
+  "source": "remote-read-only-api",
+  "sourceBase": "http://192.168.66.44:8002",
+  "exportedAt": "2026-08-24T09:32:03+08:00",
+  "endpoints": [
+    "/api/meetings/meeting-local-20260819131104",
+    "/api/meeting/transcripts/meeting-local-20260819131104?limit=1000&offset=0",
+    "/api/meetings/meeting-local-20260819131104/records",
+    "/api/meetings/meeting-local-20260819131104/whisper-review"
+  ],
+  "counts": {
+    "transcripts": 721,
+    "events": 96,
+    "meetingEvents": 96,
+    "audioEvents": 8,
+    "whisperReviewEvents": 1,
+    "whisperSegments": 4,
+    "legacyChronicle": 721,
+    "transcriptSources": {
+      "mobile-recorder": 42,
+      "whisper-post": 679
+    },
+    "audioDurationsSeconds": [19, 40, 487, 6, 24, 1741, 3593, 3765],
+    "audioDurationSumSeconds": 9675
+  },
+  "whisperEndpointNote": "公开 whisper-review 接口只返回摘要元数据；会议详情中的终审事件仅保留 4 个分段预览，721 条可回归文本以 transcripts/legacyChronicle 保存。",
+  "legacy": {
+    "generated": true,
+    "aiProvider": "deepseek",
+    "source": "DeepSeek 根据722条转写生成",
+    "transcriptCount": 721,
+    "audioCount": 8,
+    "containsWhisperSpeakerLabel": true
+  },
+  "sha256": {
+    "meeting.json": "f20fbd0b706f8c4ef915c884081f7f0144503afa9a55907ec6d105e88eaf4154",
+    "transcripts.json": "b401c6f8fcdbbce48e2d45c5bd24850d77dc1c51a605ff99c81a6dd3204d8a88",
+    "records.json": "4a1ce78fb9c1bdad804a9db94c28c517bac3c8ba716ef45ac0175ec5ff584684",
+    "whisper_review.json": "8d66fb59bc35307766daf71b7c1f0d7e9e31bda89f409e8a86841e52dc4f8d74"
+  }
+}

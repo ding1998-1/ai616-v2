@@ -136,12 +136,12 @@ from backend.services.agenda_service import (  # noqa: E402
 from backend.services.signature_service import (  # noqa: E402
     list_signatures, sign_target, invalidate_target_signatures,
     is_fully_signed, signed_signer_count, required_signer_count,
-    compute_content_hash,
+    compute_content_hash, resolve_sign_target,
 )
 from backend.services.permission_service import (  # noqa: E402
     get_user_roles, add_user_role, remove_user_role,
     list_agenda_acl, grant_agenda_acl, revoke_agenda_acl,
-    filter_agendas_for_user, can_view_agenda,
+    filter_agendas_for_user, can_view_agenda, has_agenda_permission,
 )
 from backend.services.knowledge_service import search_agenda_knowledge  # noqa: E402
 # ═══ 模块化导入结束 ═════════════════════════════════════════════════════════════
@@ -2464,6 +2464,66 @@ def _can_manage_agenda(user: dict, meeting: dict) -> bool:
     return mr in {"主持人", "会议秘书", "秘书", "host", "secretary"}
 
 
+def _require_agenda_permission(request: Request, meeting_id: str, agenda_id: str, permission: str = "view"):
+    """议题子资源统一鉴权；返回 (user, meeting, agenda)。"""
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id) or {}
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
+    agenda = get_meeting_agenda(safe_id, agenda_id)
+    if not agenda:
+        raise HTTPException(status_code=404, detail="议题不存在")
+    if not has_agenda_permission(user, meeting, agenda, permission):
+        raise HTTPException(status_code=403, detail="你没有该议题的操作权限")
+    return user, meeting, agenda
+
+
+def _require_signature_permission(request: Request, meeting_id: str, agenda_id: str, permission: str = "view"):
+    """签字目标鉴权：议题成果走 agenda ACL，会议级成果走会议/参会人权限。"""
+    if agenda_id:
+        return _require_agenda_permission(request, meeting_id, agenda_id, permission)
+    user = _get_request_user(request, required=True)
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id) or {}
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
+    if permission == "view":
+        return user, meeting, None
+    if user.get("role") == "admin":
+        return user, meeting, None
+    meeting_role = (user.get("meetingRole") or user.get("role") or "").strip()
+    if meeting_role in {"主持人", "会议秘书", "秘书", "host", "secretary"}:
+        return user, meeting, None
+    # 会议级成果的签署人必须是本场已登记参会人，避免任意有会议访问权的账号代签。
+    from backend.db import _db_connect, _init_app_db
+    _init_app_db()
+    with _db_connect() as conn:
+        participant = conn.execute(
+            "SELECT 1 FROM meeting_participants WHERE meeting_id = ? AND user_id = ? LIMIT 1",
+            (safe_id, user.get("id") or user.get("username") or ""),
+        ).fetchone()
+    if not participant:
+        raise HTTPException(status_code=403, detail="只有本场参会人员可以签署会议级成果")
+    return user, meeting, None
+
+
+def _visible_agenda_ids_for_user(user: dict, meeting_id: str, meeting: dict) -> set:
+    """返回用户可查看的正式议题 ID，用于整场子资源查询的后端过滤。
+
+    `agenda_id=all` 只是查询便利参数，不能绕过保密议题 ACL。过滤必须发生在
+    后端，避免把隐藏议题的记录、决议或签字摘要先下发再交给前端隐藏。
+    """
+    agendas = list_meeting_agendas(meeting_id)
+    return {
+        agenda.get("id")
+        for agenda in agendas
+        if agenda.get("id") and can_view_agenda(user, meeting, agenda)
+    }
+
+
 @app.get("/api/meetings/{meeting_id}/agendas")
 async def list_agendas(request: Request, meeting_id: str):
     """列出会议全部正式议题（含从 agendaDrafts 的兼容物化）。
@@ -2591,16 +2651,27 @@ async def activate_agenda(request: Request, meeting_id: str, agenda_id: str):
 @app.get("/api/meetings/{meeting_id}/agendas/{agenda_id}/records")
 async def list_agenda_records_route(request: Request, meeting_id: str, agenda_id: str):
     """列出议题讨论记录；agenda_id=all 时返回整场。"""
-    _get_request_user(request, required=True)
-    safe_id = _safe_meeting_id(meeting_id)
-    records = list_agenda_records(safe_id, "" if agenda_id == "all" else agenda_id)
+    if agenda_id == "all":
+        user = _get_request_user(request, required=True)
+        safe_id = _safe_meeting_id(meeting_id)
+        meeting = _load_meetings().get(safe_id) or {}
+        _check_meeting_access(user, meeting)
+        records = list_agenda_records(safe_id, "")
+        visible_ids = _visible_agenda_ids_for_user(user, safe_id, meeting)
+        formal_agendas = list_meeting_agendas(safe_id)
+        if formal_agendas:
+            records = [row for row in records if row.get("agendaId") in visible_ids]
+    else:
+        _require_agenda_permission(request, meeting_id, agenda_id, "view")
+        safe_id = _safe_meeting_id(meeting_id)
+        records = list_agenda_records(safe_id, agenda_id)
     return JSONResponse({"success": True, "records": records, "total": len(records)})
 
 
 @app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/records")
 async def create_agenda_record_route(request: Request, meeting_id: str, agenda_id: str, body: AgendaRecordRequest):
     """新增议题讨论记录。"""
-    user = _get_request_user(request, required=True)
+    user, _, _ = _require_agenda_permission(request, meeting_id, agenda_id, "edit")
     safe_id = _safe_meeting_id(meeting_id)
     try:
         records = create_agenda_record(
@@ -2619,16 +2690,27 @@ async def create_agenda_record_route(request: Request, meeting_id: str, agenda_i
 @app.get("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions")
 async def list_agenda_decisions_route(request: Request, meeting_id: str, agenda_id: str):
     """列出议题决议；agenda_id=all 时返回整场。"""
-    _get_request_user(request, required=True)
-    safe_id = _safe_meeting_id(meeting_id)
-    decisions = list_agenda_decisions(safe_id, "" if agenda_id == "all" else agenda_id)
+    if agenda_id == "all":
+        user = _get_request_user(request, required=True)
+        safe_id = _safe_meeting_id(meeting_id)
+        meeting = _load_meetings().get(safe_id) or {}
+        _check_meeting_access(user, meeting)
+        decisions = list_agenda_decisions(safe_id, "")
+        visible_ids = _visible_agenda_ids_for_user(user, safe_id, meeting)
+        formal_agendas = list_meeting_agendas(safe_id)
+        if formal_agendas:
+            decisions = [row for row in decisions if row.get("agendaId") in visible_ids]
+    else:
+        _require_agenda_permission(request, meeting_id, agenda_id, "view")
+        safe_id = _safe_meeting_id(meeting_id)
+        decisions = list_agenda_decisions(safe_id, agenda_id)
     return JSONResponse({"success": True, "decisions": decisions, "total": len(decisions)})
 
 
 @app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions/generate")
 async def generate_agenda_decisions_route(request: Request, meeting_id: str, agenda_id: str):
     """按议题生成决议草稿（逐议题，不整场猜测归属）。"""
-    user = _get_request_user(request, required=True)
+    user, _, _ = _require_agenda_permission(request, meeting_id, agenda_id, "edit")
     safe_id = _safe_meeting_id(meeting_id)
     result = generate_decisions_for_agenda(safe_id, agenda_id, created_by=user.get("name") or user.get("username") or "")
     return JSONResponse({"success": True, **result})
@@ -2637,7 +2719,7 @@ async def generate_agenda_decisions_route(request: Request, meeting_id: str, age
 @app.post("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions")
 async def create_agenda_decision_route(request: Request, meeting_id: str, agenda_id: str, body: AgendaDecisionRequest):
     """新增议题决议（正式绑定 agenda_id）。"""
-    user = _get_request_user(request, required=True)
+    user, _, _ = _require_agenda_permission(request, meeting_id, agenda_id, "edit")
     safe_id = _safe_meeting_id(meeting_id)
     try:
         decisions = create_agenda_decision(
@@ -2653,7 +2735,7 @@ async def create_agenda_decision_route(request: Request, meeting_id: str, agenda
 @app.patch("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions/{decision_id}")
 async def patch_agenda_decision_route(request: Request, meeting_id: str, agenda_id: str, decision_id: str, body: AgendaDecisionPatchRequest):
     """更新决议；title/content 变更自动递增 version。"""
-    _get_request_user(request, required=True)
+    _require_agenda_permission(request, meeting_id, agenda_id, "edit")
     safe_id = _safe_meeting_id(meeting_id)
     try:
         decision = update_agenda_decision(safe_id, agenda_id, decision_id, body.dict(exclude_unset=True))
@@ -2667,7 +2749,7 @@ async def patch_agenda_decision_route(request: Request, meeting_id: str, agenda_
 @app.delete("/api/meetings/{meeting_id}/agendas/{agenda_id}/decisions/{decision_id}")
 async def remove_agenda_decision_route(request: Request, meeting_id: str, agenda_id: str, decision_id: str):
     """删除决议。"""
-    _get_request_user(request, required=True)
+    _require_agenda_permission(request, meeting_id, agenda_id, "admin")
     safe_id = _safe_meeting_id(meeting_id)
     delete_agenda_decision(safe_id, agenda_id, decision_id)
     return JSONResponse({"success": True})
@@ -3091,15 +3173,28 @@ async def archive_meeting(request: Request, meeting_id: str):
 @app.get("/api/meetings/{meeting_id}/signatures")
 async def list_meeting_signatures_route(request: Request, meeting_id: str):
     """列出会议签字记录；?agenda_id=&target_type=&target_id= 可选过滤。"""
-    _get_request_user(request, required=True)
     safe_id = _safe_meeting_id(meeting_id)
     params = request.query_params
+    agenda_filter = params.get("agenda_id", "")
+    if agenda_filter:
+        _require_agenda_permission(request, safe_id, agenda_filter, "view")
+        visible_ids = {agenda_filter}
+    else:
+        user = _get_request_user(request, required=True)
+        meeting = _load_meetings().get(safe_id) or {}
+        _check_meeting_access(user, meeting)
+        visible_ids = _visible_agenda_ids_for_user(user, safe_id, meeting)
     signatures = list_signatures(
         safe_id,
-        agenda_id=params.get("agenda_id", ""),
+        agenda_id=agenda_filter,
         target_type=params.get("target_type", ""),
         target_id=params.get("target_id", ""),
     )
+    if not agenda_filter:
+        formal_agendas = list_meeting_agendas(safe_id)
+        if formal_agendas:
+            # 会议级成果（agendaId 为空）不属于任何保密议题，仍应对本场会议可见。
+            signatures = [row for row in signatures if not row.get("agendaId") or row.get("agendaId") in visible_ids]
     return JSONResponse({
         "success": True,
         "signatures": signatures,
@@ -3112,8 +3207,8 @@ async def list_meeting_signatures_route(request: Request, meeting_id: str):
 @app.post("/api/meetings/{meeting_id}/signatures")
 async def sign_meeting_target_route(request: Request, meeting_id: str, body: MeetingSignatureRequest):
     """签署会议成果：校验内容哈希与版本，签名绑定 version + content_hash。"""
-    user = _get_request_user(request, required=True)
     safe_id = _safe_meeting_id(meeting_id)
+    user, _, _ = _require_signature_permission(request, meeting_id, body.agendaId, "sign")
     try:
         signature = sign_target(
             safe_id, body.agendaId, body.targetType, body.targetId,
@@ -3131,11 +3226,22 @@ async def sign_meeting_target_route(request: Request, meeting_id: str, body: Mee
 @app.post("/api/meetings/{meeting_id}/signatures/hash")
 async def signature_hash_route(request: Request, meeting_id: str, body: MeetingSignatureRequest):
     """返回目标内容在指定版本下的期望 content_hash（前端签字前比对）。"""
-    _get_request_user(request, required=True)
     safe_id = _safe_meeting_id(meeting_id)
+    _require_signature_permission(request, meeting_id, body.agendaId, "view")
+    try:
+        target = resolve_sign_target(safe_id, body.agendaId, body.targetType, body.targetId)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return JSONResponse({
         "success": True,
-        "contentHash": compute_content_hash(safe_id, body.agendaId, body.targetId, body.version, body.content),
+        "target": {
+            "targetId": target["targetId"],
+            "agendaId": target["agendaId"],
+            "version": target["version"],
+        },
+        "contentHash": compute_content_hash(
+            safe_id, target["agendaId"], target["targetId"], target["version"], target["content"],
+        ),
     })
 
 
@@ -4679,15 +4785,17 @@ async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscrip
     speaker_role = getattr(body, "speaker_role", None) or role["meetingRole"]
     speaker_dept = getattr(body, "speaker_dept", None) or role["dept"]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # ── 议题绑定：优先客户端显式 agenda_id，否则取后端持久化的 active_agenda_id（§32 手机不选议题）──
-    active_agenda_id = ""
-    try:
-        _m = _load_meetings().get(safe_id) or {}
-        active_agenda_id = _m.get("activeAgendaId") or ""
-    except Exception:
-        pass
-    agenda_id = getattr(body, "agenda_id", None) or active_agenda_id or ""
-    participant_id = getattr(body, "participant_id", None) or ""
+    # ── 议题绑定：以数据库正式议题/active_agenda_id 为事实源；客户端 ID 只作候选值 ──
+    # 手机端不应能够把转写伪造绑定到另一场会议或不存在的议题。
+    active_agenda = get_meeting_active_agenda(safe_id)
+    active_agenda_id = (active_agenda or {}).get("id") or ""
+    requested_agenda_id = (getattr(body, "agenda_id", None) or "").strip()
+    if requested_agenda_id and get_meeting_agenda(safe_id, requested_agenda_id):
+        agenda_id = requested_agenda_id
+    else:
+        agenda_id = active_agenda_id
+    # participant row ID 始终由 token 对应的 user_id 反查，忽略客户端提交值。
+    participant_id = ""
     audio_client_id = getattr(body, "audio_client_id", None) or ""
     if not participant_id:
         try:
@@ -4782,22 +4890,23 @@ async def post_meeting_transcript_chunk(request: Request, body: MeetingTranscrip
             with _db_connect() as _mrg_conn:
                 _mrg_row = _mrg_conn.execute(
                     "SELECT id, transcript, server_time FROM meeting_transcripts "
-                    "WHERE meeting_id = ? AND username = ? AND server_time >= ? "
+                    "WHERE meeting_id = ? AND username = ? AND speaker_name = ? "
+                    "AND (? = '' OR audio_client_id = ?) AND server_time >= ? "
                     "ORDER BY server_time DESC LIMIT 1",
-                    (body.meeting_id, role["username"], cutoff_merge),
+                    (body.meeting_id, role["username"], speaker_name, audio_client_id, audio_client_id, cutoff_merge),
                 ).fetchone()
         if _mrg_row:
             prev_id, prev_text, prev_stime = _mrg_row[0], _mrg_row[1], _mrg_row[2]
             delta = (datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
                      - datetime.strptime(prev_stime, "%Y-%m-%d %H:%M:%S")).total_seconds()
             # 10 秒内同说话人 且 合并后不超限 → 合并
-            if 0 < delta <= 10 and len(prev_text) + len(transcript) <= MAX_MERGE_CHARS:
+            if (not body.is_final) and 0 < delta <= 10 and len(prev_text) + len(transcript) <= MAX_MERGE_CHARS:
                 merged = True
             else:
                 # 超过 10 秒但文本高度相似 → ASR 修订 → 替换上一条
                 import difflib
                 sim = difflib.SequenceMatcher(None, prev_text, transcript).ratio()
-                if sim > 0.85:
+                if (not body.is_final) and sim > 0.85:
                     merged = True
                     logger.info("ASR修订合并(说话人=%s, delta=%.0fs, 文本相似度=%.0f%%)",
                                 speaker_name, delta, sim * 100)

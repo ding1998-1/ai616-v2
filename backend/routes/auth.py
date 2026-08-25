@@ -68,6 +68,8 @@ async def auth_login(body: LoginRequest):
     user = next((u for u in users if u.get("username") == body.username), None)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if (user.get("status") or "active") != "active":
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     password = (body.password or "").strip()
     if not _verify_password(password, user.get("password", "")):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
@@ -106,6 +108,8 @@ async def auth_meeting_register(body: MeetingRegisterRequest):
         None,
     )
     if existing:
+        if (existing.get("status") or "active") != "active":
+            raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
         # 已有身份：必须验证密码，禁止任何请求直接重置他人密码
         if not raw_password:
             raise HTTPException(status_code=401, detail="请输入密码")

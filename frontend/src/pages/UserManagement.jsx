@@ -8,6 +8,13 @@ const { Title, Text } = Typography;
 const ROLE_OPTIONS = [
   { label: '管理员', value: 'admin' },
   { label: '业务用户', value: 'staff' },
+  { label: '会议秘书', value: 'meeting_secretary' },
+  { label: '会议主持人', value: 'meeting_chair' },
+  { label: '董事 / 股东', value: 'board_member' },
+  { label: '党委委员', value: 'party_member' },
+  { label: '法务合规', value: 'legal' },
+  { label: '审计监督', value: 'audit' },
+  { label: '知识库管理员', value: 'knowledge_admin' },
 ];
 const STATUS_OPTIONS = [
   { label: '启用', value: 'active' },
@@ -19,7 +26,8 @@ const STATUS_COLORS = {
   disabled: 'default',
 };
 
-const roleLabel = value => (value === 'admin' ? '管理员' : '业务用户');
+const ROLE_LABELS = Object.fromEntries(ROLE_OPTIONS.map(option => [option.value, option.label]));
+const roleLabel = value => ROLE_LABELS[value] || '业务用户';
 const statusLabel = value => (value === 'active' ? '启用' : '停用');
 
 export default function UserManagement({ currentUser }) {
@@ -302,7 +310,7 @@ export default function UserManagement({ currentUser }) {
           <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="密码" name="password" extra={editing ? '留空则保留原密码' : '默认可填写 123456'}>
+          <Form.Item label="密码" name="password" extra={editing ? '留空则保留原密码' : '请设置至少 6 位密码，不使用公共默认密码'}>
             <Input.Password />
           </Form.Item>
           <Form.Item label="角色" name="role" rules={[{ required: true, message: '请选择角色' }]}>

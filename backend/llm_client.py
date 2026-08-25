@@ -95,6 +95,7 @@ _httpx_async_client: Optional[httpx.AsyncClient] = None
 在应用关闭时由 lifespan shutdown 阶段调用 aclose() 释放连接。"""
 
 _httpx_sync_client: Optional[httpx.Client] = None
+_qwen_model_id_cache: Dict[str, str] = {}
 """全局同步 HTTP 客户端引用。通过 _get_httpx_sync() 延迟创建，
 在应用关闭时由 lifespan shutdown 阶段调用 close() 释放连接。"""
 
@@ -456,6 +457,37 @@ class QwenLocalLLM(BaseChatModel):
     max_tokens: int = 8000
     timeout: float = 180.0
 
+    def _resolve_model_name(self, client: httpx.Client) -> str:
+        """Use the configured model when available, otherwise discover vLLM's model ID."""
+
+        configured = str(os.environ.get("LLM_LOCAL_MODEL") or self.model_name or "").strip()
+        cache_key = f"{self.api_base}|{configured}"
+        if _qwen_model_id_cache.get(cache_key):
+            return _qwen_model_id_cache[cache_key]
+        try:
+            response = client.get(f"{self.api_base}/models", timeout=10.0)
+            response.raise_for_status()
+            model_ids = [
+                str(item.get("id") or "").strip()
+                for item in (response.json().get("data") or [])
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ]
+            if configured in model_ids:
+                _qwen_model_id_cache[cache_key] = configured
+                return configured
+            if model_ids:
+                logger.warning("本地LLM配置模型 %s 不可用，自动使用 %s", configured, model_ids[0])
+                _qwen_model_id_cache[cache_key] = model_ids[0]
+                return model_ids[0]
+        except Exception as exc:
+            logger.warning("读取本地LLM模型列表失败，继续使用配置模型 %s: %s", configured, exc)
+        return configured
+
+    def get_active_model_name(self) -> str:
+        """Return the actual model ID accepted by the local OpenAI-compatible server."""
+
+        return self._resolve_model_name(_get_httpx_sync())
+
     @property
     def _llm_type(self) -> str:
         return "qwen-local"
@@ -477,14 +509,14 @@ class QwenLocalLLM(BaseChatModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         url = f"{self.api_base}/chat/completions"
+        client = _get_httpx_sync()
         payload = {
-            "model": self.model_name,
+            "model": self.get_active_model_name(),
             "messages": self._convert_messages(messages),
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        client = _get_httpx_sync()
         resp = client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()

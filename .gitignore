@@ -46,6 +46,7 @@ Thumbs.db
 
 # Test screenshots
 test-screenshots/
+work/
 
 # Data directory (large files)
 data/

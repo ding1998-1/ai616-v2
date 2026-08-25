@@ -22,11 +22,9 @@ import {
   FileTextOutlined,
   InfoCircleOutlined,
   LeftOutlined,
-  ReloadOutlined,
   RightOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
-import OfficeEditor from '../components/OfficeEditor';
 import DocxPreviewModal from '../components/DocxPreviewModal';
 import { fetchJson } from '../lib/demoApi';
 import { authFetch, authHeaders } from '../lib/auth';
@@ -258,7 +256,6 @@ export default function CaseAnalysis({ isDarkMode = false, currentUser }) {
   const [extraQuestions, setExtraQuestions] = useState('');
   const [targetParaIndex, setTargetParaIndex] = useState(null);
   const [activeIssueId, setActiveIssueId] = useState(null);
-  const [editorKey, setEditorKey] = useState(0);
   const [customEditOpen, setCustomEditOpen] = useState(false);
   const [customDraft, setCustomDraft] = useState('');
   const [analysisElapsed, setAnalysisElapsed] = useState(0);
@@ -877,7 +874,6 @@ export default function CaseAnalysis({ isDarkMode = false, currentUser }) {
     setExtraQuestions('');
     setTargetParaIndex(null);
     setActiveIssueId(null);
-    setEditorKey(0);
     setCustomDraft('');
     setCustomEditOpen(false);
     setAnalysisElapsed(0);
@@ -1402,10 +1398,10 @@ export default function CaseAnalysis({ isDarkMode = false, currentUser }) {
                 {analysisStage.title}
               </Tag>
             )}
-            <Tooltip title="重新加载左侧预览">
+            <Tooltip title="打开 DOCX 原文预览">
               <Button
-                icon={<ReloadOutlined />}
-                onClick={() => setEditorKey(key => key + 1)}
+                icon={<EyeOutlined />}
+                onClick={() => setPreviewFile({ savedName: contractFile.saved_name, name: contractFile.file_name })}
                 style={{
                   borderRadius: 14,
                   border,
@@ -1573,16 +1569,48 @@ export default function CaseAnalysis({ isDarkMode = false, currentUser }) {
         </div>
 
         <Content style={{ minWidth: 0, border, borderRadius: 18, overflow: 'hidden', background: isDarkMode ? '#0d1727' : '#f6f9fd' }}>
-          <OfficeEditor
-            key={editorKey}
-            open
-            isEmbedded
-            savedName={contractFile.saved_name}
-            issues={reviewPoints}
-            initialParagraphs={docStructure}
-            onSave={handleExportReviewedDoc}
-            targetParaIndex={targetParaIndex}
-          />
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ padding: '14px 16px', borderBottom: border, background: isDarkMode ? '#0b1220' : '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: textPrimary }}>原文与审查定位</div>
+                <div style={{ marginTop: 3, fontSize: 12, color: textSecondary }}>点击问题右侧的定位，快速跳到对应段落；采纳后的文本会在这里显示。</div>
+              </div>
+              <Button size="small" icon={<EyeOutlined />} onClick={() => setPreviewFile({ savedName: contractFile.saved_name, name: contractFile.file_name })}>
+                DOCX 预览
+              </Button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
+              {docStructure.length ? docStructure.map((paragraph, index) => {
+                const originalText = paragraph?.text || paragraph?.content || paragraph?.text_preview || '';
+                const displayText = Object.prototype.hasOwnProperty.call(exportEdits, index)
+                  ? exportEdits[index]
+                  : originalText;
+                const issue = reviewPoints.find(item => Number(item.para_index) === index);
+                const highlighted = targetParaIndex?.paraIndex === index;
+                return (
+                  <div
+                    key={`paragraph-${index}`}
+                    onClick={() => setTargetParaIndex({ action: 'locate', paraIndex: index, ts: Date.now() })}
+                    style={{
+                      display: 'flex',
+                      gap: 10,
+                      alignItems: 'flex-start',
+                      padding: '11px 12px',
+                      marginBottom: 8,
+                      borderRadius: 12,
+                      border: `1px solid ${highlighted ? '#2457f5' : issue ? 'rgba(234,88,12,0.24)' : (isDarkMode ? 'rgba(148,163,184,0.16)' : 'rgba(15,23,42,0.08)')}`,
+                      background: highlighted ? (isDarkMode ? 'rgba(36,87,245,0.16)' : '#eef4ff') : (issue ? (isDarkMode ? 'rgba(124,58,237,0.08)' : '#fffaf5') : (isDarkMode ? 'rgba(15,23,42,0.56)' : '#fff')),
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ minWidth: 28, color: textMuted, fontSize: 11, fontVariantNumeric: 'tabular-nums', paddingTop: 2 }}>{index + 1}</span>
+                    <div style={{ minWidth: 0, flex: 1, color: textPrimary, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{displayText || '（空段落）'}</div>
+                    {issue && <Tag color={issue.status === 'resolved' ? 'success' : 'warning'} style={{ margin: 0, flexShrink: 0 }}>{issue.status === 'resolved' ? '已处理' : '风险'}</Tag>}
+                  </div>
+                );
+              }) : <Empty description="暂无可预览的正文段落" />}
+            </div>
+          </div>
         </Content>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minHeight: 0, background: panelBg, border, borderRadius: 18, overflow: 'hidden' }}>

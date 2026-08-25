@@ -23,6 +23,9 @@ load_dotenv()
 
 LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "5"))
 AUTH_SECRET = os.environ.get("APP_AUTH_SECRET", "")
+RECORDS_PIPELINE = os.environ.get("RECORDS_PIPELINE", "v1").strip().lower()
+if RECORDS_PIPELINE not in {"v1", "v2"}:
+    RECORDS_PIPELINE = "v1"
 DASHSCOPE_FUN_ASR_WS_URL = os.environ.get(
     "DASHSCOPE_FUN_ASR_WS_URL", "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
 )
@@ -136,7 +139,7 @@ PUBLIC_HOST = get_public_host()
 
 
 def get_browser_backend_base(request) -> str:
-    """根据请求头构建浏览器可达的后端 URL，用于 OnlyOffice 插件加载。"""
+    """根据请求头构建浏览器可达的后端 URL，用于文档预览/下载回调。"""
     override = os.environ.get("PUBLIC_BASE_URL")
     if override:
         return override.rstrip("/")

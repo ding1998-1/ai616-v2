@@ -144,6 +144,30 @@ def can_view_agenda(user: dict, meeting: dict, agenda: dict) -> bool:
     return bool(perms)
 
 
+def has_agenda_permission(user: dict, meeting: dict, agenda: dict, required: str = "view") -> bool:
+    """统一议题子资源权限判断：view/edit/sign/admin。"""
+    if not agenda or required not in ACL_PERMISSIONS:
+        return False
+    if user and user.get("role") == "admin":
+        return True
+    meeting_role = (user or {}).get("meetingRole") or (user or {}).get("role") or ""
+    is_governor = meeting_role.strip() in {"主持人", "会议秘书", "秘书", "host", "secretary"}
+    if is_governor:
+        return True
+    if required == "view" and can_view_agenda(user, meeting, agenda):
+        return True
+    perms = _acl_permissions_for((user or {}).get("id") or "", agenda.get("id") or "")
+    if "admin" in perms:
+        return True
+    if required == "view":
+        return bool(perms & {"view", "edit", "sign"})
+    if required == "edit":
+        return bool(perms & {"edit"})
+    if required == "sign":
+        return bool(perms & {"sign"})
+    return False
+
+
 def filter_agendas_for_user(user: dict, meeting: dict, agendas: list) -> list:
     """过滤保密议题：无权限的保密议题不下发内容，替换为脱敏占位（保留 ID 以便前端感知存在）。"""
     visible = []
@@ -155,6 +179,9 @@ def filter_agendas_for_user(user: dict, meeting: dict, agendas: list) -> list:
             stripped["title"] = "（保密议题）"
             stripped["description"] = ""
             stripped["confidentialityLevel"] = agenda.get("confidentialityLevel") or "secret"
+            stripped["proposerUserId"] = ""
+            stripped["ownerUserId"] = ""
+            stripped["payload"] = {}
             stripped["restricted"] = True
             visible.append(stripped)
     return visible

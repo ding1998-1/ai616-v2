@@ -12,10 +12,9 @@ import {
     CheckCircleOutlined, SafetyCertificateOutlined,
     UserOutlined, LockOutlined, RobotOutlined, EyeOutlined, InfoCircleOutlined,
     LoadingOutlined, ThunderboltOutlined, DatabaseOutlined,
-    DisconnectOutlined, EditOutlined,
+    DisconnectOutlined,
 } from '@ant-design/icons';
 import { message } from 'antd';
-import OfficeEditor from '../components/OfficeEditor';
 import DocxPreviewModal from '../components/DocxPreviewModal';
 import { fetchJson, loadDemoAssets } from '../lib/demoApi';
 import { authFetch, authHeaders, authFetchJson } from '../lib/auth';
@@ -97,7 +96,7 @@ const UploaderCell = ({ record }) => {
     );
 };
 
-function DocTable({ data, setData, isDarkMode, onKbChange, onEdit, onPreviewDocx, currentUser, tabKey }) {
+function DocTable({ data, setData, isDarkMode, onKbChange, onPreviewDocx, currentUser, tabKey }) {
     const [search, setSearch] = useState('');
     const theme = getLibraryTheme(isDarkMode);
     const border = theme.border;
@@ -354,10 +353,15 @@ function DocTable({ data, setData, isDarkMode, onKbChange, onEdit, onPreviewDocx
                             </Button>
                         </Tooltip>
                     )}
-                    {rec.savedName && (
-                        <Tooltip title="在 OnlyOffice 中在线编辑">
-                            <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => onEdit?.(rec)}>
-                                编辑
+                    {rec.savedName && rec.type !== 'docx' && (
+                        <Tooltip title="当前格式支持下载后处理">
+                            <Button size="small" icon={<FileTextOutlined />} onClick={() => {
+                                const link = document.createElement('a');
+                                link.href = `/api/doc/download/${encodeURIComponent(rec.savedName)}`;
+                                link.download = rec.name || rec.savedName;
+                                link.click();
+                            }}>
+                                下载
                             </Button>
                         </Tooltip>
                     )}
@@ -562,9 +566,6 @@ export default function KnowledgeLibrary({ isDarkMode = true }) {
     const [currentUser, setCurrentUser] = useState(EMPTY_USER);
     const [activeTab, setActiveTab] = useState('knowledge');
 
-    // OnlyOffice editor state
-    const [editorOpen, setEditorOpen] = useState(false);
-    const [editorFile, setEditorFile] = useState(null); // { savedName, name }
     const [previewFile, setPreviewFile] = useState(null); // { savedName, name }
 
     const theme = getLibraryTheme(isDarkMode);
@@ -634,20 +635,6 @@ export default function KnowledgeLibrary({ isDarkMode = true }) {
         return () => { alive = false; };
     }, []);
 
-    const handleEditDoc = (rec) => {
-        if (!rec.savedName) {
-            message.warning('该文件未保存到编辑区，请重新上传');
-            return;
-        }
-        setEditorFile({ savedName: rec.savedName, name: rec.name });
-        setEditorOpen(true);
-    };
-
-    const handleEditorClose = () => {
-        setEditorOpen(false);
-        setEditorFile(null);
-    };
-
     const handlePreviewDocx = (rec) => {
         if (!rec.savedName) {
             message.warning('该文件未保存到预览区，请重新上传');
@@ -665,14 +652,14 @@ export default function KnowledgeLibrary({ isDarkMode = true }) {
             label: (
                 <span><FolderOpenOutlined /> 案例文库 <Badge count={caseData.length} size="small" style={{ marginLeft: 6, background: '#722ed1' }} /></span>
             ),
-            children: <DocTable tabKey="cases" data={caseData} setData={setCaseData} isDarkMode={isDarkMode} onKbChange={fetchKbStats} onEdit={handleEditDoc} onPreviewDocx={handlePreviewDocx} currentUser={currentUser} />,
+            children: <DocTable tabKey="cases" data={caseData} setData={setCaseData} isDarkMode={isDarkMode} onKbChange={fetchKbStats} onPreviewDocx={handlePreviewDocx} currentUser={currentUser} />,
         },
         {
             key: 'knowledge',
             label: (
                 <span><BookOutlined /> 知识文库 <Badge count={knowledgeData.length} size="small" style={{ marginLeft: 6, background: '#1677ff' }} /></span>
             ),
-            children: <DocTable tabKey="knowledge" data={knowledgeData} setData={setKnowledgeData} isDarkMode={isDarkMode} onKbChange={fetchKbStats} onEdit={handleEditDoc} onPreviewDocx={handlePreviewDocx} currentUser={currentUser} />,
+            children: <DocTable tabKey="knowledge" data={knowledgeData} setData={setKnowledgeData} isDarkMode={isDarkMode} onKbChange={fetchKbStats} onPreviewDocx={handlePreviewDocx} currentUser={currentUser} />,
         },
         {
             key: 'shared',
@@ -695,7 +682,7 @@ export default function KnowledgeLibrary({ isDarkMode = true }) {
                             <HintIcon title="全员可访问的公共文档区域。上传文件会自动解析并向量化入库，可被企业合规问答实时检索调用。" isDarkMode={isDarkMode} />
                         </div>
                     </div>
-                    <DocTable tabKey="shared" data={sharedData} setData={setSharedData} isDarkMode={isDarkMode} onKbChange={fetchKbStats} onEdit={handleEditDoc} onPreviewDocx={handlePreviewDocx} currentUser={currentUser} />
+                    <DocTable tabKey="shared" data={sharedData} setData={setSharedData} isDarkMode={isDarkMode} onKbChange={fetchKbStats} onPreviewDocx={handlePreviewDocx} currentUser={currentUser} />
                 </div>
             ),
         },
@@ -878,14 +865,6 @@ export default function KnowledgeLibrary({ isDarkMode = true }) {
             box-shadow: ${theme.topHighlight};
         }
       `}</style>
-
-            {/* OnlyOffice 文档编辑器 */}
-            <OfficeEditor
-                open={editorOpen}
-                savedName={editorFile?.savedName}
-                onClose={handleEditorClose}
-                onSave={() => message.success('文档已保存')}
-            />
 
             <DocxPreviewModal
                 open={Boolean(previewFile)}

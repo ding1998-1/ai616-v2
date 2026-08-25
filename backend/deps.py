@@ -107,6 +107,8 @@ def _get_user_from_auth_token(token: str, required: bool = False) -> Optional[di
         token_role = payload.get("role", "")
         for u in _load_users():
             if u.get("id") == user_id:
+                if (u.get("status") or "active") != "active":
+                    raise HTTPException(status_code=401, detail="账号已停用，请联系管理员")
                 # 如果用户角色自令牌签发后已变更，拒绝令牌
                 if token_role and u.get("role") != token_role:
                     raise HTTPException(status_code=401, detail="用户权限已变更，请重新登录")
@@ -143,6 +145,7 @@ def _public_user(user: dict) -> dict:
         "name": user.get("name", ""), "role": user.get("role", "user"),
         "dept": user.get("dept", ""), "meetingRole": user.get("meetingRole", ""),
         "meetingSeat": user.get("meetingSeat", ""), "lastLoginAt": user.get("lastLoginAt", ""),
+        "status": user.get("status", "active"), "createdAt": user.get("createdAt", ""),
     }
 
 

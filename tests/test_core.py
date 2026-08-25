@@ -252,10 +252,9 @@ class TestTranscripts:
         assert data["totalTranscripts"] >= 1
 
     def test_transcript_query_empty_meeting(self, admin_token):
-        """查询不存在的会议转写不报错"""
+        """查询不存在的会议转写明确返回 404"""
         resp = api_get("/api/meeting/transcripts/nonexistent-99999", admin_token)
-        assert resp.status_code == 200
-        assert resp.json()["totalTranscripts"] == 0
+        assert resp.status_code == 404
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -491,17 +490,17 @@ class TestAuditAndKB:
         )
         assert resp.status_code != 404, f"/api/kb_stream 返回 404"
 
-    def test_matter_types(self):
+    def test_matter_types(self, admin_token):
         """GET /matter-types 返回事项类型列表"""
-        resp = _httpx_client().get(f"{API_BASE}/matter-types")
+        resp = api_get("/matter-types", admin_token)
         assert resp.status_code == 200
         data = resp.json()
         assert "matter_types" in data
         assert len(data["matter_types"]) >= 2
 
-    def test_demo_assets(self):
+    def test_demo_assets(self, admin_token):
         """GET /api/demo_assets 返回演示资源"""
-        resp = _httpx_client().get(f"{API_BASE}/api/demo_assets")
+        resp = api_get("/api/demo_assets", admin_token)
         assert resp.status_code == 200
 
     def test_root_page(self):
@@ -515,14 +514,14 @@ class TestAuditAndKB:
         assert resp.status_code == 200
         assert "history" in resp.json()
 
-    def test_custom_rules_list(self):
+    def test_custom_rules_list(self, admin_token):
         """GET /api/custom_rules 返回规则列表"""
-        resp = _httpx_client().get(f"{API_BASE}/api/custom_rules")
+        resp = api_get("/api/custom_rules", admin_token)
         assert resp.status_code == 200
 
-    def test_rules_gallery(self):
+    def test_rules_gallery(self, admin_token):
         """GET /api/rules_gallery 返回规则图片库"""
-        resp = _httpx_client().get(f"{API_BASE}/api/rules_gallery")
+        resp = api_get("/api/rules_gallery", admin_token)
         assert resp.status_code == 200
 
     def test_departments_list(self):

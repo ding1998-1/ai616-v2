@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// 后端地址：默认本机 8002，可通过环境变量 BACKEND_URL 覆盖
-// 部署到其他机器时：BACKEND_URL=http://192.168.66.44:8002 npm run dev
+// Development baseline: frontend 3000, backend defaults to local 8002.
+// Remote integration: BACKEND_URL=http://192.168.66.44:8002 npm run dev
 const BACKEND = process.env.BACKEND_URL || 'http://127.0.0.1:8002'
 
 export default defineConfig({
@@ -23,7 +23,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 3001,
+    port: 3000,
     allowedHosts: true,
     proxy: {
       // /api/doc/* -> strip /api prefix, forward to backend /doc/*

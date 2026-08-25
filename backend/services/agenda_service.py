@@ -20,6 +20,28 @@ AGENDA_STATUS_ORDER = [
     "decision_pending", "confirmed", "signed", "archived",
 ]
 
+# 议题决议的状态不是普通议题状态。这里保留 ``decision_pending`` 作为
+# 存量数据别名，但新写入统一使用 draft，避免“待确认”和“已确认”混用。
+DECISION_STATUS_ALIASES = {
+    "decision_pending": "draft",
+    "pending": "draft",
+    "待确认": "draft",
+    "草案": "draft",
+    "确认": "confirmed",
+    "否决": "rejected",
+    "驳回": "rejected",
+    "修改": "draft",
+}
+DECISION_STATUSES = {"draft", "confirmed", "rejected", "signing", "signed", "archived"}
+DECISION_STATUS_TRANSITIONS = {
+    "draft": {"draft", "confirmed", "rejected"},
+    "confirmed": {"confirmed", "signing", "draft"},
+    "rejected": {"rejected", "draft"},
+    "signing": {"signing", "signed", "draft"},
+    "signed": {"signed", "archived", "draft"},
+    "archived": {"archived"},
+}
+
 
 def _now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -64,6 +86,19 @@ def _json_dumps(data) -> str:
         return json.dumps(data, ensure_ascii=False)
     except Exception:
         return "{}"
+
+
+def _normalize_decision_status(status: str) -> str:
+    """将接口/存量状态转换为决议状态机使用的 canonical 值。"""
+    value = str(status or "draft").strip().lower()
+    return DECISION_STATUS_ALIASES.get(value, value)
+
+
+def _validate_decision_status(status: str) -> str:
+    value = _normalize_decision_status(status)
+    if value not in DECISION_STATUSES:
+        raise ValueError(f"不支持的决议状态: {status}")
+    return value
 
 
 # ────────────────────────────────────────────────────────────────
@@ -387,7 +422,17 @@ def create_agenda_record(
                     "", source, now, _json_dumps({"auto_from_transcript": source == "auto"}),
                 ),
             )
-            return list_agenda_records(meeting_id, agenda_id)
+            row = conn.execute(
+                "SELECT * FROM meeting_agenda_records WHERE id = ?", (rid,)
+            ).fetchone()
+    return {
+        "id": row["id"], "meetingId": row["meeting_id"], "agendaId": row["agenda_id"],
+        "transcriptId": row["transcript_id"], "speakerUserId": row["speaker_user_id"],
+        "participantId": row["participant_id"], "speakerName": row["speaker_name"],
+        "recordType": row["record_type"], "content": row["content"],
+        "correctedContent": row["corrected_content"], "source": row["source"],
+        "createdAt": row["created_at"], "payload": _json_loads(row["payload_json"], {}),
+    }
 
 
 def list_agenda_decisions(meeting_id: str, agenda_id: str = "") -> list:
@@ -423,7 +468,11 @@ def create_agenda_decision(
     _init_app_db()
     if not title or not title.strip():
         raise ValueError("决议标题不能为空")
+    status = _validate_decision_status(status)
+    if status in {"signing", "signed", "archived"}:
+        raise ValueError("新建决议只能处于草案、已确认或已否决状态")
     now = _now_text()
+    confirmed_at = now if status == "confirmed" else ""
     did = f"dec-{uuid.uuid4().hex[:10]}"
     with APP_DB_LOCK:
         with _db_connect() as conn:
@@ -443,22 +492,41 @@ def create_agenda_decision(
                 """,
                 (
                     did, meeting_id, agenda_id, decision_no, title.strip(),
-                    content or "", status, source, 1, created_by, now, now, "",
+                    content or "", status, source, 1, created_by, now, now, confirmed_at,
                     _json_dumps({}),
                 ),
             )
-            result = list_agenda_decisions(meeting_id, agenda_id)
-            return next((d for d in result if d["id"] == did), result)
+            row = conn.execute(
+                "SELECT * FROM meeting_agenda_decisions WHERE id = ?", (did,)
+            ).fetchone()
+    return {
+        "id": row["id"], "meetingId": row["meeting_id"], "agendaId": row["agenda_id"],
+        "decisionNo": row["decision_no"], "title": row["title"], "content": row["content"],
+        "status": row["status"], "source": row["source"], "version": row["version"],
+        "createdBy": row["created_by"], "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"], "confirmedAt": row["confirmed_at"],
+        "payload": _json_loads(row["payload_json"], {}),
+    }
 
 
 def update_agenda_decision(meeting_id: str, agenda_id: str, decision_id: str, patch: dict) -> dict:
-    """更新决议。content/title 变更时 version 递增（旧版本签字随后失效，见 signature 模块）。"""
+    """更新决议并执行确认/修改/否决状态机。
+
+    - 确认：``draft -> confirmed``，写入 ``confirmed_at``；
+    - 否决：``draft -> rejected``，清空确认时间；
+    - 修改：标题或正文变化时 version + 1，自动退回 draft，旧签字失效；
+    - signing/signed/archived 只能按顺序推进，已归档内容不可修改。
+
+    内容变化与状态确认不能在一次请求中绕过“重新确认”步骤；即使客户端
+    同时传入 status=confirmed，内容变化仍会回到 draft。
+    """
     _init_app_db()
     allowed = {"title", "content", "status"}
     clean = {k: v for k, v in (patch or {}).items() if k in allowed and v is not None}
     if not clean:
         raise ValueError("没有可更新的字段")
     now = _now_text()
+    bump = False
     with APP_DB_LOCK:
         with _db_connect() as conn:
             row = conn.execute(
@@ -471,15 +539,81 @@ def update_agenda_decision(meeting_id: str, agenda_id: str, decision_id: str, pa
                 clean.get("title", row["title"]) != row["title"]
                 or clean.get("content", row["content"]) != row["content"]
             )
+            current_status = _normalize_decision_status(row["status"])
+            if current_status not in DECISION_STATUSES:
+                raise ValueError(f"存量决议状态无效: {row['status']}")
+
+            requested_status = None
+            if "status" in clean:
+                requested_status = _validate_decision_status(clean["status"])
+
+            if current_status == "archived" and bump:
+                raise ValueError("已归档决议不可修改")
+
+            if bump:
+                # 任何内容修改都必须重新走确认，不能在同一次 patch 中把
+                # 草案直接伪装成已确认版本。
+                if requested_status not in (None, "draft"):
+                    raise ValueError("决议内容已修改，请保存草案后重新确认")
+                next_status = "draft"
+            elif requested_status is None:
+                next_status = row["status"]
+            else:
+                if requested_status not in DECISION_STATUS_TRANSITIONS[current_status]:
+                    raise ValueError(
+                        f"决议状态不能从 {row['status']} 变更为 {requested_status}"
+                    )
+                next_status = requested_status
+
             new_version = int(row["version"]) + 1 if bump else int(row["version"])
-            sets = ["title = ?", "content = ?", "status = ?", "updated_at = ?", "version = ?"]
+            confirmed_at = row["confirmed_at"] or ""
+            payload = _json_loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                payload = {}
+            if bump:
+                confirmed_at = ""
+                payload.pop("confirmedBy", None)
+                payload["lastAction"] = "modified"
+                payload["lastModifiedAt"] = now
+            elif next_status == "confirmed":
+                if current_status != "confirmed" or not confirmed_at:
+                    confirmed_at = now
+                payload["lastAction"] = "confirmed"
+                payload["confirmedAt"] = confirmed_at
+            elif next_status == "rejected":
+                confirmed_at = ""
+                payload.pop("confirmedAt", None)
+                payload["lastAction"] = "rejected"
+                payload["rejectedAt"] = now
+            elif next_status == "draft" and current_status != "draft":
+                confirmed_at = ""
+                payload.pop("confirmedAt", None)
+                payload["lastAction"] = "reopened"
+
+            sets = [
+                "title = ?", "content = ?", "status = ?", "updated_at = ?",
+                "version = ?", "confirmed_at = ?", "payload_json = ?",
+            ]
             args = [
                 clean.get("title", row["title"]), clean.get("content", row["content"]),
-                clean.get("status", row["status"]), now, new_version, decision_id,
+                next_status, now, new_version, confirmed_at, _json_dumps(payload), decision_id,
             ]
             conn.execute(f"UPDATE meeting_agenda_decisions SET {', '.join(sets)} WHERE id = ?", args)
-            result = list_agenda_decisions(meeting_id, agenda_id)
-            return next((d for d in result if d["id"] == decision_id), None)
+            result_row = conn.execute(
+                "SELECT * FROM meeting_agenda_decisions WHERE id = ?", (decision_id,)
+            ).fetchone()
+    if bump:
+        from backend.services.signature_service import invalidate_target_signatures
+        invalidate_target_signatures(meeting_id, "decision", decision_id)
+    return {
+        "id": result_row["id"], "meetingId": result_row["meeting_id"], "agendaId": result_row["agenda_id"],
+        "decisionNo": result_row["decision_no"], "title": result_row["title"],
+        "content": result_row["content"], "status": result_row["status"],
+        "source": result_row["source"], "version": result_row["version"],
+        "createdBy": result_row["created_by"], "createdAt": result_row["created_at"],
+        "updatedAt": result_row["updated_at"], "confirmedAt": result_row["confirmed_at"],
+        "payload": _json_loads(result_row["payload_json"], {}),
+    }
 
 
 def delete_agenda_decision(meeting_id: str, agenda_id: str, decision_id: str):

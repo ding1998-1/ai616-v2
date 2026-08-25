@@ -28,9 +28,9 @@ if SentenceTransformer is None:
     CaseSimilarityMatcher = _UnavailableCaseSimilarityMatcher
 else:
     class CaseSimilarityMatcher:
-    def __init__(self, model_name: str = 'paraphrase-multilingual-mpnet-base-v2'):
-        self.model = SentenceTransformer(model_name)
-        self.case_db = LegalCaseDatabase()
+        def __init__(self, model_name: str = 'paraphrase-multilingual-mpnet-base-v2'):
+            self.model = SentenceTransformer(model_name)
+            self.case_db = LegalCaseDatabase()
 
     def preprocess_case_text(self, case_content: str) -> str:
         case_type_keywords = ['合同纠纷', '劳动争议', '侵权责任', '建设工程', '采购合同']
