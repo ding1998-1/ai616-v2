@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from backend.config import APP_DB, AUTH_SECRET, MEETINGS_LOCK
-from backend.db import _load_users, _save_users, _default_users, _safe_meeting_id, _creator_from_user
+from backend.db import _load_users, _save_users, _default_users, _safe_meeting_id, _creator_from_user, _load_meetings
 from backend.deps import (
     _now_text, _today_text, _get_request_user, _require_admin,
     _issue_auth_token, _public_user, _save_departments, _load_departments,
@@ -78,6 +78,17 @@ async def auth_login(body: LoginRequest):
         user["password"] = _hash_password(password)
     user["lastLoginAt"] = _now_text()
     _save_users(users)
+    if body.meetingId:
+        safe_id = _safe_meeting_id(body.meetingId)
+        if safe_id not in _load_meetings():
+            raise HTTPException(status_code=404, detail="会议不存在或二维码已失效")
+        _sync_meeting_participant(
+            safe_id,
+            user,
+            body.roleLabel or user.get("meetingRole") or "参会代表",
+            user.get("dept") or "参会部门",
+            user.get("meetingSeat") or "移动端席位",
+        )
     token = _issue_auth_token(user)
     return {"success": True, "token": token, "user": _public_user(user)}
 
@@ -89,6 +100,8 @@ async def auth_meeting_register(body: MeetingRegisterRequest):
     if not meeting_id:
         raise HTTPException(status_code=400, detail="缺少 meetingId")
     safe_id = _safe_meeting_id(meeting_id)
+    if safe_id not in _load_meetings():
+        raise HTTPException(status_code=404, detail="会议不存在或二维码已失效")
     display = (body.displayName or body.name or "").strip()
     if not display:
         display = f"参会人_{safe_id[-6:]}"
@@ -175,9 +188,8 @@ def _sync_meeting_participant(meeting_id: str, user: dict, meeting_role: str, de
         "seat": seat,
         "dept": dept,
     }, ensure_ascii=False)
-    try:
-        with _db_connect() as conn:
-            conn.execute(
+    with _db_connect() as conn:
+        conn.execute(
                 """
                 INSERT INTO meeting_participants
                     (row_id, meeting_id, user_id, username, display_name, meeting_role, seat, dept, last_action, last_seen_at, payload_json)
@@ -190,15 +202,18 @@ def _sync_meeting_participant(meeting_id: str, user: dict, meeting_role: str, de
                     last_seen_at = excluded.last_seen_at,
                     payload_json = excluded.payload_json
                 """,
-                (
-                    row_id, meeting_id, user_id,
-                    user.get("username", ""), user.get("name", "") or user.get("username", ""),
-                    meeting_role, seat, dept, "register", now, payload,
-                ),
-            )
-    except Exception:
-        # 参会人落库失败不应阻断注册
-        pass
+            (
+                row_id, meeting_id, user_id,
+                user.get("username", ""), user.get("name", "") or user.get("username", ""),
+                meeting_role, seat, dept, "register", now, payload,
+            ),
+        )
+        persisted = conn.execute(
+            "SELECT 1 FROM meeting_participants WHERE row_id = ? AND meeting_id = ? AND user_id = ?",
+            (row_id, meeting_id, user_id),
+        ).fetchone()
+    if not persisted:
+        raise RuntimeError("参会身份绑定失败")
 
 
 # ── user management ──

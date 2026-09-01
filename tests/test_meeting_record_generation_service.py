@@ -14,11 +14,44 @@ import unittest
 
 from backend.services.meeting_record_generation_service import (
     MeetingRecordGenerationService,
+    _drop_semantically_unsupported,
     chunk_transcript_segments,
 )
 
 
 class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_unrelated_real_quote_cannot_anchor_hallucinated_topic(self):
+        records = {
+            "minutes": [
+                {
+                    "agenda": "睡眠产品 A-Sleep 介绍",
+                    "keyPoints": ["推广睡眠产品"],
+                    "basis": {
+                        "evidenceValid": True,
+                        "quotes": [{"text": "M5 Ultra 帧率在146帧左右"}],
+                    },
+                },
+                {
+                    "agenda": "Mac Studio 性能评测",
+                    "keyPoints": ["M5 Ultra 帧率约146帧"],
+                    "basis": {
+                        "evidenceValid": True,
+                        "quotes": [{"text": "M5 Ultra 帧率在146帧左右"}],
+                    },
+                },
+            ],
+            "decisions": [], "risks": [], "disclosures": [], "todos": [],
+        }
+
+        dropped = _drop_semantically_unsupported(records)
+
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(records["minutes"]), 2)
+        self.assertFalse(records["minutes"][0]["basis"]["evidenceValid"])
+        self.assertEqual(records["minutes"][0]["basis"]["evidenceIssue"], "semantic_mismatch")
+        self.assertEqual(records["minutes"][0]["status"], "待人工核验")
+        self.assertTrue(records["minutes"][1]["basis"]["evidenceValid"])
+
     def test_chunking_keeps_audio_file_boundaries_and_4000_char_limit(self):
         source = [
             {"id": "a-1", "fileId": "audio-a", "start": 0, "end": 2, "text": "甲" * 1500},
@@ -38,7 +71,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_map_reduce_is_bounded_retries_and_keeps_verbatim_basis(self):
         source = [
             {"id": f"seg-{index}", "fileId": f"audio-{index}", "start": index * 10, "end": index * 10 + 4,
-             "speaker": "张三", "text": f"原文事项{index}：同意保留第{index}项。"}
+             "speaker": "张三", "text": f"原文事项{index}：同意保留第{index}项，需要披露合规风险并补充材料。"}
             for index in range(5)
         ]
         state = {"active": 0, "maxActive": 0, "mapCalls": 0, "reduceCalls": 0}
@@ -57,13 +90,13 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
                     "chunkSummary": "已提取",
                     "topics": [{"title": f"议题{chunk['chunkId']}", "timeRange": chunk["timeRange"]}],
                     "conclusions": [{
-                        "content": f"确认{chunk['chunkId']}",
+                        "content": f"同意保留第{chunk['order']}项",
                         "type": "决定",
                         "evidence": segment["text"],
                         "time": segment["time"].split("-")[0],
                     }],
                     "risks_disclosures": [{
-                        "content": "需要披露的合规风险",
+                        "content": "披露合规风险",
                         "kind": "disclosure",
                         "severity": "中",
                         "evidence": segment["text"],
@@ -87,20 +120,20 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             first = map_outputs[0]["conclusions"][0]
             return {
                 "minutes": [{
-                    "agenda": "项目决策",
+                    "agenda": "保留第0项",
                     "status": "已记录",
-                    "keyPoints": ["保留原始依据"],
+                    "keyPoints": ["同意保留第0项"],
                     "basis": {"timeRange": "00:00:00-00:00:04", "quotes": [{"text": first["evidence"]}]},
                 }],
                 "decisions": [{
-                    "content": "确认第一项",
+                    "content": "同意保留第0项",
                     "type": "决定",
                     "confidence": 0.9,
                     "basis": {"timeRange": "00:00:00-00:00:04", "quotes": [{"text": first["evidence"]}]},
                 }],
                 "risks": [],
                 "disclosures": [{
-                    "content": "披露事项",
+                    "content": "披露合规风险",
                     "audience": "管理层",
                     "deadline": "待定",
                     "basis": {"timeRange": "00:00:00-00:00:04", "quotes": [{"text": first["evidence"]}]},
@@ -136,7 +169,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records["proofreadLog"][0]["fixed"], "引债")
 
     async def test_second_map_failure_uses_explicit_degraded_v1_fallback(self):
-        source = [{"id": "seg-1", "fileId": "audio-a", "start": 0, "end": 2, "text": "原始依据"}]
+        source = [{"id": "seg-1", "fileId": "audio-a", "start": 0, "end": 2, "text": "旧管线结果原始依据"}]
         state = {"mapCalls": 0, "fallbackCalls": 0}
 
         async def broken_map(prompt, context):
@@ -149,7 +182,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
                 "decisions": [{
                     "content": "旧管线结果",
                     "type": "知悉",
-                    "basis": {"timeRange": "00:00:00-00:00:02", "quotes": [{"text": "原始依据"}]},
+                    "basis": {"timeRange": "00:00:00-00:00:02", "quotes": [{"text": "旧管线结果原始依据"}]},
                 }]
             }
 
@@ -169,11 +202,11 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def map_call(prompt, context):
             segment = context["chunk"]["segments"][0]
-            return {"conclusions": [{"content": "决定", "evidence": segment["text"]}]}
+            return {"conclusions": [{"content": "保留预算", "evidence": segment["text"]}]}
 
         async def reduce_call(prompt, context):
             return {"decisions": [{
-                "content": "决定",
+                "content": "保留预算",
                 "basis": {"timeRange": "00:00:00-00:00:02", "quotes": [{"text": "润色后的预算依据"}]},
             }]}
 
@@ -246,6 +279,100 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records["todos"][0]["owner"], "张三")
         self.assertTrue(records["proofreadPassed"])
         self.assertEqual(records["proofreadStatus"], "passed")
+
+    async def test_cross_segment_evidence_with_copy_noise_recovers_verbatim_rows(self):
+        source = [
+            {"id": "seg-1", "fileId": "audio-a", "start": 10, "end": 12,
+             "speaker": "张三", "text": "预算调整方案由财务部"},
+            {"id": "seg-2", "fileId": "audio-a", "start": 12, "end": 15,
+             "speaker": "张三", "text": "在本周五前提交。"},
+        ]
+
+        async def map_call(_prompt, _context):
+            return {
+                "topics": [{"title": "预算调整"}],
+                "todos": [{
+                    "task": "财务部在本周五前提交预算调整方案",
+                    "owner": "张三",
+                    "evidence": "预算调整方案由财务部，在本周伍前提交",
+                }],
+            }
+
+        async def reduce_call(_prompt, _context):
+            return {
+                "minutes": [{"agenda": "预算调整", "keyPoints": []}],
+                "todos": [{"task": "财务部在本周五前提交预算调整方案", "owner": "张三"}],
+            }
+
+        records = await MeetingRecordGenerationService(
+            map_call=map_call,
+            reduce_call=reduce_call,
+        ).generate("meeting-cross-segment", source, participants=["张三"])
+
+        basis = records["todos"][0]["basis"]
+        self.assertTrue(basis["evidenceValid"])
+        self.assertEqual(basis["sourceSegmentIds"], ["seg-1", "seg-2"])
+        self.assertEqual([quote["text"] for quote in basis["quotes"]], [
+            "预算调整方案由财务部", "在本周五前提交。",
+        ])
+        self.assertEqual(basis["timeRange"], "00:00:10-00:00:15")
+        self.assertEqual(records["basisRecovery"]["invalidMapEvidence"], 0)
+        self.assertEqual(records["basisRecovery"]["unmatched"], 0)
+
+    async def test_ambiguous_fuzzy_evidence_is_not_auto_bound(self):
+        source = [
+            {"id": "seg-1", "fileId": "audio-a", "start": 0, "end": 2, "text": "本周五前提交预算材料"},
+            {"id": "seg-2", "fileId": "audio-a", "start": 4, "end": 6, "text": "本周五前提交审计材料"},
+        ]
+
+        async def map_call(_prompt, _context):
+            return {"todos": [{"task": "本周五前提交材料", "evidence": "本周五前提交项目材料"}]}
+
+        records = await MeetingRecordGenerationService(map_call=map_call).generate(
+            "meeting-ambiguous-evidence", source,
+        )
+
+        self.assertEqual(records["basisRecovery"]["invalidMapEvidence"], 1)
+        self.assertTrue(records["basisRecovery"]["unmatched"] >= 1)
+        self.assertIn("basis_invalid", records["qualityIssues"])
+
+    async def test_reduce_combined_decision_merges_two_verified_map_bases(self):
+        source = [
+            {"id": "seg-1", "fileId": "audio-a", "start": 0, "end": 3,
+             "text": "公共收益收入必须进入业主委员会账户。"},
+            {"id": "seg-2", "fileId": "audio-a", "start": 3, "end": 7,
+             "text": "房屋租金先进入业主委员会账户，再转给物业公司。"},
+        ]
+
+        async def map_call(_prompt, _context):
+            return {
+                "topics": [{
+                    "title": "公共收益账户管理",
+                    "evidence": "公共收益收入必须进入业主委员会账户。",
+                }],
+                "conclusions": [
+                    {"content": "公共收益收入进入业主委员会账户", "evidence": source[0]["text"]},
+                    {"content": "房屋租金进入业主委员会账户后转给物业", "evidence": source[1]["text"]},
+                ],
+            }
+
+        async def reduce_call(_prompt, _context):
+            return {
+                "minutes": [{"agenda": "公共收益账户管理", "keyPoints": []}],
+                "decisions": [{
+                    "content": "公共收益和房屋租金必须进入业主委员会账户，再转给物业公司",
+                    "type": "决定",
+                }],
+            }
+
+        records = await MeetingRecordGenerationService(
+            map_call=map_call, reduce_call=reduce_call,
+        ).generate("meeting-composite-basis", source)
+
+        basis = records["decisions"][0]["basis"]
+        self.assertTrue(basis["evidenceValid"])
+        self.assertEqual(basis["sourceSegmentIds"], ["seg-1", "seg-2"])
+        self.assertEqual(records["basisRecovery"]["unmatched"], 0)
 
     async def test_unmatched_reduce_item_stays_needs_review(self):
         source = [{

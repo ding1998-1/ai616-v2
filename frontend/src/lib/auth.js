@@ -1,4 +1,16 @@
 const TOKEN_KEY = 'ai_compliance_token';
+export const AUTH_EXPIRED_EVENT = 'ai616:auth-expired';
+
+let authExpiredNotified = false;
+
+function notifyAuthExpired(status) {
+  setStoredToken('');
+  if (!authExpiredNotified) {
+    authExpiredNotified = true;
+    window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT, { detail: { status } }));
+    window.setTimeout(() => { authExpiredNotified = false; }, 1000);
+  }
+}
 
 export function getStoredToken() {
   return localStorage.getItem(TOKEN_KEY) || '';
@@ -26,7 +38,20 @@ export async function authFetch(url, options = {}) {
   if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  return fetch(url, { ...options, headers });
+  const response = await fetch(url, { ...options, headers });
+  const path = window.location.pathname.replace(/\/+$/, '');
+  const externalMeetingEntry = path === '/mobile-recorder' || path === '/issue-collect';
+  if (response.status === 401 || (externalMeetingEntry && response.status === 403)) {
+    notifyAuthExpired(response.status);
+    const resetKey = 'ai616_external_auth_reset';
+    if (externalMeetingEntry && window.sessionStorage.getItem(resetKey) !== window.location.href) {
+      window.sessionStorage.setItem(resetKey, window.location.href);
+      window.setTimeout(() => window.location.reload(), 60);
+    }
+  } else if (response.ok && externalMeetingEntry) {
+    window.sessionStorage.removeItem('ai616_external_auth_reset');
+  }
+  return response;
 }
 
 export async function authFetchJson(url, options = {}) {

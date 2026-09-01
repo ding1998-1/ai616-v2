@@ -1,0 +1,16 @@
+[Unit]
+Description=Meeting Qwen3-ASR Offline Review Service
+After=network.target
+
+[Service]
+Type=simple
+User=ai
+WorkingDirectory=/home/ai/文档/ai616
+Environment=CUDA_VISIBLE_DEVICES=1
+ExecStart=/home/ai/miniconda3/envs/qwen3-asr/bin/python /home/ai/文档/ai616/backend/qwen3_offline_asr_server.py --host 127.0.0.1 --port 8092 --device cuda:0
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

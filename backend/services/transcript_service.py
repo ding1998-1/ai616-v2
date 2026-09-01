@@ -1,6 +1,7 @@
 """实时转写服务：清洗、议题绑定、幂等和连续发言合并。"""
 
 import difflib
+import hashlib
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -68,8 +69,17 @@ def build_record(user: dict, body, meeting_id: str, transcript: str, agenda_id: 
     speaker_name = getattr(body, "speaker_name", None) or role["displayName"]
     speaker_role = getattr(body, "speaker_role", None) or role["meetingRole"]
     speaker_dept = getattr(body, "speaker_dept", None) or role["dept"]
+    sentence_id = str(getattr(body, "sentence_id", None) or "").strip()
+    sentence_seq = max(0, int(getattr(body, "sentence_seq", None) or 0))
+    start_ms = max(0, int(getattr(body, "start_ms", None) or 0))
+    end_ms = max(start_ms, int(getattr(body, "end_ms", None) or start_ms))
+    record_id = (
+        f"tr_asr_{hashlib.sha256(f'{meeting_id}:{sentence_id}'.encode()).hexdigest()[:20]}"
+        if sentence_id
+        else f"tr_{uuid.uuid4().hex[:12]}"
+    )
     return {
-        "id": f"tr_{uuid.uuid4().hex[:12]}",
+        "id": record_id,
         "meetingId": meeting_id,
         "meetingTitle": body.meeting_title,
         "agenda": body.agenda,
@@ -90,12 +100,28 @@ def build_record(user: dict, body, meeting_id: str, transcript: str, agenda_id: 
         "speakerUserId": role.get("userId") or "",
         "participantId": participant_id,
         "audioClientId": getattr(body, "audio_client_id", None) or "",
+        "sentenceId": sentence_id,
+        "sentenceSeq": sentence_seq,
+        "start": start_ms / 1000,
+        "end": end_ms / 1000,
+        "startMs": start_ms,
+        "endMs": end_ms,
     }
 
 
 def persist_record(record: dict) -> tuple[dict, bool]:
     """写入转写；返回（最终记录、是否去重）。"""
     now = record["serverTime"]
+    if record.get("sentenceId"):
+        _init_app_db()
+        with APP_DB_LOCK:
+            with _db_connect() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM meeting_transcripts WHERE id = ?",
+                    (record["id"],),
+                ).fetchone()
+        if existing:
+            return record, True
     recent = recent_transcripts(record["meetingId"], record["username"])
     if any(_same_recent_text(item, record["transcript"], now) for item in recent):
         return record, True

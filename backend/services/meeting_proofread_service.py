@@ -23,7 +23,9 @@ from __future__ import annotations
 import copy
 import difflib
 import json
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -170,10 +172,21 @@ def merge_glossary_entries(
                 current[key] = item[key]
 
     glossary_path.parent.mkdir(parents=True, exist_ok=True)
-    glossary_path.write_text(
-        json.dumps({"version": 1, "terms": merged}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps(
+        {"version": 1, "updatedAt": _now_text(), "terms": merged},
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
+    fd, temporary = tempfile.mkstemp(prefix=".glossary_", suffix=".json", dir=str(glossary_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, glossary_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return merged
 
 

@@ -100,7 +100,7 @@ import {
   BellOutlined,
 } from '@ant-design/icons';
 import LoginPage from './pages/LoginPage';
-import { authFetchJson, getStoredToken, setStoredToken } from './lib/auth';
+import { AUTH_EXPIRED_EVENT, authFetchJson, getStoredToken, setStoredToken } from './lib/auth';
 
 const ComplianceAudit = lazy(() => import('./pages/ComplianceAudit'));
 const MeetingComplianceWorkflow = lazy(() => import('./pages/MeetingComplianceWorkflow'));
@@ -490,6 +490,15 @@ export default function App() {
   const isIssueCollectPath = window.location.pathname.replace(/\/+$/, '') === '/issue-collect';
 
   useEffect(() => {
+    const handleAuthExpired = () => {
+      setCurrentUser(null);
+      setBooting(false);
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, []);
+
+  useEffect(() => {
     let alive = true;
     const boot = async () => {
       const token = getStoredToken();
@@ -499,16 +508,26 @@ export default function App() {
       }
       try {
         const data = await authFetchJson('/api/auth/me');
+        if (isMobileRecorderPath || isIssueCollectPath) {
+          const meetingId = new URLSearchParams(window.location.search).get('meetingId') || '';
+          if (!meetingId) {
+            throw new Error('外部会议入口缺少 meetingId');
+          }
+          // 外部入口不能复用其它会议或普通后台账号的历史登录态。先验证
+          // 当前 Token 对目标会议的访问权；403 时回到本场登记页。
+          await authFetchJson(`/api/meetings/${encodeURIComponent(meetingId)}`);
+        }
         if (alive) setCurrentUser(data.user);
       } catch (_) {
         setStoredToken('');
+        if (alive) setCurrentUser(null);
       } finally {
         if (alive) setBooting(false);
       }
     };
     boot();
     return () => { alive = false; };
-  }, []);
+  }, [isIssueCollectPath, isMobileRecorderPath]);
 
   if (booting) {
     return (

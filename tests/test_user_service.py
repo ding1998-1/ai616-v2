@@ -54,3 +54,28 @@ def test_disabled_user_token_is_rejected(monkeypatch):
         assert getattr(exc, "status_code", None) == 401
     else:
         raise AssertionError("expected disabled account token to be rejected")
+
+
+def test_external_meeting_login_binds_existing_account(monkeypatch):
+    import asyncio
+
+    user = {
+        "id": "u1", "username": "alice", "name": "Alice", "role": "user",
+        "status": "active", "password": "hashed", "dept": "项目部",
+    }
+    bindings = []
+    monkeypatch.setattr(auth_routes, "_load_users", lambda: [user])
+    monkeypatch.setattr(auth_routes, "_save_users", lambda value: None)
+    monkeypatch.setattr(auth_routes, "_verify_password", lambda *_: True)
+    monkeypatch.setattr(auth_routes, "_needs_password_upgrade", lambda *_: False)
+    monkeypatch.setattr(auth_routes, "_load_meetings", lambda: {"meeting-1": {"id": "meeting-1"}})
+    monkeypatch.setattr(auth_routes, "_sync_meeting_participant", lambda *args: bindings.append(args))
+    monkeypatch.setattr(auth_routes, "_issue_auth_token", lambda _: "token")
+
+    result = asyncio.run(auth_routes.auth_login(auth_routes.LoginRequest(
+        username="alice", password="secret", meetingId="meeting-1", roleLabel="参会代表",
+    )))
+
+    assert result["token"] == "token"
+    assert bindings[0][0] == "meeting-1"
+    assert bindings[0][1]["id"] == "u1"

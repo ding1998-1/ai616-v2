@@ -765,7 +765,25 @@ def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
     return lines or [("（暂无会议记录）", False)]
 
 
-def _write_formal_docx(path: Path, meeting: Mapping[str, Any], records: Mapping[str, Any]) -> None:
+_FORMAL_TEMPLATE_TITLES = {
+    "standard": "会 议 记 录",
+    "major": "三重一大会议纪要",
+    "party": "党委会议纪要",
+    "board": "董事会会议纪要",
+    "project": "项目推进会议纪要",
+    "engineering": "工程项目会议纪要",
+    "audit": "审计会议纪要",
+    "concise": "会 议 纪 要",
+}
+
+
+def _write_formal_docx(
+    path: Path,
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+    *,
+    template_id: str = "standard",
+) -> None:
     try:
         from docx import Document
         from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
@@ -783,7 +801,7 @@ def _write_formal_docx(path: Path, meeting: Mapping[str, Any], records: Mapping[
     section.footer.paragraphs[0].text = ""
     heading = doc.add_paragraph()
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = heading.add_run("会 议 记 录")
+    run = heading.add_run(_FORMAL_TEMPLATE_TITLES.get(template_id, _FORMAL_TEMPLATE_TITLES["standard"]))
     _set_run_font(run, size=18, bold=True, role="title")
     heading.paragraph_format.space_after = Pt(8)
 
@@ -920,6 +938,7 @@ def generate_document_bundle(
     markers: Sequence[Mapping[str, Any]] | None = None,
     require_proofread: bool = True,
     timestamp: str | None = None,
+    template_id: str = "standard",
 ) -> dict[str, Any]:
     """Generate the formal document and independent evidence attachment."""
 
@@ -934,13 +953,21 @@ def generate_document_bundle(
     output_path.mkdir(parents=True, exist_ok=True)
     formal_path = output_path / f"{safe_id}_会议记录_{stamp}.docx"
     evidence_path = output_path / f"{safe_id}_证据底稿_{stamp}.docx"
-    _write_formal_docx(formal_path, meeting, {**dict(records), "generationSnapshot": snapshot})
+    template_id = template_id if template_id in _FORMAL_TEMPLATE_TITLES else "standard"
+    _write_formal_docx(
+        formal_path,
+        meeting,
+        {**dict(records), "generationSnapshot": snapshot},
+        template_id=template_id,
+    )
     _write_evidence_docx(evidence_path, meeting, {**dict(records), "generationSnapshot": snapshot}, manifest)
     return {
         "serviceVersion": DOCUMENT_SERVICE_VERSION,
         "meetingId": str(meeting_id),
         "generationSnapshot": snapshot,
         "coverage": manifest["coverage"],
+        "templateId": template_id,
+        "templateTitle": _FORMAL_TEMPLATE_TITLES[template_id],
         "evidenceManifest": manifest,
         "formal": DocumentArtifact(
             kind="formal",

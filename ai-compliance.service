@@ -10,9 +10,9 @@ Group=ai
 WorkingDirectory=/home/ai/文档/ai616
 Environment="HF_ENDPOINT=https://hf-mirror.com"
 Environment="PATH=/home/ai/miniconda3/envs/ai_compliance/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/home/ai/miniconda3/envs/ai_compliance/bin/python backend_full.py
+ExecStart=/home/ai/miniconda3/envs/ai_compliance/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8002 --timeout-graceful-shutdown 6
 ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
+Restart=always
 RestartSec=5s
 KillMode=mixed
 TimeoutStopSec=15

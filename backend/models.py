@@ -77,6 +77,10 @@ class MeetingTranscriptChunkRequest(BaseModel):
     agenda_id: Optional[str] = None       # 议题 ID（未传时后端用 meeting.active_agenda_id）
     audio_client_id: Optional[str] = None # 设备级录音客户端 ID
     participant_id: Optional[str] = None  # meeting_participants.row_id
+    sentence_id: Optional[str] = None     # 2pass sentence identity for durable idempotency
+    sentence_seq: Optional[int] = None    # 2pass ordering within one ASR session
+    start_ms: Optional[int] = None        # audio-relative evidence start
+    end_ms: Optional[int] = None          # audio-relative evidence end
 
 
 class MeetingRecorderSessionRequest(BaseModel):

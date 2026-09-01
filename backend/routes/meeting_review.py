@@ -16,6 +16,8 @@ from backend.services.meeting_review_service import (
     update_settings,
     update_transcript_speaker,
 )
+from backend.services.outcome_service import generate_record_documents
+from backend.services.whisper_review_service import schedule_whisper_review, whisper_review_status
 
 
 router = APIRouter(prefix="/api", tags=["meeting-review"])
@@ -25,9 +27,17 @@ router = APIRouter(prefix="/api", tags=["meeting-review"])
 async def whisper_review(request: Request, meeting_id: str):
     user, _, _ = require_meeting(request, meeting_id)
     try:
-        return list_whisper_reviews(meeting_id, user)
+        result = list_whisper_reviews(meeting_id, user)
+        result["whisperStatus"] = whisper_review_status(meeting_id)
+        return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/meetings/{meeting_id}/whisper-review/run")
+async def run_whisper_review(request: Request, meeting_id: str, force: bool = False):
+    _, safe_id, _ = require_meeting(request, meeting_id)
+    return {"success": True, "meetingId": safe_id, "whisperStatus": schedule_whisper_review(safe_id, force)}
 
 
 @router.get("/meetings/{meeting_id}/documents/status")
@@ -73,9 +83,15 @@ async def download_archive_document(request: Request, meeting_id: str):
     user, _, _ = require_meeting(request, meeting_id)
     try:
         path, filename = resolve_legacy_document(meeting_id, user, "formal")
+    except FileNotFoundError:
+        # 旧前端把“记录已生成”等同于“DOCX 已生成”。兼容接口在首次下载时
+        # 补建正式件，避免用户得到无法解释的 404。
+        try:
+            generate_record_documents(meeting_id)
+            path, filename = resolve_legacy_document(meeting_id, user, "formal")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(path, filename=filename, media_type=DOCX_MIME)
 

@@ -157,3 +157,15 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
     assert "这是一条应保留的完整原始证据长句" not in formal_text
     assert "这是一条应保留的完整原始证据长句" in evidence_text
     assert "背景杂音" in evidence_text
+
+
+def test_document_template_changes_real_word_heading(tmp_path: Path):
+    bundle = generate_document_bundle(
+        "m2", {"title": "重大事项会"}, _records(), _chronicle(), tmp_path,
+        timestamp="20260831120000", template_id="major",
+    )
+    from docx import Document
+
+    text = "\n".join(paragraph.text for paragraph in Document(bundle["formal"]["path"]).paragraphs)
+    assert "三重一大会议纪要" in text
+    assert bundle["templateId"] == "major"

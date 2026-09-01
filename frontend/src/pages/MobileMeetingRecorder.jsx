@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { resilientRecordingStore } from '../services/resilientRecordingStore';
 import { Alert, Avatar, Button, Input, Progress, Select, Space, Tag, Typography, message } from 'antd';
 import {
   AudioOutlined,
@@ -29,9 +30,9 @@ const ROLE_BY_ACCOUNT = {
 
 const BIND_STEPS = [
   ['账号登录', '确认当前手机属于实名账号'],
-  ['角色绑定', '绑定会议角色和席位'],
-  ['声纹采集', '录音流写入角色轨道'],
-  ['音频归档', '片段回传桌面端审查链路'],
+  ['会议绑定', '绑定本场会议角色和席位'],
+  ['录音采集', '录音流写入当前身份轨道'],
+  ['音频回传', '片段经确认后汇合到服务器'],
 ];
 
 const TARGET_SAMPLE_RATE = 16000;
@@ -425,8 +426,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     }
   })());
   const recordingStartTimeRef = useRef(null); // 录音开始时间，用于 Whisper 时间戳对齐
+  const recordingSessionIdRef = useRef('');
   const recordingRef = useRef(false);
   const asrConfidenceRef = useRef(null);
+  const finalizedSentenceIdsRef = useRef(new Set());
   const joinedRef = useRef(false);
   const joinRetryRef = useRef(0);
   const joinMaxRetries = 3;
@@ -444,13 +447,16 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   // 连接状态
   // P0-7: WebSocket 状态机: idle → connecting → connected → reconnecting → degraded → stopped
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine);
   // 音频合并/上传状态
   const [isMerging, setIsMerging] = useState(false);
   const [pendingChunks, setPendingChunks] = useState(0);
   // P0-4: ACK 队列 — chunk 必须收到 ACK 才算成功
   const pendingAckRef = useRef(new Map()); // Map<chunkIndex, {blob, attempts, sentAt}>
+  const chunkUploadPromisesRef = useRef(new Set());
   // P0-8: WebSocket 心跳
   const heartbeatRef = useRef(null); // setInterval ID
+  const phaseWarningRef = useRef({ phase: '', shownAt: 0 });
   const lastPongRef = useRef(0); // 上次收到 pong 的时间
   // Refs for functions used in useEffect (avoid stale closures)
   const flushPendingChunksRef = useRef(null);
@@ -610,6 +616,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     };
     // P0-10: 网络状态监听
     const handleOnline = () => {
+      setIsOnline(true);
       if (recordingRef.current) {
         console.warn('[NET] 网络恢复，补传 pending chunks 并重连 ASR');
         setSpeechStatus('网络已恢复，正在补传数据...');
@@ -623,6 +630,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       }
     };
     const handleOffline = () => {
+      setIsOnline(false);
       if (recordingRef.current) {
         console.warn('[NET] 网络断开，录音继续保存到 pending 队列');
         setSpeechStatus('网络已中断，录音仍在保存');
@@ -674,7 +682,14 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           const meetingInfo = await authFetchJson(`/api/meetings/${meetingId}`);
           const phase = meetingInfo?.meeting?.phase || '';
           if (phase && !['会中记录', '会中', '会后终审', '已归档'].includes(phase)) {
-            message.warning(`会议阶段已变为"${phase}"，建议结束录音`);
+            const now = Date.now();
+            const previous = phaseWarningRef.current;
+            if (previous.phase !== phase || now - previous.shownAt > 60000) {
+              phaseWarningRef.current = { phase, shownAt: now };
+              // Meeting phase is managed by the desktop host. A remote phase
+              // update must never interrupt or nag a mobile recorder that is
+              // still safely capturing audio.
+            }
           }
         } catch (_) { /* 网络问题忽略，不影响录音 */ }
       }
@@ -726,6 +741,78 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     const timer = window.setInterval(() => loadRecorderHistory({ silent: true }), recording ? 3000 : 9000);
     return () => window.clearInterval(timer);
   }, [meetingId, recording, currentUser?.username]);
+
+  useEffect(() => {
+    if (!meetingId || !currentUser?.username || recording) return undefined;
+    let cancelled = false;
+    const recover = async () => {
+      const sessions = await resilientRecordingStore.listSessions();
+      const candidates = sessions.filter(item => (
+        !item.finalized && item.meetingId === meetingId && item.clientId === clientIdRef.current
+      ));
+      for (const session of candidates) {
+        if (cancelled) return;
+        const token = getStoredToken() || session.token;
+        if (!token) continue;
+        const query = new URLSearchParams({
+          meeting_id: meetingId,
+          client_id: session.clientId,
+          session_id: session.sessionId,
+        });
+        const statusResponse = await fetch(`/api/meeting/recorder/audio/status?${query}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!statusResponse.ok) continue;
+        const status = await statusResponse.json();
+        const received = new Set(status.receivedChunks || []);
+        const chunks = await resilientRecordingStore.listChunks(session.sessionId);
+        for (const chunk of chunks) {
+          if (received.has(chunk.index)) {
+            await resilientRecordingStore.deleteChunk(session.sessionId, chunk.index);
+            continue;
+          }
+          const form = new FormData();
+          form.append('meeting_id', meetingId);
+          form.append('client_id', session.clientId);
+          form.append('session_id', session.sessionId);
+          form.append('chunk_index', String(chunk.index));
+          form.append('chunk_start_ms', String(chunk.index * 3000));
+          form.append('chunk_duration_ms', '3000');
+          form.append('file', chunk.blob, `chunk_${chunk.index}.webm`);
+          const response = await fetch('/api/meeting/recorder/audio/chunk', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: form,
+          });
+          if (!response.ok) throw new Error(`分片 ${chunk.index} 续传失败`);
+          await resilientRecordingStore.deleteChunk(session.sessionId, chunk.index);
+          received.add(chunk.index);
+        }
+        const inferredCount = Math.max(-1, ...received) + 1;
+        const finalChunkCount = session.finalChunkCount ?? inferredCount;
+        if (finalChunkCount <= 0) continue;
+        const completeForm = new FormData();
+        completeForm.append('meeting_id', meetingId);
+        completeForm.append('meeting_title', session.meetingTitle || meetingTitle);
+        completeForm.append('duration_seconds', String(session.durationSeconds || 0));
+        completeForm.append('total_chunks', String(finalChunkCount));
+        completeForm.append('client_id', session.clientId);
+        completeForm.append('session_id', session.sessionId);
+        const completeResponse = await fetch('/api/meeting/recorder/audio/complete', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: completeForm,
+        });
+        if (!completeResponse.ok) throw new Error('录音续传后合并失败');
+        await resilientRecordingStore.deleteSession(session.sessionId);
+        if (!cancelled) message.success('已恢复并补传上次中断的录音');
+      }
+    };
+    recover().catch(error => {
+      if (!cancelled) console.warn('[RECOVERY] 录音恢复尚未完成:', error);
+    });
+    return () => { cancelled = true; };
+  }, [meetingId, currentUser?.username, recording, meetingTitle]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -870,7 +957,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     doJoin();
   }, [meetingId]);
 
-  const postTranscript = async (text, isFinal = true, conf = null, vpInfo = null) => {
+  const postTranscript = async (text, isFinal = true, conf = null, vpInfo = null, sentenceId = '', sentenceMeta = {}) => {
     const cleanText = String(text || '').trim();
     if (!cleanText) return;
     const optimisticLine = {
@@ -913,6 +1000,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           // V2: 绑定音频客户端与参会人（议题由后端按 active_agenda_id 归属）
           audio_client_id: clientIdRef.current,
           ...(currentUser?.id ? { participant_id: currentUser.id } : {}),
+          ...(sentenceId ? { sentence_id: sentenceId } : {}),
+          ...(sentenceMeta.sentenceSeq ? { sentence_seq: sentenceMeta.sentenceSeq } : {}),
+          ...(Number.isFinite(sentenceMeta.startMs) ? { start_ms: sentenceMeta.startMs } : {}),
+          ...(Number.isFinite(sentenceMeta.endMs) ? { end_ms: sentenceMeta.endMs } : {}),
           ...(confidence !== undefined ? { confidence } : {}),
           ...speakerOverride,
           ...voiceprintFields,
@@ -969,7 +1060,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         const token = getStoredToken();
         const form = new FormData();
         form.append('meeting_id', meetingId);
+        form.append('client_id', clientIdRef.current);
+        form.append('session_id', recordingSessionIdRef.current);
         form.append('chunk_index', String(item.index));
+        form.append('chunk_start_ms', String(item.index * 3000));
+        form.append('chunk_duration_ms', '3000');
         form.append('file', item.blob, `chunk_${item.index}.webm`);
         const resp = await fetch('/api/meeting/recorder/audio/chunk', {
           method: 'POST',
@@ -991,7 +1086,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       const form = new FormData();
       form.append('meeting_id', meetingId);
       form.append('client_id', clientIdRef.current);
+      form.append('session_id', recordingSessionIdRef.current);
       form.append('chunk_index', String(index));
+      form.append('chunk_start_ms', String(index * 3000));
+      form.append('chunk_duration_ms', '3000');
       form.append('file', blob, `chunk_${index}.webm`);
       const resp = await fetch('/api/meeting/recorder/audio/chunk', {
         method: 'POST',
@@ -1003,6 +1101,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         if (data.ack === index || data.success) {
           // ACK 确认 — 从 pending 队列移除
           pendingAckRef.current.delete(index);
+          await resilientRecordingStore.deleteChunk(recordingSessionIdRef.current, index);
           setPendingChunks(pendingAckRef.current.size);
         }
       } else {
@@ -1034,6 +1133,8 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       form.append('agenda', agenda);
       form.append('duration_seconds', String(durationSeconds || 0));
       form.append('total_chunks', String(totalChunks));
+      form.append('client_id', clientIdRef.current);
+      form.append('session_id', recordingSessionIdRef.current);
       // 传录音开始时间，用于 Whisper 时间戳对齐会议时间轴
       if (recordingStartTimeRef.current) {
         form.append('recording_start_time', new Date(recordingStartTimeRef.current).toISOString());
@@ -1044,14 +1145,39 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         body: form,
       });
       if (!resp.ok) {
-        console.warn(`录音合并失败: HTTP ${resp.status}`);
-        return null;
+        let detail = '';
+        try {
+          const errorData = await resp.json();
+          detail = typeof errorData?.detail === 'string'
+            ? errorData.detail
+            : errorData?.detail?.message || '';
+        } catch (_) {}
+        console.warn(`录音合并失败: HTTP ${resp.status}${detail ? ` ${detail}` : ''}`);
+        return { success: false, status: resp.status, detail };
       }
       return resp.json();
     } catch (e) {
       console.warn('录音合并异常:', e);
       return null;
     }
+  };
+
+  const uploadCompleteAudioFallback = async (audioBlob, durationSeconds) => {
+    if (!audioBlob?.size) return null;
+    const token = getStoredToken();
+    const form = new FormData();
+    form.append('meeting_id', meetingId);
+    form.append('meeting_title', meetingTitle);
+    form.append('agenda', agenda);
+    form.append('duration_seconds', String(durationSeconds || 0));
+    form.append('file', audioBlob, `recording_${recordingSessionIdRef.current || Date.now()}.webm`);
+    const resp = await fetch('/api/meeting/recorder/audio', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    if (!resp.ok) throw new Error(`完整录音兜底上传失败（HTTP ${resp.status}）`);
+    return resp.json();
   };
 
   const stopFunAsrRecognition = () => {
@@ -1132,7 +1258,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     startFunAsrRef.current = startFunAsrRecognition;
     let reconnectAttempts = 0;
     // P0-9: 无限自动重连，不设上限。退避: 1s→2s→4s→8s→10s→10s...
-    const asrName = asrBackend === 'qwen' ? 'SenseVoice' : 'Fun-ASR';
+    const asrName = '实时转写';
 
     const doConnect = (isReconnect = false) => new Promise((resolve, reject) => {
       const token = getStoredToken();
@@ -1141,7 +1267,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         return;
       }
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsPath = asrBackend === 'qwen' ? '/api/meeting/asr/qwen/ws' : '/api/meeting/asr/ws';
+      const wsPath = asrBackend === 'qwen' ? '/api/meeting/asr/2pass/ws' : '/api/meeting/asr/ws';
       const wsParams = new URLSearchParams({
         token,
         meetingId,
@@ -1153,12 +1279,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         audio_client_id: clientIdRef.current,
         ...(isReconnect ? { resume: '1' } : {}),
       });
-      // WebSocket 直连后端（绕过不支持 WS 的外部代理）
-      // 优先用同源；如果当前是 HTTPS 外部域名，则降级到局域网直连
-      let wsHost = window.location.host;
-      if (window.location.protocol === 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        wsHost = '192.168.66.44';  // 直连后端 nginx，绕过外部 HTTPS 代理
-      }
+      // Always use the page origin. The public HTTPS proxy supports WebSocket;
+      // connecting to a private IP from an HTTPS page causes TLS/certificate
+      // failures on mobile networks and silently falls back to browser ASR.
+      const wsHost = window.location.host;
       const socket = new WebSocket(`${wsProtocol}//${wsHost}${wsPath}?${wsParams.toString()}`);
       let ready = false;
       let settled = false;
@@ -1183,6 +1307,9 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         if (!ready) failBeforeReady(new Error(`${asrName} WebSocket 异常`));
       };
       socket.onclose = () => {
+        // A replaced socket may close after the new one is already ready. Its
+        // callback must not overwrite the live connection state.
+        if (ready && asrSocketRef.current && asrSocketRef.current !== socket) return;
         // P0-8: 清除心跳
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
@@ -1211,6 +1338,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       }
       // P0-8: pong 响应 — 更新心跳时间戳
       if (payload.type === 'pong') {
+        if (asrSocketRef.current === socket) setConnectionStatus('connected');
         lastPongRef.current = Date.now();
         return;
       }
@@ -1247,12 +1375,14 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         return;
       }
       if (payload.type === 'preview') {
+        if (asrSocketRef.current === socket) setConnectionStatus('connected');
         // SenseVoice 实时预览 — 覆盖绿色框，不入库
         const text = String(payload.text || '').trim();
         if (text) setInterimText(text);
         return;
       }
       if (payload.type === 'commit') {
+        if (asrSocketRef.current === socket) setConnectionStatus('connected');
         // SenseVoice 正式入库 — 清预览框，生成气泡，写入 DB
         const text = String(payload.text || '').trim();
         if (text) {
@@ -1269,9 +1399,15 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       }
       if (payload.type === 'final') {
         // 完整句子 — newText 是独立不重叠句子，提交入库
+        const sentenceId = String(payload.sentenceId || '').trim();
+        if (sentenceId && finalizedSentenceIdsRef.current.has(sentenceId)) return;
         const newText = String(payload.newText || '').trim();
         const fullText = String(payload.fullText || payload.text || '').trim();
         if (!newText && !fullText) return;
+        if (sentenceId) {
+          if (finalizedSentenceIdsRef.current.size >= 1000) finalizedSentenceIdsRef.current.clear();
+          finalizedSentenceIdsRef.current.add(sentenceId);
+        }
         if (fullText) setInterimText('');
         if (newText) {
           const conf = typeof payload.confidence === 'number' ? payload.confidence : null;
@@ -1282,7 +1418,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
             speaker_confidence: payload.speaker_confidence,
             identified_by: payload.identified_by,
           } : null;
-          postTranscript(newText, true, conf, vpInfo).catch(err => message.error(`${asrName} 回传失败：${err.message}`));
+          postTranscript(newText, true, conf, vpInfo, sentenceId, {
+            sentenceSeq: Number(payload.sentenceSeq || 0),
+            startMs: Number(payload.startMs || 0),
+            endMs: Number(payload.endMs || 0),
+          }).catch(err => message.error(`${asrName} 回传失败：${err.message}`));
         }
         return;
       }
@@ -1334,31 +1474,12 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     try {
       return await doConnect(false);
     } catch (firstErr) {
-      setSpeechStatus(`Fun-ASR 首次连接失败，3秒后重试...（${firstErr.message}）`);
+      setSpeechStatus(`实时转写连接失败，3秒后重试...（${firstErr.message}）`);
       await new Promise(r => window.setTimeout(r, 3000));
       setSpeechStatus(`正在重试 ${asrName} 连接...`);
       return await doConnect(false);
     }
   };
-
-  // WebSocket 连通性快速预检
-  const checkWSAvailability = () => new Promise((resolve) => {
-    const testWsPath = asrBackend === 'qwen' ? '/api/meeting/asr/qwen/ws' : '/api/meeting/asr/ws';
-    // WebSocket 直连后端（绕过不支持 WS 的外部代理）
-    let wsHost = window.location.host;
-    if (window.location.protocol === 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      wsHost = '192.168.66.44';
-    }
-    const testWs = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${wsHost}${testWsPath}?token=${getStoredToken() || ''}&meetingId=ws-check&meetingTitle=test&agenda=test`);
-    const done = (ok, reason) => {
-      clearTimeout(timer);
-      testWs.close();
-      resolve({ ok, reason });
-    };
-    const timer = setTimeout(() => done(false, 'WebSocket 连接超时，可能隧道/防火墙不支持'), 5000);
-    testWs.onopen = () => done(true, '');
-    testWs.onerror = () => done(false, 'WebSocket 连接被拒绝，检查 SSL 代理是否支持 WS');
-  });
 
   const startSpeechRecognition = () => {
     if (!speechRecognitionCtor) {
@@ -1439,12 +1560,39 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       console.log(`[REC] MediaRecorder MIME: ${recorder.mimeType || 'browser-default'}`);
       audioChunksRef.current = [];
       chunkIndexRef.current = 0;
-      recorder.ondataavailable = async event => {
+      recordingSessionIdRef.current = (
+        globalThis.crypto?.randomUUID?.() || `rec-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      ).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+      await resilientRecordingStore.putSession({
+        sessionId: recordingSessionIdRef.current,
+        meetingId,
+        meetingTitle,
+        clientId: clientIdRef.current,
+        token: getStoredToken(),
+        mimeType: recorder.mimeType || mimeType || 'audio/webm',
+        finalChunkCount: null,
+        durationSeconds: null,
+        finalized: false,
+        createdAt: Date.now(),
+      });
+      chunkUploadPromisesRef.current.clear();
+      recorder.ondataavailable = event => {
         if (event.data?.size) {
           audioChunksRef.current.push(event.data);
           // 流式上传：每 3 秒上传一次 chunk，避免浏览器内存溢出
           const idx = chunkIndexRef.current++;
-          uploadAudioChunk(event.data, idx);
+          const task = (async () => {
+            // IndexedDB is only the offline safety copy. Safari may reject Blob writes
+            // under storage pressure; that must never block the primary server upload.
+            try {
+              await resilientRecordingStore.putChunk(recordingSessionIdRef.current, idx, event.data);
+            } catch (storeError) {
+              console.warn(`[REC] Chunk ${idx} 本地缓存失败，继续直接上传:`, storeError);
+            }
+            await uploadAudioChunk(event.data, idx);
+          })();
+          chunkUploadPromisesRef.current.add(task);
+          void task.finally(() => chunkUploadPromisesRef.current.delete(task)).catch(() => {});
         }
       };
       recorder.start(3000); // 每 3 秒分段，立即上传释放内存
@@ -1467,17 +1615,8 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = '';
       }
-      setSpeechStatus('麦克风已接入，正在检测 WebSocket 连通性...');
+      setSpeechStatus('麦克风已接入，正在连接实时识别...');
       await postSession('start');
-
-      // 先检测 WebSocket 是否可达（诊断隧道/SSL问题）
-      const wsCheck = await checkWSAvailability();
-      if (!wsCheck.ok) {
-        setSpeechStatus(`WebSocket 不可用：${wsCheck.reason}`);
-        message.warning(`实时语音识别不可用：${wsCheck.reason}。将使用浏览器内置识别。`);
-        startSpeechRecognition();
-        return;
-      }
 
       try {
         await startFunAsrRecognition(stream);
@@ -1543,8 +1682,12 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       // 兜底超时
       window.setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 2000);
     });
-    // 停止后等待一小段时间，确保所有 ondataavailable 回调完成
-    await new Promise(r => setTimeout(r, 200));
+    // Safari 常在 stop 时才吐出最后一块音频。必须等待该分片完成本地落库与上传，
+    // 不能只依赖固定延时，否则 complete 会早于 chunk 到达而返回 404。
+    await new Promise(r => setTimeout(r, 80));
+    if (chunkUploadPromisesRef.current.size > 0) {
+      await Promise.allSettled(Array.from(chunkUploadPromisesRef.current));
+    }
     mediaStreamRef.current?.getTracks?.().forEach(track => track.stop());
     const chunks = audioChunksRef.current;
     const audioSize = chunks.reduce((total, item) => total + item.size, 0);
@@ -1578,14 +1721,30 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     window.addEventListener('beforeunload', beforeUnloadHandler);
 
     try {
-      await flushRetryQueue(); // 最后一次重试，确保所有 chunk 上传完成后再合并
+      await resilientRecordingStore.updateSession(recordingSessionIdRef.current, {
+        finalChunkCount: chunkIndexRef.current,
+        durationSeconds: finalSeconds,
+      });
+      await flushPendingChunks();
+      if (pendingAckRef.current.size > 0) {
+        throw new Error(`仍有 ${pendingAckRef.current.size} 个录音分片未回传，请保持页面打开后重试`);
+      }
       setPendingChunks(0);
       setSpeechStatus('音频片段上传完成，正在合并音频…');
 
       // 流式上传模式：chunk 已在录音过程中上传，此处通知后端合并
       const totalChunks = chunkIndexRef.current;
       if (totalChunks > 0) {
-        await completeAudioUpload(finalSeconds, totalChunks);
+        const completed = await completeAudioUpload(finalSeconds, totalChunks);
+        if (!completed?.success) {
+          setSpeechStatus('分片合并未确认，正在上传完整录音兜底…');
+          const fallback = await uploadCompleteAudioFallback(audioBlob, finalSeconds);
+          if (!fallback?.success) {
+            throw new Error(completed?.detail || `服务端未确认录音合并完成${completed?.status ? `（HTTP ${completed.status}）` : ''}`);
+          }
+          message.warning('分片合并未确认，已改用完整录音安全回传');
+        }
+        await resilientRecordingStore.deleteSession(recordingSessionIdRef.current);
       }
       setSpeechStatus('音频合并完成，正在保存会议记录…');
       await postSession('stop', { audio_size: audioSize, duration_seconds: finalSeconds });
@@ -1784,47 +1943,36 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     <div className="mobile-recorder-page">
       <div className="mobile-recorder-shell">
         <header className="mobile-recorder-top">
-          <div>
-            <Tag color={recording ? 'processing' : 'blue'} style={{ margin: 0, borderRadius: 999 }}>
-              {recording ? '手机录音中' : '手机录音页'}
-            </Tag>
-            <Title level={3} style={{ margin: '10px 0 0', color: '#0f172a', lineHeight: 1.2 }}>
-              {meetingTitle}
-            </Title>
-            <Text style={{ display: 'block', marginTop: 6, color: '#64748b' }}>{meetingDate} · 本地手动项目</Text>
-            <Text style={{ display: 'block', marginTop: 4, color: '#64748b' }}>{projectName} · {agenda}</Text>
+          <div className="mobile-recorder-top-copy">
+            <div className="mobile-recorder-eyebrow">
+              <span className={recording ? 'is-live' : ''} />
+              {recording ? '正在录音' : '会议录音'}
+            </div>
+            <Title level={3} className="mobile-recorder-meeting-title">{meetingTitle}</Title>
+            <Text className="mobile-recorder-meeting-meta">{meetingDate} · {projectName || '会议'}</Text>
+            <div className="mobile-recorder-agenda">当前议题：{agenda || '等待会议主持人指定'}</div>
           </div>
-          <Button shape="circle" icon={<LogoutOutlined />} onClick={onLogout} />
+          <Button className="mobile-recorder-logout" shape="circle" icon={<LogoutOutlined />} onClick={onLogout} aria-label="退出登录" />
         </header>
 
         <section className="mobile-recorder-identity">
           <Avatar size={48} icon={<UserOutlined />} style={{ background: '#1d5fd7' }} />
-          <div>
+          <div className="mobile-recorder-identity-copy">
             <div className="mobile-recorder-name">{boundRole.name}</div>
             <div className="mobile-recorder-muted">{boundRole.dept} · {boundRole.role}</div>
           </div>
           <Tag color="green" style={{ margin: 0, borderRadius: 999 }}>{boundRole.seat}</Tag>
-        </section>
-
-        {/* 当前发言人选择器 — 多人共用一台手机时切换发言人 */}
-        <section className="mobile-recorder-card" style={{ marginTop: 0 }}>
-          <div className="mobile-recorder-section-title">
-            <UserOutlined />
-            当前发言人
-          </div>
-          <div className="mobile-recorder-muted" style={{ marginTop: 6 }}>
-            录音时选择正在发言的人。未选择时，转写自动归属当前登录账号“{boundRole.name}”。
-          </div>
-          <Space size={10} style={{ marginTop: 10, width: '100%' }}>
+          <div className="mobile-recorder-speaker-switch">
+            <span>发言人</span>
             <Select
               value={activeSpeakerName || undefined}
               onChange={val => {
                 setActiveSpeakerName(val || '');
                 if (!val) setActiveSpeakerRole('');
               }}
-              placeholder={`使用账号角色：${boundRole.name}`}
+              placeholder={`本人：${boundRole.name}`}
               allowClear
-              style={{ minWidth: 140, flex: 1 }}
+              style={{ minWidth: 0, width: '100%' }}
               options={[
                 { label: '刘强（主要负责人）', value: '刘强' },
                 { label: '陈伟（分管领导）', value: '陈伟' },
@@ -1838,7 +1986,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
               <Select
                 value={activeSpeakerRole || '参会代表'}
                 onChange={val => setActiveSpeakerRole(val)}
-                style={{ width: 120 }}
+                style={{ width: '100%' }}
                 options={[
                   { label: '主要负责人', value: '主要负责人' },
                   { label: '分管领导', value: '分管领导' },
@@ -1849,17 +1997,8 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
                 ]}
               />
             )}
-          </Space>
+          </div>
         </section>
-
-        {/* 声纹注册 — 录音前采集当前发言人声纹 */}
-        <MobileVoiceprintEnroll
-          userId={boundRole.username || currentUser?.username || ''}
-          displayName={activeSpeakerName || boundRole.name}
-          role={activeSpeakerRole || boundRole.role}
-          dept={boundRole.dept}
-          palette={{}}
-        />
 
         <section className={recording ? 'mobile-recorder-core is-recording' : 'mobile-recorder-core'}>
           <div className="mobile-recorder-orbit">
@@ -1871,34 +2010,14 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           <div className="mobile-recorder-wave" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5, 6, 7].map(item => <i key={item} style={{ animationDelay: `${item * 80}ms` }} />)}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
-            <Button
-              type={asrBackend === 'dashscope' ? 'primary' : 'default'}
-              size="middle"
-              onClick={() => {
-                setAsrBackend('dashscope');
-                try { localStorage.setItem('ai616_asr_backend', 'dashscope'); } catch (_) {}
-              }}
-              disabled={recording}
-              style={{ borderRadius: 999 }}
-            >
-              云端识别
-            </Button>
-            <Button
-              type={asrBackend === 'qwen' ? 'primary' : 'default'}
-              size="middle"
-              onClick={() => {
-                setAsrBackend('qwen');
-                try { localStorage.setItem('ai616_asr_backend', 'qwen'); } catch (_) {}
-              }}
-              disabled={true}
-              title="本地 Paraformer 质量差，已禁用"
-              style={{ borderRadius: 999 }}
-            >
-              本地识别
-            </Button>
+          <div className="mobile-recorder-health-row">
+            <span className={isOnline ? 'is-ok' : 'is-warn'}><i />{isOnline ? '网络正常' : '离线保存'}</span>
+            <span className={pendingChunks > 0 ? 'is-warn' : 'is-ok'}><i />{pendingChunks > 0 ? `${pendingChunks} 片待传` : '录音已保护'}</span>
+            <span className={connectionStatus === 'connected' ? 'is-ok' : recording ? 'is-warn' : ''}>
+              <i />{connectionStatus === 'connected' ? `${asrBackend === 'qwen' ? '本地' : '在线'}转写` : recording ? '转写重连' : '转写待机'}
+            </span>
           </div>
-          <Space size={10} style={{ marginTop: 12 }}>
+          <div className="mobile-recorder-actions">
             <Button
               type="primary"
               size="large"
@@ -1906,17 +2025,17 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
               onClick={startRecording}
               disabled={recording || starting}
               loading={starting}
-              style={{ height: 44, borderRadius: 999, fontWeight: 800 }}
+              className="mobile-recorder-start"
             >
               {starting ? '启动中' : '开始录音'}
             </Button>
             {recording && !isPaused && (
-              <Button size="large" onClick={pauseRecording} style={{ height: 44, borderRadius: 999, fontWeight: 800 }}>
+              <Button size="large" onClick={pauseRecording} className="mobile-recorder-pause">
                 暂停
               </Button>
             )}
             {recording && isPaused && (
-              <Button type="primary" size="large" onClick={resumeRecording} style={{ height: 44, borderRadius: 999, fontWeight: 800 }}>
+              <Button type="primary" size="large" onClick={resumeRecording} className="mobile-recorder-pause">
                 继续录音
               </Button>
             )}
@@ -1925,27 +2044,13 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
               onClick={stopRecording}
               disabled={!recording || isMerging}
               loading={isMerging}
-              style={{ height: 44, borderRadius: 999, fontWeight: 800 }}
+              danger={recording}
+              className="mobile-recorder-stop"
             >
               {isMerging ? '正在上传…' : '结束录音'}
             </Button>
-            {/* 连接状态指示器 */}
-            {recording && !isMerging && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#999' }}>
-                <span style={{
-                  width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
-                  background: connectionStatus === 'connected' ? '#52c41a' : connectionStatus === 'reconnecting' ? '#faad14' : '#ff4d4f',
-                }} />
-                {connectionStatus === 'connected' ? 'ASR 已连接' : connectionStatus === 'reconnecting' ? 'ASR 重连中...' : 'ASR 未连接'}
-              </div>
-            )}
-            {isMerging && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#faad14' }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block', background: '#faad14' }} />
-                {pendingChunks > 0 ? `正在上传剩余 ${pendingChunks} 个音频片段…` : '正在合并音频…请勿关闭页面'}
-              </div>
-            )}
-          </Space>
+          </div>
+          {isMerging && <div className="mobile-recorder-merging">{pendingChunks > 0 ? `正在上传剩余 ${pendingChunks} 个音频片段，请保持页面打开` : '正在合并录音，请勿关闭页面'}</div>}
         </section>
 
         <section className="mobile-recorder-card">
@@ -1956,9 +2061,15 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           <Alert
             type={isMerging ? 'warning' : qwenAsrAvailable || speechRecognitionCtor ? 'success' : 'warning'}
             showIcon
-            style={{ marginTop: 12, borderRadius: 12 }}
+            className="mobile-recorder-asr-alert"
             message={speechStatus}
-            description={isMerging ? '音频正在上传和合并中，关闭或刷新页面将导致本次录音丢失！' : window.isSecureContext ? (qwenAsrAvailable ? (asrBackend === 'qwen' ? '使用本地 SenseVoiceSmall（FunASR），GPU 推理，多语种高准确率，无需联网。' : '使用阿里 DashScope Fun-ASR 云端实时识别，准确率高。') : '当前浏览器没有开放实时音频处理能力，仍可录音并用下方输入框补录关键发言。') : '当前页面是 HTTP 局域网地址，iPhone 会禁止网页麦克风。请改用 HTTPS 链接打开后再开始录音。'}
+            description={isMerging
+              ? '音频正在补传和合并，完成前请保持页面打开。'
+              : window.isSecureContext
+                ? connectionStatus === 'connected'
+                  ? `当前使用${asrBackend === 'qwen' ? '本地 SenseVoice（FunASR）' : '在线 Fun-ASR'}；录音分片独立保存并持续回传。`
+                  : '录音与转写相互独立；即使实时转写暂时不可用，录音仍会保存并在网络恢复后补传。'
+                : '当前地址无法取得 iPhone 麦克风权限，请使用 HTTPS 会议链接。'}
           />
           {recordingSummary && !recording && (
             <div className={recordingSummary.transcriptCount > 0 ? 'mobile-recorder-result is-ok' : 'mobile-recorder-result is-empty'}>
@@ -2147,11 +2258,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           )}
         </section>
 
-        <section className="mobile-recorder-card">
-          <div className="mobile-recorder-section-title">
-            <SafetyCertificateOutlined />
-            账号角色绑定
-          </div>
+        <details className="mobile-recorder-card mobile-recorder-secondary-card">
+          <summary className="mobile-recorder-section-title">
+            <span><SafetyCertificateOutlined />身份与设备信息</span>
+            <span className="mobile-recorder-summary-hint">查看</span>
+          </summary>
           <div className="mobile-recorder-bind-grid">
             {BIND_STEPS.map(([title, desc], index) => {
               const doneByStep = [
@@ -2172,13 +2283,16 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
               );
             })}
           </div>
-        </section>
-
-        <section className="mobile-recorder-card">
-          <div className="mobile-recorder-section-title">
-            <MobileOutlined />
-            回传状态
+          <div className="mobile-recorder-muted mobile-recorder-voiceprint-note">
+            声纹校准将在会议结束后进行，不影响现场录音和实时转写。
           </div>
+        </details>
+
+        <details className="mobile-recorder-card mobile-recorder-secondary-card">
+          <summary className="mobile-recorder-section-title">
+            <span><MobileOutlined />录音回传与纪实</span>
+            <span className="mobile-recorder-summary-hint">查看</span>
+          </summary>
           <div className="mobile-recorder-status-line">
             <span>语音识别状态</span>
             <strong>{recording ? '实时转写中' : seconds > 0 ? '已停止录音' : '待启动'}</strong>
@@ -2243,7 +2357,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           <div className="mobile-recorder-muted" style={{ marginTop: 10 }}>
             当前采集接口预留为“{deviceLabel} / {deviceType} / {transport}”，后续可无缝接入 2.4G 无线录音卡或其他麦克风设备。
           </div>
-        </section>
+        </details>
       </div>
 
       <style>{`
@@ -2275,12 +2389,10 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           overflow-y: auto;
           -webkit-overflow-scrolling: touch;
           overscroll-behavior-y: contain;
-          padding: 14px 14px calc(96px + env(safe-area-inset-bottom));
+          padding: max(14px, env(safe-area-inset-top)) 14px calc(40px + env(safe-area-inset-bottom));
           box-sizing: border-box;
           touch-action: pan-y;
-          background:
-            radial-gradient(circle at 50% 0%, rgba(29,95,215,0.16), transparent 34%),
-            linear-gradient(180deg, #eef5ff 0%, #f8fafc 56%, #ffffff 100%);
+          background: linear-gradient(180deg, #f2f6fb 0%, #f7f9fc 44%, #eef3f8 100%);
           color: #0f172a;
           letter-spacing: 0;
         }
@@ -2289,23 +2401,86 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           width: min(100%, 430px);
           margin: 0 auto;
           display: grid;
-          gap: 12px;
+          gap: 10px;
         }
 
         .mobile-recorder-top {
           display: flex;
           justify-content: space-between;
           gap: 12px;
-          align-items: flex-start;
+          align-items: center;
+          padding: 4px 2px 8px;
+        }
+
+        .mobile-recorder-top-copy {
+          min-width: 0;
+          flex: 1;
+        }
+
+        .mobile-recorder-eyebrow {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          color: #607086;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: .08em;
+        }
+
+        .mobile-recorder-eyebrow > span {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: #94a3b8;
+        }
+
+        .mobile-recorder-eyebrow > span.is-live {
+          background: #ef4444;
+          box-shadow: 0 0 0 5px rgba(239,68,68,.1);
+        }
+
+        .mobile-recorder-meeting-title.ant-typography {
+          margin: 7px 0 0 !important;
+          color: #13213a !important;
+          font-size: 23px !important;
+          line-height: 1.25 !important;
+          letter-spacing: -.02em;
+        }
+
+        .mobile-recorder-meeting-meta {
+          display: block;
+          margin-top: 5px;
+          color: #718096;
+          font-size: 12px;
+        }
+
+        .mobile-recorder-agenda {
+          margin-top: 10px;
+          padding: 8px 10px;
+          overflow: hidden;
+          color: #29415f;
+          font-size: 12px;
+          line-height: 1.45;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          border: 1px solid #d9e5f2;
+          border-radius: 10px;
+          background: rgba(255,255,255,.72);
+        }
+
+        .mobile-recorder-logout.ant-btn {
+          flex: 0 0 auto;
+          border-color: #dbe4ef;
+          background: rgba(255,255,255,.82);
         }
 
         .mobile-recorder-identity,
         .mobile-recorder-card,
         .mobile-recorder-core {
-          background: rgba(255,255,255,0.88);
-          border: 1px solid rgba(15,23,42,0.07);
-          border-radius: 18px;
-          box-shadow: 0 16px 34px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9);
+          background: rgba(255,255,255,0.94);
+          border: 1px solid #dfe7f1;
+          border-radius: 17px;
+          box-shadow: 0 8px 22px rgba(30,51,79,.055);
         }
 
         .mobile-recorder-identity {
@@ -2314,6 +2489,33 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           gap: 12px;
           align-items: center;
           padding: 14px;
+        }
+
+        .mobile-recorder-identity-copy {
+          min-width: 0;
+        }
+
+        .mobile-recorder-speaker-switch {
+          grid-column: 1 / -1;
+          display: grid;
+          grid-template-columns: 62px minmax(0, 1fr);
+          gap: 8px;
+          align-items: center;
+          padding-top: 12px;
+          border-top: 1px solid #edf1f6;
+        }
+
+        .mobile-recorder-speaker-switch > span {
+          color: #607086;
+          font-size: 12px;
+          font-weight: 700;
+        }
+
+        .mobile-recorder-speaker-switch .ant-select-selector {
+          min-height: 38px !important;
+          border-color: #dbe4ef !important;
+          border-radius: 10px !important;
+          box-shadow: none !important;
         }
 
         .mobile-recorder-name {
@@ -2329,7 +2531,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         }
 
         .mobile-recorder-core {
-          padding: 22px 16px;
+          padding: 20px 16px 16px;
           text-align: center;
         }
 
@@ -2383,6 +2585,84 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           font-variant-numeric: tabular-nums;
         }
 
+        .mobile-recorder-health-row {
+          margin-top: 14px;
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 6px;
+        }
+
+        .mobile-recorder-health-row > span {
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 5px;
+          padding: 7px 5px;
+          overflow: hidden;
+          color: #607086;
+          font-size: 10px;
+          font-weight: 700;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          border-radius: 9px;
+          background: #f5f7fa;
+        }
+
+        .mobile-recorder-health-row i {
+          width: 6px;
+          height: 6px;
+          flex: 0 0 auto;
+          border-radius: 50%;
+          background: #94a3b8;
+        }
+
+        .mobile-recorder-health-row .is-ok i { background: #22a06b; }
+        .mobile-recorder-health-row .is-warn i { background: #f59e0b; }
+
+        .mobile-recorder-actions {
+          margin-top: 14px;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(0, .72fr);
+          gap: 9px;
+        }
+
+        .mobile-recorder-actions .ant-btn {
+          width: 100%;
+          height: 48px;
+          border-radius: 13px;
+          font-weight: 800;
+        }
+
+        .mobile-recorder-actions .mobile-recorder-start:only-child,
+        .mobile-recorder-actions .mobile-recorder-start:first-child:last-child {
+          grid-column: 1 / -1;
+        }
+
+        .mobile-recorder-actions .mobile-recorder-start:not(:disabled) {
+          background: #1468d8;
+          box-shadow: 0 8px 18px rgba(20,104,216,.22);
+        }
+
+        .mobile-recorder-actions .mobile-recorder-pause {
+          grid-column: 1;
+        }
+
+        .mobile-recorder-actions .mobile-recorder-stop {
+          grid-column: 2;
+        }
+
+        .mobile-recorder-merging {
+          margin-top: 10px;
+          padding: 9px 10px;
+          color: #9a5b08;
+          font-size: 11px;
+          line-height: 1.45;
+          border: 1px solid #f7d99b;
+          border-radius: 10px;
+          background: #fff8e8;
+        }
+
         .mobile-recorder-wave {
           margin: 18px auto 0;
           height: 32px;
@@ -2407,6 +2687,22 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
 
         .mobile-recorder-card {
           padding: 14px;
+        }
+
+        .mobile-recorder-asr-alert.ant-alert {
+          margin-top: 12px;
+          padding: 10px 11px;
+          border-radius: 12px;
+        }
+
+        .mobile-recorder-asr-alert .ant-alert-message {
+          font-size: 13px;
+          font-weight: 800;
+        }
+
+        .mobile-recorder-asr-alert .ant-alert-description {
+          font-size: 11px;
+          line-height: 1.55;
         }
 
         .mobile-recorder-interim {
@@ -2573,6 +2869,38 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           gap: 8px;
         }
 
+        .mobile-recorder-secondary-card > summary {
+          list-style: none;
+          cursor: pointer;
+          justify-content: space-between;
+        }
+
+        .mobile-recorder-secondary-card > summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .mobile-recorder-secondary-card > summary > span:first-child {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .mobile-recorder-summary-hint {
+          color: #6b7d92;
+          font-size: 11px;
+          font-weight: 600;
+        }
+
+        .mobile-recorder-secondary-card[open] .mobile-recorder-summary-hint { font-size: 0; }
+        .mobile-recorder-secondary-card[open] .mobile-recorder-summary-hint::after { content: '收起'; font-size: 11px; }
+
+        .mobile-recorder-voiceprint-note {
+          margin-top: 10px;
+          padding: 9px 10px;
+          border-radius: 10px;
+          background: #f7f9fc;
+        }
+
         .mobile-recorder-history-summary {
           margin-top: 12px;
           display: grid;
@@ -2733,6 +3061,22 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         @keyframes mobile-recorder-wave {
           0%, 100% { transform: scaleY(0.6); }
           50% { transform: scaleY(1.8); }
+        }
+
+        @media (max-width: 374px) {
+          .mobile-recorder-page { padding-left: 10px; padding-right: 10px; }
+          .mobile-recorder-meeting-title.ant-typography { font-size: 21px !important; }
+          .mobile-recorder-identity { grid-template-columns: 42px minmax(0, 1fr) auto; gap: 9px; }
+          .mobile-recorder-identity .ant-avatar { width: 42px !important; height: 42px !important; line-height: 42px !important; }
+          .mobile-recorder-health-row > span { font-size: 9px; }
+          .mobile-recorder-actions { grid-template-columns: minmax(0, 1fr) minmax(0, .76fr); }
+        }
+
+        @media (orientation: landscape) and (max-height: 520px) {
+          .mobile-recorder-page { position: absolute; height: auto; min-height: 100dvh; }
+          .mobile-recorder-orbit { width: 82px; height: 82px; }
+          .mobile-recorder-mic { width: 56px; height: 56px; font-size: 22px; }
+          .mobile-recorder-time { font-size: 28px; }
         }
       `}</style>
     </div>

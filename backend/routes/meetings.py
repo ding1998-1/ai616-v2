@@ -70,7 +70,32 @@ async def update_stage_route(request: Request, meeting_id: str, body: MeetingSta
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except VoiceprintPreflightError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response = {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
+    if body.stage == "audit":
+        from backend.services.asr_hotword_learning_service import learn_meeting_context
+        from backend.services.whisper_review_service import schedule_whisper_review
+
+        response["asrHotwords"] = learn_meeting_context(meeting_id)
+        response["whisperStatus"] = schedule_whisper_review(meeting_id)
+    return response
+
+
+@router.get("/{meeting_id}/asr-hotwords")
+async def meeting_asr_hotwords_route(request: Request, meeting_id: str):
+    _, safe_id, _ = require_meeting(request, meeting_id)
+    from backend.services.asr_hotword_learning_service import learned_hotwords_for_meeting
+
+    return {"success": True, **learned_hotwords_for_meeting(safe_id)}
+
+
+@router.post("/{meeting_id}/asr-hotwords/learn")
+async def learn_meeting_asr_hotwords_route(request: Request, meeting_id: str):
+    _, safe_id, _ = require_meeting(request, meeting_id)
+    from backend.services.asr_hotword_learning_service import learn_meeting_context
+
+    return {"success": True, **learn_meeting_context(safe_id)}
 
 
 @router.get("/{meeting_id}/voiceprint-preflight")

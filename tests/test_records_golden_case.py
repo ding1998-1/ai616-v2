@@ -122,10 +122,10 @@ def test_v2_fake_llm_covers_full_golden_case_without_external_calls() -> None:
         return json.dumps(
             {
                 "chunkSummary": "offline golden fixture",
-                "topics": [{"title": "fixture topic", "timeRange": first.get("timeRange", "")}],
+                "topics": [{"title": first["text"], "timeRange": first.get("timeRange", ""), "evidence": first["text"]}],
                 "conclusions": [
                     {
-                        "content": "fixture conclusion",
+                        "content": first["text"],
                         "type": "知悉",
                         "evidence": first["text"],
                         "time": first.get("timeRange", ""),
@@ -149,8 +149,8 @@ def test_v2_fake_llm_covers_full_golden_case_without_external_calls() -> None:
         return json.dumps(
             {
                 "summary": {"conclusions": [], "risks": [], "todos": []},
-                "minutes": [{"agenda": "fixture topic", "status": "已讨论", "keyPoints": [], "basis": basis}],
-                "decisions": [{"content": "fixture conclusion", "type": "知悉", "basis": basis}],
+                "minutes": [{"agenda": first["text"], "status": "已讨论", "keyPoints": [], "basis": basis}],
+                "decisions": [{"content": first["text"], "type": "知悉", "basis": basis}],
                 "risks": [],
                 "disclosures": [],
                 "todos": [],

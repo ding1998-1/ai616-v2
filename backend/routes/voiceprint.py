@@ -1,7 +1,7 @@
 """
 backend/routes/voiceprint.py — 声纹识别 API 路由
 
-提供声纹注册、管理、测试识别接口。
+提供会后声纹校准所需的档案、补录和测试接口。声纹不作为开会前置条件。
 
 依赖: backend.voiceprint, backend.db, backend.config
 """
@@ -9,7 +9,6 @@ backend/routes/voiceprint.py — 声纹识别 API 路由
 import uuid
 import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from typing import Optional
 
 from ..config import now_text
 from ..db import (
@@ -18,22 +17,33 @@ from ..db import (
     _db_delete_voiceprint_profile,
     _db_get_voiceprint_by_user,
 )
-from ..voiceprint import (
-    get_voiceprint_engine,
-    serialize_embedding,
-    deserialize_embedding,
-    merge_embeddings,
-)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/voiceprint", tags=["voiceprint"])
 
 
+def _voiceprint_runtime():
+    """延迟加载可选声纹依赖，避免未安装模型时拖垮整个会议后端。"""
+    from ..voiceprint import (
+        deserialize_embedding,
+        get_voiceprint_engine,
+        merge_embeddings,
+        serialize_embedding,
+    )
+
+    return get_voiceprint_engine, serialize_embedding, deserialize_embedding, merge_embeddings
+
+
 @router.get("/status")
 async def voiceprint_status():
     """检查声纹引擎状态。"""
-    engine = get_voiceprint_engine()
+    try:
+        get_voiceprint_engine, _, _, _ = _voiceprint_runtime()
+        engine = get_voiceprint_engine()
+    except Exception as exc:
+        logger.warning("声纹运行时不可用: %s", exc)
+        engine = None
     return {
         "ready": engine is not None and engine.is_ready,
         "profiles_count": len(_db_load_voiceprint_profiles()),
@@ -70,7 +80,7 @@ async def enroll_voiceprint(
     role: str = Form(""),
     dept: str = Form(""),
 ):
-    """注册声纹：上传音频样本，提取 embedding 并存储。
+    """会后补录声纹样本，供完整录音的说话人校准使用。
 
     Args:
         audio: 音频文件（WAV 或 PCM16）
@@ -82,6 +92,7 @@ async def enroll_voiceprint(
     Returns:
         注册结果
     """
+    get_voiceprint_engine, serialize_embedding, deserialize_embedding, merge_embeddings = _voiceprint_runtime()
     engine = get_voiceprint_engine()
     if engine is None or not engine.is_ready:
         raise HTTPException(status_code=503, detail="声纹引擎未初始化，请检查后端日志")
@@ -169,6 +180,7 @@ async def test_voiceprint(
     Returns:
         识别结果
     """
+    get_voiceprint_engine, _, deserialize_embedding, _ = _voiceprint_runtime()
     engine = get_voiceprint_engine()
     if engine is None or not engine.is_ready:
         raise HTTPException(status_code=503, detail="声纹引擎未初始化")

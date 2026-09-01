@@ -28,6 +28,7 @@ from backend.routes.rules import router as rules_router
 from backend.routes.signatures import router as signatures_router
 from backend.routes.transcripts import router as transcripts_router
 from backend.routes.users import router as users_router
+from backend.routes.voiceprint import router as voiceprint_router
 
 
 def create_core_app() -> FastAPI:
@@ -44,6 +45,7 @@ def create_core_app() -> FastAPI:
         misc_router,
         auth_router,
         asr_router,
+        voiceprint_router,
         users_router,
         meetings_router,
         meeting_support_router,

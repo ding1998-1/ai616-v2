@@ -13,7 +13,6 @@ from backend.db import (
 )
 from backend.deps import _now_text
 from backend.deps import _build_meeting_from_request
-from backend.services.voiceprint_preflight_service import require_meeting_voiceprints
 
 
 PHASE_BY_STAGE = {"collect": "会前确认", "meeting": "会中记录", "audit": "会后终审", "archive": "已归档"}
@@ -88,13 +87,17 @@ def update_stage(meeting_id: str, stage: str, phase: str, user: dict) -> dict:
             raise KeyError("会议不存在")
         _check_meeting_access(user, meeting)
 
-        # 声纹是会中多人录音与说话人归属的前置条件。必须先完成会议
-        # 存在性和访问权校验，再执行预检，避免无权用户探测参会人信息。
-        # 预检发生在阶段写入前；缺失时不会改变会议状态。
-        # 允许空参会名单通过（创建会议时可以暂不指定参会人）；一旦已有名单，
-        # require_meeting_voiceprints 会返回具体缺失人员并抛出 409 语义异常。
-        if stage in {"meeting", "audit", "archive"}:
-            require_meeting_voiceprints(safe_id)
+        # 声纹属于会后说话人校准能力，不是开会门槛。现场只要求身份与录音
+        # 客户端绑定可靠；缺少声纹时仍允许开会、终审和进入签字流程。
+        if stage == "archive":
+            from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
+            from backend.services.outcome_service import require_basis_gate
+
+            require_basis_gate(meeting.get("generatedRecords"), action="进入归档")
+            if not is_fully_signed(safe_id):
+                raise ValueError(
+                    f"尚未全员签字（已签 {signed_signer_count(safe_id)} / 应签 {required_signer_count(safe_id)}），无法正式归档"
+                )
 
         meeting["phase"] = phase or PHASE_BY_STAGE[stage]
         if stage in {"meeting", "audit", "archive"}:
@@ -120,11 +123,12 @@ def archive_meeting(meeting_id: str, user: dict) -> dict:
         if not meeting:
             raise KeyError("会议不存在")
         _check_meeting_access(user, meeting)
-        if meeting.get("requireFullSignature"):
-            from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
+        from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
+        from backend.services.outcome_service import require_basis_gate
 
-            if not is_fully_signed(safe_id):
-                raise ValueError(f"尚未全员签字（已签 {signed_signer_count(safe_id)} / 应签 {required_signer_count(safe_id)}），无法正式归档")
+        require_basis_gate(meeting.get("generatedRecords"), action="正式归档")
+        if not is_fully_signed(safe_id):
+            raise ValueError(f"尚未全员签字（已签 {signed_signer_count(safe_id)} / 应签 {required_signer_count(safe_id)}），无法正式归档")
         meeting["archived"] = True
         meeting["updatedAt"] = _now_text()
         meetings[safe_id] = meeting

@@ -10,6 +10,7 @@ from backend.config import MEETING_FILES_DIR, RECORDS_PIPELINE
 from backend.models import MeetingMarkerRequest, MeetingRecordsUpdateRequest
 from backend.services.outcome_service import (
     add_marker,
+    confirm_records,
     create_todo,
     delete_marker,
     delete_todo,
@@ -54,11 +55,23 @@ async def generate_meeting_records(request: Request, meeting_id: str):
     return {"success": True, "meetingId": meeting_id, "records": records}
 
 
+@router.post("/meetings/{meeting_id}/records/confirm")
+async def confirm_meeting_records(request: Request, meeting_id: str):
+    user, _, _ = require_meeting(request, meeting_id)
+    try:
+        records = confirm_records(meeting_id, user)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "meetingId": meeting_id, "records": records}
+
+
 @router.post("/meetings/{meeting_id}/records/documents")
-async def generate_meeting_documents(request: Request, meeting_id: str):
+async def generate_meeting_documents(request: Request, meeting_id: str, template_id: str = "standard"):
     require_meeting(request, meeting_id)
     try:
-        bundle = generate_record_documents(meeting_id)
+        bundle = generate_record_documents(meeting_id, template_id=template_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

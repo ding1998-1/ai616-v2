@@ -21,14 +21,86 @@ from backend.db import (
 )
 
 
+FORMAL_RECORD_FIELDS = ("minutes", "decisions", "risks", "disclosures", "todos")
+
+
+def basis_gate_status(records: dict | None) -> dict:
+    """Return the single evidence gate used by confirm, export, and archive."""
+
+    payload = records if isinstance(records, dict) else {}
+    missing_by_field: dict[str, int] = {}
+    invalid_items: list[dict] = []
+    try:
+        from backend.services.meeting_record_generation_service import _evidence_supports_item
+    except Exception:  # pragma: no cover - import guard for stripped deployments
+        _evidence_supports_item = None
+    for field in FORMAL_RECORD_FIELDS:
+        missing = 0
+        for index, item in enumerate(payload.get(field) or []):
+            if not isinstance(item, dict):
+                missing += 1
+                invalid_items.append({"field": field, "index": index, "reason": "记录格式无效"})
+                continue
+            basis = item.get("basis") if isinstance(item.get("basis"), dict) else {}
+            quotes = [
+                quote for quote in basis.get("quotes") or []
+                if isinstance(quote, dict) and str(quote.get("text") or "").strip()
+            ]
+            segment_ids = [str(value) for value in basis.get("sourceSegmentIds") or [] if value]
+            valid = bool(basis.get("evidenceValid") and quotes and segment_ids)
+            if valid and _evidence_supports_item is not None:
+                valid = bool(_evidence_supports_item(item, field))
+            if not valid:
+                missing += 1
+                invalid_items.append({"field": field, "index": index, "reason": "缺少可核验原文依据"})
+        missing_by_field[field] = missing
+    minutes_empty = not bool(payload.get("minutes"))
+    total_invalid = sum(missing_by_field.values())
+    ready = bool(payload.get("generated")) and not minutes_empty and total_invalid == 0
+    return {
+        "ready": ready,
+        "minutesEmpty": minutes_empty,
+        "invalidCount": total_invalid,
+        "missingByField": missing_by_field,
+        "invalidItems": invalid_items,
+    }
+
+
+def require_basis_gate(records: dict | None, *, action: str) -> dict:
+    gate = basis_gate_status(records)
+    if gate["ready"]:
+        return gate
+    labels = {
+        "minutes": "会议记录",
+        "decisions": "决议",
+        "risks": "风险",
+        "disclosures": "披露事项",
+        "todos": "待办",
+    }
+    gaps = [
+        f"{labels[field]}{count}条"
+        for field, count in gate["missingByField"].items()
+        if count
+    ]
+    if gate["minutesEmpty"]:
+        gaps.insert(0, "会议记录为空")
+    detail = "、".join(gaps) or "成果尚未生成"
+    raise ValueError(f"无法{action}：仍有不可核验内容（{detail}），请重新生成或补齐原文依据")
+
+
 def _whisper_source_from_meeting(meeting: dict) -> list[dict]:
     """Return the newest complete Whisper review with audio-file attribution."""
 
-    whisper_event = None
-    for event in meeting.get("events", []):
-        if event.get("type") == "transcript" and event.get("action") == "whisper-review":
-            if event.get("segments"):
-                whisper_event = event
+    whisper_event = max(
+        (
+            event for event in meeting.get("events", [])
+            if event.get("type") == "transcript"
+            and event.get("action") == "whisper-review"
+            and event.get("segments")
+        ),
+        key=lambda event: str(event.get("serverTime") or ""),
+        default=None,
+    )
     if not whisper_event:
         return []
 
@@ -79,14 +151,23 @@ def _realtime_source_from_meeting(meeting_id: str) -> list[dict]:
     with APP_DB_LOCK:
         with _db_connect() as conn:
             rows = conn.execute(
-                """SELECT id, transcript, speaker_name, server_time
+                """SELECT id, transcript, speaker_name, server_time, payload_json
                    FROM meeting_transcripts
                    WHERE meeting_id = ? AND is_final = 1
-                   ORDER BY server_time, id""",
+                   ORDER BY server_time,
+                            CAST(COALESCE(json_extract(payload_json, '$.sentenceSeq'), 0) AS INTEGER),
+                            id""",
                 (meeting_id,),
             ).fetchall()
-    return [
-        {
+    result = []
+    for row in rows:
+        if not str(row["transcript"] or "").strip():
+            continue
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        result.append({
             "segmentId": row["id"],
             "fileId": "realtime",
             "fileName": "realtime",
@@ -94,10 +175,11 @@ def _realtime_source_from_meeting(meeting_id: str) -> list[dict]:
             "speaker": row["speaker_name"],
             "time": row["server_time"],
             "source": "realtime",
-        }
-        for row in rows
-        if str(row["transcript"] or "").strip()
-    ]
+            "start": payload.get("start"),
+            "end": payload.get("end"),
+            "sentenceSeq": payload.get("sentenceSeq"),
+        })
+    return result
 
 
 def _select_records_source(whisper_source: list[dict], realtime_source: list[dict]) -> tuple[list[dict], str]:
@@ -162,6 +244,8 @@ async def generate_records_v2(meeting_id: str) -> dict:
     records["generated"] = True
     records["generatedAt"] = _now_text()
     records["source"] = source_kind
+    records["whisperEnhanced"] = source_kind == "whisper"
+    records["basisGate"] = basis_gate_status(records)
 
     with MEETINGS_LOCK:
         meetings = _load_meetings()
@@ -176,7 +260,7 @@ async def generate_records_v2(meeting_id: str) -> dict:
     return records
 
 
-def generate_record_documents(meeting_id: str) -> dict:
+def generate_record_documents(meeting_id: str, template_id: str = "standard") -> dict:
     """Generate the formal minutes and independent evidence attachment."""
 
     from backend.services.meeting_document_service import generate_document_bundle
@@ -188,16 +272,18 @@ def generate_record_documents(meeting_id: str) -> dict:
     records = meeting.get("generatedRecords")
     if not isinstance(records, dict) or not records.get("generated"):
         raise ValueError("请先生成会议纪要")
+    require_basis_gate(records, action="生成正式文件")
 
     whisper_source = _whisper_source_from_meeting(meeting)
     realtime_source = _realtime_source_from_meeting(safe_id)
     source, _ = _select_records_source(whisper_source, realtime_source)
-    whisper_event = next(
+    whisper_event = max(
         (
-            event for event in reversed(meeting.get("events") or [])
+            event for event in meeting.get("events") or []
             if event.get("type") == "transcript" and event.get("action") == "whisper-review"
         ),
-        {},
+        key=lambda event: str(event.get("serverTime") or ""),
+        default={},
     )
     markers = [
         {"id": event.get("id"), **(event.get("payload") or {})}
@@ -214,6 +300,7 @@ def generate_record_documents(meeting_id: str) -> dict:
         file_offsets=whisper_event.get("fileOffsets") or {},
         markers=markers,
         require_proofread=True,
+        template_id=template_id,
     )
 
     with MEETINGS_LOCK:
@@ -228,6 +315,10 @@ def generate_record_documents(meeting_id: str) -> dict:
         meetings[safe_id] = current
         _save_meetings(meetings)
         _invalidate_meetings_cache()
+    from backend.services.asr_hotword_learning_service import learn_from_formal_records
+
+    learning = learn_from_formal_records(safe_id, records, source)
+    bundle["glossaryLearning"] = learning
     return bundle
 
 
@@ -272,6 +363,10 @@ def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
         records = dict(meeting.get("generatedRecords") or {})
         records.update(override)
         records["generated"] = bool(records.get("generated", True))
+        records["proofreadPassed"] = False
+        records["proofreadStatus"] = "needs_review"
+        records["humanReviewed"] = False
+        records["basisGate"] = basis_gate_status(records)
         records["updatedAt"] = _now_text()
         meeting["generatedRecords"] = records
         meeting["updatedAt"] = records["updatedAt"]
@@ -279,6 +374,39 @@ def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
         _save_meetings(meetings)
         _invalidate_meetings_cache()
         _save_version(safe_id, records, user, override)
+    return records
+
+
+def confirm_records(meeting_id: str, user: dict) -> dict:
+    """Record an explicit human review before formal Word generation."""
+
+    safe_id = _safe_meeting_id(meeting_id)
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        meeting = meetings.get(safe_id)
+        if not meeting:
+            raise KeyError("会议不存在")
+        _check_meeting_access(user, meeting)
+        records = dict(meeting.get("generatedRecords") or {})
+        if not records.get("generated"):
+            raise ValueError("请先生成会议纪要")
+        gate = require_basis_gate(records, action="确认纪要")
+        now = _now_text()
+        reviewer = user.get("name") or user.get("username") or ""
+        records.update({
+            "proofreadPassed": True,
+            "proofreadStatus": "human-approved",
+            "proofreadAt": now,
+            "proofreadBy": reviewer,
+            "humanReviewed": True,
+            "basisGate": gate,
+        })
+        meeting["generatedRecords"] = records
+        meeting["updatedAt"] = now
+        meetings[safe_id] = meeting
+        _save_meetings(meetings)
+        _invalidate_meetings_cache()
+        _save_version(safe_id, records, user, {"humanReviewed": True})
     return records
 
 

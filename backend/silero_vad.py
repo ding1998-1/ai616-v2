@@ -70,20 +70,24 @@ class SileroVAD:
         if len(samples) == 0:
             return False, 0.0
 
-        # Silero VAD 需要 512 samples (32ms@16kHz) 的倍数
-        # 对于更长的 chunk，取最后 512 samples 做检测
-        if len(samples) > 512:
-            samples = samples[-512:]
-
-        audio = samples.reshape(1, -1)
+        # Silero VAD 每次需要 512 samples (32ms@16kHz)。手机端为了减少
+        # WebSocket 开销会一次发送约 250ms；只检查最后 32ms 会在包尾静音时
+        # 把前面真实的人声整包丢掉，因此必须顺序扫描完整音频包。
         sr = np.array(self.sample_rate, dtype=np.int64)
 
         try:
-            outputs = self._session.run(
-                None, {"input": audio, "state": self._state, "sr": sr}
-            )
-            prob = float(outputs[0][0][0])
-            self._state = outputs[1]  # 更新状态
+            max_prob = 0.0
+            for offset in range(0, len(samples), 512):
+                frame = samples[offset : offset + 512]
+                if len(frame) < 512:
+                    frame = np.pad(frame, (0, 512 - len(frame)))
+                outputs = self._session.run(
+                    None,
+                    {"input": frame.reshape(1, -1), "state": self._state, "sr": sr},
+                )
+                max_prob = max(max_prob, float(outputs[0][0][0]))
+                self._state = outputs[1]
+            prob = max_prob
 
             is_speech = prob >= self._adaptive_threshold
 

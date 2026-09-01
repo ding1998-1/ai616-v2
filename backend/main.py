@@ -85,7 +85,7 @@ async def _close_resource(resource: Any, close_method: str) -> None:
 
 
 async def _shutdown_runtime_resources() -> None:
-    """尽力关闭 LLM HTTP 客户端和线程池，不掩盖其它清理步骤。"""
+    """关闭客户端并取消排队任务，但不等待不可中断的同步调用。"""
 
     try:
         from backend import llm_client
@@ -105,7 +105,7 @@ async def _shutdown_runtime_resources() -> None:
         if executor is None or getattr(executor, "_shutdown", False):
             continue
         try:
-            executor.shutdown(wait=True)
+            executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             logger.exception("关闭 %s 线程池失败", module_name)
 
@@ -138,6 +138,9 @@ async def lifespan(_app):
             cleanup_asr_pending_store(),
             name="asr-pending-cleanup",
         )
+        # 启动期任务已经结束，立即回收线程池，退出时不再承担迁移清理。
+        startup_executor.shutdown(wait=True)
+        startup_executor = None
         yield
     finally:
         if asr_cleanup_task is not None:
@@ -146,7 +149,14 @@ async def lifespan(_app):
                 await asr_cleanup_task
             except asyncio.CancelledError:
                 pass
-        startup_executor.shutdown(wait=True)
+        try:
+            from backend.services.whisper_review_service import shutdown_whisper_reviews
+
+            await shutdown_whisper_reviews(timeout=2.0)
+        except Exception:
+            logger.exception("停止 Whisper 终审任务失败")
+        if startup_executor is not None:
+            startup_executor.shutdown(wait=False, cancel_futures=True)
         await _shutdown_runtime_resources()
         logger.info("运行时资源清理完成")
 

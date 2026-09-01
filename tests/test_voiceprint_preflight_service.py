@@ -85,44 +85,29 @@ def test_require_voiceprints_raises_structured_409(monkeypatch):
     assert error.detail["missing"][0]["userId"] == "u-2"
 
 
-def test_update_stage_preflights_before_persisting(monkeypatch):
+def test_update_stage_does_not_require_voiceprint_enrollment(monkeypatch):
     meetings = {"m-1": {"id": "m-1", "phase": "会前确认", "events": []}}
     calls = []
 
     monkeypatch.setattr(meeting_service, "_load_meetings", lambda: meetings)
     monkeypatch.setattr(meeting_service, "_save_meetings", lambda _meetings: calls.append("saved"))
     monkeypatch.setattr(meeting_service, "_check_meeting_access", lambda _user, _meeting: None)
-
-    def fail_preflight(meeting_id):
-        calls.append(("preflight", meeting_id))
-        raise voiceprint_preflight_service.VoiceprintPreflightError(
-            {"ok": False, "meetingId": meeting_id, "missing": [{"userId": "u-2"}]}
-        )
-
-    monkeypatch.setattr(meeting_service, "require_meeting_voiceprints", fail_preflight)
-
-    with pytest.raises(voiceprint_preflight_service.VoiceprintPreflightError):
-        meeting_service.update_stage("m-1", "meeting", "会中记录", {"id": "u-admin"})
-
-    assert calls == [("preflight", "m-1")]
-    assert meetings["m-1"]["phase"] == "会前确认"
-
-
-def test_update_stage_passes_after_voiceprint_preflight(monkeypatch):
-    meetings = {"m-1": {"id": "m-1", "phase": "会前确认", "events": []}}
-    calls = []
-
-    monkeypatch.setattr(meeting_service, "_load_meetings", lambda: meetings)
-    monkeypatch.setattr(meeting_service, "_save_meetings", lambda _meetings: calls.append("saved"))
-    monkeypatch.setattr(meeting_service, "_check_meeting_access", lambda _user, _meeting: None)
-    monkeypatch.setattr(
-        meeting_service,
-        "require_meeting_voiceprints",
-        lambda meeting_id: calls.append(("preflight", meeting_id)) or {"ok": True},
-    )
 
     result = meeting_service.update_stage("m-1", "meeting", "会中记录", {"id": "u-admin"})
 
-    assert calls == [("preflight", "m-1"), "saved"]
+    assert calls == ["saved"]
+    assert result["phase"] == "会中记录"
+
+
+def test_voiceprint_preflight_remains_optional_diagnostic(monkeypatch):
+    meetings = {"m-1": {"id": "m-1", "phase": "会前确认", "events": []}}
+    calls = []
+
+    monkeypatch.setattr(meeting_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(meeting_service, "_save_meetings", lambda _meetings: calls.append("saved"))
+    monkeypatch.setattr(meeting_service, "_check_meeting_access", lambda _user, _meeting: None)
+    result = meeting_service.update_stage("m-1", "meeting", "会中记录", {"id": "u-admin"})
+
+    assert calls == ["saved"]
     assert result["phase"] == "会中记录"
     assert result["events"][-1]["stage"] == "meeting"

@@ -5,7 +5,7 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from backend.config import MAX_AUDIO_BYTES, sse_manager
@@ -18,7 +18,11 @@ from backend.services.recording_service import (
     extension_for_mime,
     find_audio_event,
     merge_chunks,
+    record_chunk_receipt,
+    finalize_recording_manifest,
+    get_recording_manifest,
     recording_dir,
+    recording_completion_lock,
     sanitize_client_id,
     store_chunk,
     store_single_audio,
@@ -28,6 +32,29 @@ from backend.db import _db_upsert_audio_client
 
 
 router = APIRouter(prefix="/api/meeting/recorder", tags=["recordings"])
+
+
+@router.get("/audio/status")
+async def audio_upload_status(
+    request: Request,
+    meeting_id: str = Query(...),
+    client_id: str = Query(""),
+    session_id: str = Query(""),
+):
+    """Return durable server ACK state so a refreshed phone can upload only the difference."""
+    user, safe_id, _ = require_meeting(request, meeting_id)
+    if client_id and not audio_client_owned_by(safe_id, client_id, user):
+        raise HTTPException(status_code=403, detail="该录音设备已绑定其他参会人")
+    username = (user.get("username") or user.get("name") or "unknown").strip()
+    owner = sanitize_client_id(client_id) or sanitize_client_id(username)
+    session = sanitize_client_id(session_id)
+    pattern = f"chunk_{owner}_{session}_*" if owner and session else f"chunk_{owner}_*"
+    received = []
+    for chunk in recording_dir(safe_id).glob(pattern):
+        match = re.search(r"_(\d{6})\.(?:webm|mp4|ogg)$", chunk.name)
+        if match and chunk.is_file() and chunk.stat().st_size > 0:
+            received.append(int(match.group(1)))
+    return {"success": True, "receivedChunks": sorted(set(received))}
 
 
 async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
@@ -88,6 +115,9 @@ async def upload_audio_chunk(
     meeting_id: str = Form(...),
     chunk_index: int = Form(0),
     client_id: str = Form(""),
+    session_id: str = Form(""),
+    chunk_start_ms: int | None = Form(None),
+    chunk_duration_ms: int | None = Form(None),
     file: UploadFile = File(...),
 ):
     user, safe_id, _ = require_meeting(request, meeting_id)
@@ -98,9 +128,15 @@ async def upload_audio_chunk(
         raise HTTPException(status_code=400, detail="chunk_index 不能为负数")
     content = await _read_upload(file, 50 * 1024 * 1024)
     extension = extension_for_mime(file.content_type or "", file.filename or "")
-    name = chunk_name(client_id, username, chunk_index, extension)
+    name = chunk_name(client_id, username, chunk_index, extension, session_id)
     path, duplicate = store_chunk(recording_dir(safe_id), name, content)
+    manifest = record_chunk_receipt(
+        recording_dir(safe_id), session_id, chunk_index, path, client_id,
+        str(user.get("id") or user.get("username") or ""), chunk_start_ms, chunk_duration_ms,
+    )
     response = {"success": True, "ack": chunk_index, "chunkIndex": chunk_index, "size": path.stat().st_size, "user": username}
+    response["checkpoint"] = chunk_index // 10
+    response["receivedChunks"] = manifest.get("receivedChunks", [])
     if duplicate:
         response["duplicate"] = True
     return response
@@ -116,6 +152,7 @@ async def complete_audio(
     total_chunks: int = Form(0),
     recording_start_time: str | None = Form(None),
     client_id: str = Form(""),
+    session_id: str = Form(""),
 ):
     user, safe_id, _ = require_meeting(request, meeting_id)
     username = (user.get("username") or user.get("name") or "unknown").strip()
@@ -123,7 +160,8 @@ async def complete_audio(
         raise HTTPException(status_code=403, detail="该录音设备已绑定其他参会人")
     directory = recording_dir(safe_id)
     owner = sanitize_client_id(client_id) or sanitize_client_id(username)
-    patterns = [f"chunk_{owner}_*"] if owner else []
+    session = sanitize_client_id(session_id)
+    patterns = [f"chunk_{owner}_{session}_*"] if owner and session else ([f"chunk_{owner}_*"] if owner else [])
     chunks = []
     for pattern in patterns:
         chunks.extend(directory.glob(pattern))
@@ -133,35 +171,92 @@ async def complete_audio(
     chunks = sorted({path for path in chunks if path.suffix.lower() in {".webm", ".mp4", ".ogg"} and path.is_file()})
     if not chunks:
         raise HTTPException(status_code=404, detail="无录音片段")
-    if total_chunks > 0 and len(chunks) != total_chunks:
-        # 不阻断合并，返回实际数量供客户端提示和恢复任务使用。
-        missing_chunks = total_chunks - len(chunks)
-    else:
-        missing_chunks = 0
-    audio_id = f"audio_{uuid.uuid4().hex[:12]}"
-    path = await merge_chunks(directory, chunks, audio_id)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    event = {
-        "id": audio_id,
-        "type": "audio",
-        "action": "audio-uploaded",
-        "meetingId": safe_id,
-        "meetingTitle": meeting_title,
-        "agenda": agenda,
-        "serverTime": now,
-        "speaker": _resolve_meeting_role(user),
-        "fileName": path.name,
-        "storedName": path.name,
-        "audioSize": path.stat().st_size,
-        "durationSeconds": duration_seconds,
-        "recordingStartTime": recording_start_time,
-        "clientId": client_id,
-        "sourceChunks": [chunk.name for chunk in chunks],
-        "missingChunks": missing_chunks,
-        "playbackUrl": f"/api/meeting/recorder/audio/{safe_id}/{audio_id}",
-    }
-    _append_meeting_activity_light(safe_id, event)
-    return {"success": True, "event": event, "audioSize": path.stat().st_size, "sourceChunksPreserved": True}
+    missing_indexes: list[int] = []
+    if total_chunks > 0:
+        received_indexes = set()
+        for chunk in chunks:
+            match = re.search(r"_(\d{6})\.(?:webm|mp4|ogg)$", chunk.name)
+            if match:
+                received_indexes.add(int(match.group(1)))
+        missing_indexes = [index for index in range(total_chunks) if index not in received_indexes]
+        if missing_indexes:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "录音分片尚未完整回传，禁止生成不完整录音",
+                    "missingChunks": missing_indexes,
+                    "receivedChunks": sorted(received_indexes),
+                },
+            )
+    async with recording_completion_lock(safe_id, session_id):
+        # Re-read after acquiring the lock: another concurrent request may have
+        # completed while this request was validating its chunk list.
+        existing_manifest = get_recording_manifest(directory, session_id)
+        existing_name = str(existing_manifest.get("outputFile") or "")
+        existing_path = directory / existing_name if existing_name else None
+        if (
+            session_id
+            and existing_manifest.get("finalized")
+            and existing_path is not None
+            and existing_path.is_file()
+            and existing_path.stat().st_size > 0
+        ):
+            existing_id = str(existing_manifest.get("audioEventId") or existing_path.stem)
+            return {
+                "success": True,
+                "duplicate": True,
+                "event": {
+                    "id": existing_id,
+                    "type": "audio",
+                    "action": "audio-uploaded",
+                    "meetingId": safe_id,
+                    "fileName": existing_name,
+                    "storedName": existing_name,
+                    "audioSize": existing_path.stat().st_size,
+                    "sessionId": session_id,
+                    "playbackUrl": f"/api/meeting/recorder/audio/{safe_id}/{existing_id}",
+                },
+                "audioSize": existing_path.stat().st_size,
+                "sourceChunksPreserved": True,
+            }
+
+        audio_id = f"audio_{uuid.uuid4().hex[:12]}"
+        try:
+            path = await merge_chunks(
+                directory,
+                chunks,
+                audio_id,
+                expected_duration_seconds=duration_seconds,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        manifest = finalize_recording_manifest(
+            directory, session_id, total_chunks or len(chunks), path, recording_start_time, audio_id,
+        )
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        event = {
+            "id": audio_id,
+            "type": "audio",
+            "action": "audio-uploaded",
+            "meetingId": safe_id,
+            "meetingTitle": meeting_title,
+            "agenda": agenda,
+            "serverTime": now,
+            "speaker": _resolve_meeting_role(user),
+            "fileName": path.name,
+            "storedName": path.name,
+            "audioSize": path.stat().st_size,
+            "durationSeconds": duration_seconds,
+            "recordingStartTime": recording_start_time,
+            "clientId": client_id,
+            "sessionId": session_id,
+            "sourceChunks": [chunk.name for chunk in chunks],
+            "missingChunks": 0,
+            "playbackUrl": f"/api/meeting/recorder/audio/{safe_id}/{audio_id}",
+            "checkpoints": manifest.get("checkpoints", []),
+        }
+        _append_meeting_activity_light(safe_id, event)
+        return {"success": True, "event": event, "audioSize": path.stat().st_size, "sourceChunksPreserved": True}
 
 
 @router.post("/audio")

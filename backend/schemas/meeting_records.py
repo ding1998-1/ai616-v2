@@ -42,6 +42,9 @@ class Basis(RecordModel):
 class TopicExtraction(RecordModel):
     title: str = ""
     timeRange: str = ""
+    evidence: str = ""
+    time: str = ""
+    basis: Optional[Basis] = None
 
 
 class ConclusionExtraction(RecordModel):

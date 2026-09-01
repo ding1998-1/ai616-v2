@@ -215,6 +215,16 @@ def correct_transcript(
         loaded_meeting["updatedAt"] = now
         _save_meeting_transcripts(data)
     _append_meeting_activity_light(safe_id, event)
+    # A signed human correction is authoritative. Persist its project-scoped
+    # terminology only after the transcript write succeeds.
+    try:
+        from backend.services.asr_hotword_learning_service import learn_signed_correction
+
+        learn_signed_correction(safe_id, str(original), corrected)
+    except Exception:
+        # Transcript correction must not be rolled back by an auxiliary learner.
+        # The audit event remains available for a later idempotent re-learn.
+        pass
     return {"record": target, "event": event}
 
 

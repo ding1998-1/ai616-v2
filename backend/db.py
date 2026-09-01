@@ -1014,7 +1014,8 @@ def _db_load_transcripts_for_meeting(meeting_id: str) -> dict:
     with _db_connect() as conn:
         meeting = {"events": [], "transcripts": [], "meetingTitle": "", "agenda": "", "updatedAt": ""}
         for row in conn.execute(
-            "SELECT * FROM meeting_transcripts WHERE meeting_id = ? ORDER BY COALESCE(client_time, server_time), id",
+            "SELECT * FROM meeting_transcripts WHERE meeting_id = ? "
+            "ORDER BY server_time, CAST(COALESCE(json_extract(payload_json, '$.sentenceSeq'), 0) AS INTEGER), id",
             (meeting_id,)
         ).fetchall():
             payload = _json_loads(row["payload_json"], {})

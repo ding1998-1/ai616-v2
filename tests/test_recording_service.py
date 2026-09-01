@@ -37,3 +37,31 @@ def test_unknown_audio_client_can_be_claimed_once(monkeypatch):
     monkeypatch.setattr(recording_service, "_db_get_audio_client", lambda *_: None)
     assert recording_service.audio_client_owned_by("m1", "new-device", {"id": "user-bob"})
     assert recording_service.audio_client_owned_by("m1", "", {"id": "user-bob"})
+
+
+def test_recording_manifest_groups_ten_chunks_into_checkpoint(tmp_path: Path):
+    for index in range(11):
+        path = tmp_path / f"chunk_phone_session_{index:06d}.webm"
+        path.write_bytes(b"audio")
+        manifest = recording_service.record_chunk_receipt(
+            tmp_path, "session", index, path, "phone", "user", index * 3000, 3000,
+        )
+
+    assert manifest["receivedChunks"] == list(range(11))
+    assert len(manifest["checkpoints"]) == 2
+    assert manifest["checkpoints"][0]["startChunk"] == 0
+    assert manifest["checkpoints"][0]["endChunk"] == 9
+    assert manifest["checkpoints"][0]["endMs"] == 30000
+
+
+def test_continuous_media_recorder_chunks_are_joined_byte_for_byte(tmp_path: Path):
+    chunks = []
+    for index, content in enumerate((b"webm-header", b"cluster-one", b"cluster-two")):
+        path = tmp_path / f"chunk_phone_session_{index:06d}.webm"
+        path.write_bytes(content)
+        chunks.append(path)
+
+    output = tmp_path / "joined.webm"
+    recording_service._join_continuous_chunks(chunks, output)
+
+    assert output.read_bytes() == b"webm-headercluster-onecluster-two"

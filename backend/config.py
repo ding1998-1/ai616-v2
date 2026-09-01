@@ -67,6 +67,7 @@ ASR_CONFIG_DIR = _script_dir() / "data" / "asr"
 ASR_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 ASR_HOTWORDS_DB = ASR_CONFIG_DIR / "hotwords.json"
 ASR_CORRECTIONS_DB = ASR_CONFIG_DIR / "corrections.json"
+ASR_LEARNED_HOTWORDS_DB = ASR_CONFIG_DIR / "learned_hotwords.json"
 
 MEETINGS_DB = MEETING_DATA_DIR / "meetings.json"
 MEETING_TRANSCRIPTS_DB = MEETING_DATA_DIR / "transcripts.json"

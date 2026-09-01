@@ -82,6 +82,7 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
 
   const finishAuth = async (data) => {
     setStoredToken(data.token);
+    window.sessionStorage.removeItem('ai616_external_auth_reset');
     await new Promise((resolve) => window.setTimeout(resolve, 420));
     setLaunchPhase('exiting');
     await new Promise((resolve) => window.setTimeout(resolve, 680));
@@ -92,7 +93,17 @@ export default function LoginPage({ onLogin, entry = 'app' }) {
     const response = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: values.username, password: values.password }),
+      body: JSON.stringify({
+        username: values.username,
+        password: values.password,
+        ...(isExternalMeetingEntry ? {
+          meetingId,
+          meetingTitle,
+          agenda,
+          meetingDate,
+          roleLabel: isIssueCollect ? '问题填报人' : '参会代表',
+        } : {}),
+      }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.success) {

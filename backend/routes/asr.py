@@ -19,6 +19,8 @@ import os
 import re
 import time
 import uuid
+from array import array
+from collections import deque
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -36,10 +38,27 @@ from backend.config import (
     QWEN_ASR_URL,
 )
 from backend.deps import _get_user_from_auth_token, _resolve_meeting_role
+from backend.db import _db_load_transcripts_for_meeting, _load_meetings, _safe_meeting_id
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["asr"])
+
+
+def _pcm16_rms(pcm_bytes: bytes) -> int:
+    """Return RMS energy for little-endian signed PCM16 without audioop.
+
+    ``audioop`` was removed in Python 3.13, while production and local test
+    environments may use different Python minor versions.
+    """
+    usable = len(pcm_bytes) - (len(pcm_bytes) % 2)
+    if usable <= 0:
+        return 0
+    samples = array("h")
+    samples.frombytes(pcm_bytes[:usable])
+    if os.sys.byteorder != "little":
+        samples.byteswap()
+    return int((sum(sample * sample for sample in samples) / len(samples)) ** 0.5)
 
 
 async def _dashscope_connect(url: str, headers: Dict[str, str], retries: int = 3):
@@ -336,26 +355,47 @@ def _load_asr_corrections() -> dict[str, str]:
 
 def _build_asr_hotwords(
     meeting_title: str = "", agenda: str = "", project: str = "", extra: Optional[list[str]] = None,
+    meeting: Optional[dict] = None,
 ) -> list[str]:
-    words = list(dict.fromkeys(_GOVERNMENT_ASR_HOTWORDS + _UNIT_ASR_HOTWORD_TEMPLATE + _load_asr_custom_hotwords()))
+    # Put current-meeting and learned project terms first. The recognizer has a
+    # bounded hotword window, so generic templates must never crowd them out.
+    words: list[str] = []
     for text in (meeting_title, agenda, project):
         for part in re.split(r"[\s，,、；;：:。.!?！？（）()【】\[\]《》\"'‘’/\\-]+", str(text or "")):
             part = part.strip()
             if len(part) >= 2 and part not in words:
                 words.append(part)
+    if meeting:
+        from backend.services.asr_hotword_learning_service import learned_hotwords_for_context
+
+        for word in learned_hotwords_for_context(meeting):
+            if word not in words:
+                words.append(word)
     for word in extra or []:
         word = str(word or "").strip()
         if len(word) >= 2 and word not in words:
             words.append(word)
+    for word in _load_asr_custom_hotwords() + _GOVERNMENT_ASR_HOTWORDS + _UNIT_ASR_HOTWORD_TEMPLATE:
+        if word not in words:
+            words.append(word)
     return words[:160]
 
 
-def _apply_asr_homophone_corrections(text: str) -> str:
+def _apply_asr_homophone_corrections(
+    text: str,
+    allowed_terms: Optional[list[str]] = None,
+    meeting: Optional[dict] = None,
+) -> str:
     value = str(text or "")
     corrections = dict(_SYNONYM_CORRECTIONS)
     corrections.update(_load_asr_corrections())
+    if meeting:
+        from backend.services.asr_hotword_learning_service import learned_corrections_for_context
+
+        corrections.update(learned_corrections_for_context(meeting))
     for wrong, right in corrections.items():
-        value = value.replace(wrong, right)
+        if allowed_terms is None or right in allowed_terms:
+            value = value.replace(wrong, right)
     return re.sub(
         r"\b(党委|党组|法务|合规|纪检|预算|资金|项目|合同|招投标|人事)\s*([办部处]|审查|前置|立项|控制|测算)\b",
         lambda match: match.group(0).replace(" ", ""),
@@ -601,7 +641,7 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
             nonlocal committed_text, bubble_start, last_change_time, speaker_id
             from backend.silero_vad import SileroVAD
 
-            vad = SileroVAD(threshold=0.5)
+            vad = SileroVAD(threshold=0.42)
             audio_buffer = bytearray()
             vp_audio_buffer = bytearray()
             chunk_count = 0
@@ -611,6 +651,8 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
             last_recovery_check = 0.0
             previous_full_text = ""
             repeat_burst = 0
+            energy_speech_streak = 0
+            filtered_chunk_count = 0
             asr_chunk_bytes = 16000
 
             while recv_loop_alive.is_set():
@@ -620,8 +662,24 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
                     continue
                 if audio_bytes is None:
                     break
-                is_speech, _ = vad.process(audio_bytes)
+                is_speech, speech_probability = vad.process(audio_bytes)
+                # Mobile microphones and browser AGC can produce speech that is
+                # quieter than Silero's confidence threshold.  RMS is a safety
+                # net only. Require sustained voice-level energy so keyboard,
+                # air-conditioning and handling noise cannot generate text.
+                rms = _pcm16_rms(audio_bytes)
+                if rms >= 650:
+                    energy_speech_streak += 1
+                else:
+                    energy_speech_streak = 0
+                is_speech = is_speech or energy_speech_streak >= 2
                 if not is_speech:
+                    filtered_chunk_count += 1
+                    if filtered_chunk_count % 20 == 0:
+                        logger.debug(
+                            "[AUDIO] silence filtered meeting=%s bytes=%d vad=%.3f rms=%d",
+                            meeting_id, len(audio_bytes), speech_probability, rms,
+                        )
                     continue
 
                 if degraded:
@@ -823,6 +881,271 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
         except Exception:
             pass
         try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@router.websocket("/api/meeting/asr/2pass/ws")
+async def meeting_asr_2pass_websocket(websocket: WebSocket):
+    """Stream continuous PCM to 8091 and review complete sentences on 8092."""
+    from backend.qwen_asr_client import ASRError
+    from backend.services.offline_asr_client import OfflineASRClient
+    from backend.services.asr_2pass_service import (
+        ContinuationFinalBuffer,
+        OrderedFinalBuffer,
+        review_with_fallback,
+    )
+
+    await websocket.accept()
+    token = websocket.query_params.get("token", "")
+    try:
+        user = _get_user_from_auth_token(token, required=True)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "message": exc.detail})
+        await websocket.close(code=4401)
+        return
+
+    meeting_id = websocket.query_params.get("meetingId") or ""
+    meeting_title = websocket.query_params.get("meetingTitle") or ""
+    agenda = websocket.query_params.get("agenda") or ""
+    meeting = _load_meetings().get(_safe_meeting_id(meeting_id), {}) if meeting_id else {}
+    meeting_title = meeting_title or str(meeting.get("title") or "")
+    project = str(meeting.get("project") or "")
+    user_role = _resolve_meeting_role(user)
+    task_id = f"asr2_{uuid.uuid4().hex}"
+    online_client = await _get_qwen_client()
+    offline_client = OfflineASRClient(
+        base_url=os.environ.get("QWEN_OFFLINE_ASR_URL", "http://127.0.0.1:8092"),
+        timeout_seconds=8.0,
+    )
+    if not await online_client.is_available():
+        await websocket.send_json({"type": "error", "message": "本地实时转写暂不可用"})
+        await websocket.close(code=1011)
+        return
+
+    hotwords = _build_asr_hotwords(
+        meeting_title,
+        agenda,
+        project,
+        extra=[user_role.get("displayName", ""), user_role.get("meetingRole", "")],
+        meeting=meeting,
+    )
+    context = "；".join(
+        part
+        for part in [
+            f"会议名称：{meeting_title}" if meeting_title else "",
+            f"当前议题：{agenda}" if agenda else "",
+            f"所属项目：{project}" if project else "",
+            f"参会人及术语：{'、'.join(hotwords[:100])}" if hotwords else "",
+        ]
+        if part
+    )
+    try:
+        recent_items = _db_load_transcripts_for_meeting(meeting_id).get("transcripts", [])[-8:]
+        recent_text = "".join(
+            str(item.get("transcript") or "") for item in recent_items
+        )[-600:]
+        if recent_text:
+            context = f"{context}；最近发言：{recent_text}" if context else f"最近发言：{recent_text}"
+    except Exception:
+        logger.debug("读取 2pass 重连上下文失败 meeting=%s", meeting_id, exc_info=True)
+    session_id: Optional[str] = None
+    send_lock = asyncio.Lock()
+    result_lock = asyncio.Lock()
+    review_tasks: set[asyncio.Task] = set()
+    final_buffer = OrderedFinalBuffer()
+    continuation_buffer = ContinuationFinalBuffer()
+    committed_sentences: list[str] = []
+    pre_roll = deque(maxlen=3)
+    current_pcm = bytearray()
+    was_speaking = False
+    last_preview = ""
+
+    async def send(payload: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    async def emit_committed(payload: dict) -> None:
+        if not str(payload.get("newText") or "").strip():
+            return
+        committed_sentences.append(payload["newText"])
+        payload["fullText"] = "".join(committed_sentences)
+        await send(payload)
+
+    async def commit_result(result_payload: dict) -> None:
+        async with result_lock:
+            ready = final_buffer.add(result_payload)
+            for ordered_payload in ready:
+                for payload in continuation_buffer.add(ordered_payload):
+                    await emit_committed(payload)
+
+    async def review_sentence(
+        sentence_id: str,
+        sentence_seq: int,
+        pcm: bytes,
+        online_text: str,
+        start_ms: int,
+        end_ms: int,
+        forced_split: bool,
+    ) -> None:
+        async def offline_call():
+            if not pcm:
+                raise ValueError("empty sentence audio")
+            return await offline_client.transcribe(
+                    pcm,
+                    context=context,
+                    sentence_id=sentence_id,
+                )
+        final_text, backend_name, corrected = await review_with_fallback(
+            offline_call, online_text, clean_text_2pass, context
+        )
+        payload = {
+            "type": "final",
+            "taskId": task_id,
+            "meetingId": meeting_id,
+            "meetingTitle": meeting_title,
+            "agenda": agenda,
+            "sentenceId": sentence_id,
+            "sentenceSeq": sentence_seq,
+            "startMs": start_ms,
+            "endMs": end_ms,
+            "newText": final_text,
+            "onlineText": clean_text_2pass(online_text),
+            "isFinal": True,
+            "backend": backend_name,
+            "corrected": corrected,
+            "forcedSplit": forced_split,
+        }
+        await commit_result(payload)
+
+    def clean_text_2pass(value: str) -> str:
+        text = _TOK_RE.sub("", str(value or "")).strip()
+        text = re.sub(r"([。，？！,?!])\1+", r"\1", text)
+        return _apply_asr_homophone_corrections(text, hotwords, meeting=meeting)
+
+    def schedule_review(result: dict, pcm: bytes) -> None:
+        sentence_seq = int(result.get("sentence_seq") or 0)
+        sentence_id = str(result.get("sentence_id") or f"{task_id}:{sentence_seq}")
+        online_text = str(result.get("final_text") or result.get("online_text") or "")
+        start_ms = max(0, int(result.get("start_ms") or 0))
+        end_ms = max(start_ms, int(result.get("end_ms") or start_ms))
+        forced_split = bool(result.get("forced_split"))
+        if sentence_seq <= 0 or not online_text.strip():
+            return
+        task = asyncio.create_task(
+            review_sentence(
+                sentence_id,
+                sentence_seq,
+                pcm,
+                online_text,
+                start_ms,
+                end_ms,
+                forced_split,
+            )
+        )
+        review_tasks.add(task)
+        task.add_done_callback(review_tasks.discard)
+
+    try:
+        session_id = await online_client.start(
+            hotwords=hotwords,
+            metadata={"meeting_id": meeting_id, "agenda": agenda},
+        )
+        await send(
+            {
+                "type": "ready",
+                "taskId": task_id,
+                "meetingId": meeting_id,
+                "speaker": user_role,
+                "backend": "paraformer-streaming-2pass",
+            }
+        )
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if message.get("text"):
+                try:
+                    command = json.loads(message["text"])
+                except Exception:
+                    continue
+                if command.get("type") == "finish":
+                    break
+                if command.get("type") == "ping":
+                    await send({"type": "pong", "timestamp": command.get("timestamp")})
+                continue
+            audio = message.get("bytes")
+            if not audio:
+                continue
+
+            if not was_speaking:
+                pre_roll.append(audio)
+            result = await online_client.send_chunk(
+                session_id,
+                audio,
+                retries=1,
+                chunk_timeout=5.0,
+            )
+            is_speaking = bool(result.get("is_speaking"))
+            if not was_speaking and is_speaking:
+                current_pcm = bytearray(b"".join(pre_roll))
+                pre_roll.clear()
+            elif was_speaking:
+                current_pcm.extend(audio)
+
+            preview = clean_text_2pass(result.get("preview_text", ""))
+            if preview and preview != last_preview:
+                last_preview = preview
+                await send(
+                    {
+                        "type": "preview",
+                        "taskId": task_id,
+                        "sentenceId": result.get("sentence_id"),
+                        "sentenceSeq": result.get("sentence_seq"),
+                        "text": preview,
+                        "backend": "paraformer-streaming",
+                    }
+                )
+            if result.get("event") == "sentence_final":
+                schedule_review(result, bytes(current_pcm))
+                current_pcm.clear()
+                last_preview = ""
+                pre_roll.clear()
+                pre_roll.append(audio)
+            was_speaking = is_speaking
+    except WebSocketDisconnect:
+        pass
+    except ASRError as exc:
+        logger.warning("2pass online ASR failed meeting=%s: %s", meeting_id, exc)
+        try:
+            await send({"type": "error", "message": "实时转写暂时中断，录音仍在保存"})
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("2pass ASR WebSocket failed meeting=%s", meeting_id)
+    finally:
+        if session_id:
+            try:
+                result = await online_client.finish(session_id)
+                if result.get("event") == "sentence_final":
+                    schedule_review(result, bytes(current_pcm))
+            except Exception:
+                logger.debug("failed to finish 2pass online session", exc_info=True)
+        if review_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*list(review_tasks), return_exceptions=True),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("2pass review drain timed out meeting=%s", meeting_id)
+        async with result_lock:
+            for payload in continuation_buffer.flush():
+                await emit_committed(payload)
+        await offline_client.close()
+        try:
+            await send({"type": "finished", "taskId": task_id})
             await websocket.close()
         except Exception:
             pass
