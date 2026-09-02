@@ -406,6 +406,8 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLines, setHistoryLines] = useState([]);
   const [historyAudios, setHistoryAudios] = useState([]);
+  const [historyTranscriptTotal, setHistoryTranscriptTotal] = useState(0);
+  const [historyAudioTotal, setHistoryAudioTotal] = useState(0);
   const [audioPlaybackUrls, setAudioPlaybackUrls] = useState({});
   const [activeSpeakerName, setActiveSpeakerName] = useState('');
   const [activeSpeakerRole, setActiveSpeakerRole] = useState('');
@@ -473,6 +475,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const chunkUploadPromisesRef = useRef(new Set());
   // P0-8: WebSocket 心跳
   const heartbeatRef = useRef(null); // setInterval ID
+  const asrAudioPipelineRestartingRef = useRef(false);
   const phaseWarningRef = useRef({ phase: '', shownAt: 0 });
   const lastPongRef = useRef(0); // 上次收到 pong 的时间
   // Refs for functions used in useEffect (avoid stale closures)
@@ -715,10 +718,9 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           }
         } catch (_) { /* 网络问题忽略，不影响录音 */ }
       }
-      const data = await authFetchJson(`/api/meeting/transcripts/${meetingId}`);
+      const data = await authFetchJson(`/api/meeting/transcripts/${meetingId}?owner_only=true&limit=1000`);
       const ownTranscripts = (data.transcripts || [])
         .filter(isCurrentUserRecord)
-        .slice(-30)
         .reverse()
         .map(item => ({
           id: item.id,
@@ -737,6 +739,8 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         .reverse();
       setHistoryLines(ownTranscripts);
       setHistoryAudios(ownAudios);
+      setHistoryTranscriptTotal(Number(data.totalTranscripts ?? ownTranscripts.length));
+      setHistoryAudioTotal(Number(data.totalAudioEvents ?? ownAudios.length));
       setLiveLines(prev => {
         const merged = new Map();
         const tempIdPattern = /^\d{13,}-0?\.\d+$/;
@@ -1281,10 +1285,24 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       const now = Date.now();
       if (now - lastProcessTime > 10000) {
         if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-        // P0-2: AudioContext 关闭不影响 MediaRecorder（录音是主链路，ASR 是旁路）
-        if (audioContext.state === 'closed') {
-          setSpeechStatus('实时转写中断，录音仍在保存');
-          window.clearInterval(healthWatchdog);
+        if (asrAudioPipelineRestartingRef.current) return;
+        const activeSocket = asrSocketRef.current;
+        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || !mediaStreamRef.current) return;
+        // Safari may keep MediaRecorder alive while permanently suspending the
+        // AudioContext. Rebuild only the ASR sidecar; never touch recording.
+        asrAudioPipelineRestartingRef.current = true;
+        window.clearInterval(healthWatchdog);
+        try {
+          processor.disconnect();
+          source.disconnect();
+          audioContext.close().catch(() => {});
+          attachFunAsrAudioStream(mediaStreamRef.current, activeSocket);
+          setSpeechStatus('实时转写音频链路已自动恢复');
+        } catch (error) {
+          console.warn('[ASR] 音频处理链路恢复失败:', error);
+          setSpeechStatus('实时转写正在恢复，录音仍在保存');
+        } finally {
+          asrAudioPipelineRestartingRef.current = false;
         }
       }
     }, 5000);
@@ -2251,11 +2269,11 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           <div className="mobile-recorder-history-summary">
             <div>
               <span>已回传转写</span>
-              <strong>{historyLines.length} 条</strong>
+              <strong>{historyTranscriptTotal} 条</strong>
             </div>
             <div>
               <span>录音片段</span>
-              <strong>{historyAudios.length} 段</strong>
+              <strong>{historyAudioTotal} 段</strong>
             </div>
           </div>
           {historyAudios.length > 0 && (

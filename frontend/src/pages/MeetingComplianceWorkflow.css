@@ -2893,6 +2893,17 @@
 .minutes-paper-body h2 { margin: 14px 0 5px; font-size: 13px; font-family: SimHei, STHeiti, sans-serif; }
 .minutes-paper-body p { margin: 4px 0; }
 .minutes-paper-table { margin-top: 8px; padding: 10px; border: 1px solid #aab2bd; color: #647087; }
+.minutes-paper-redhead { padding: 32px 54px 38px; color: #111; }
+.minutes-paper-redhead h1 { margin-bottom: 28px; color: #e60000; font-size: 38px; letter-spacing: .04em; font-family: "Alibaba PuHuiTi", "Microsoft YaHei", sans-serif; font-weight: 800; }
+.minutes-redhead-issuer { display: flex; justify-content: space-between; align-items: end; padding: 0 8px 8px; font-size: 13px; }
+.minutes-redhead-rule { height: 3px; margin-bottom: 10px; background: #e60000; }
+.minutes-redhead-meta { font-size: 12px; line-height: 1.75; }
+.minutes-redhead-meta p { margin: 0; }
+.minutes-redhead-meta b { font-family: SimHei, STHeiti, sans-serif; }
+.minutes-redhead-body { margin-top: 20px; min-height: 250px; }
+.minutes-redhead-body > p { text-indent: 2em; }
+.minutes-redhead-closing { margin-top: 26px; font-size: 11px; line-height: 1.65; }
+.minutes-redhead-closing p { margin: 0; border-bottom: 1px solid #8f96a0; }
 .minutes-template-footer { position: relative; z-index: 2; min-height: 0; padding: 14px 28px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e8edf4; background: #fff; box-shadow: 0 -6px 18px rgba(32, 54, 85, .035); }
 
 @media (max-height: 820px) {

@@ -1,4 +1,5 @@
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -25,6 +26,46 @@ def test_formal_word_marks_authorized_human_override():
     assert "人工核验说明" in text
     assert "会议秘书" in text
     assert "已核对录音原文并确认内容" in text
+
+
+def test_empty_keypoints_fall_back_to_verified_map_evidence_without_placeholders():
+    records = {
+        "minutes": [
+            {
+                "agenda": "公共收益小程序演示与数据对接",
+                "keyPoints": [],
+                "basis": {"evidenceValid": False, "quotes": [{"text": "错误挂接内容"}]},
+            },
+            {"agenda": "没有可靠内容的空议题", "keyPoints": []},
+        ],
+        "mapResults": [{
+            "output": {
+                "topics": [{
+                    "title": "公共收益管理小程序演示",
+                    "evidence": "演示公共收益小程序...需要提供业主花名册完成数据联通",
+                }],
+            },
+        }],
+        "decisions": [],
+        "risks": [],
+        "todos": [],
+    }
+
+    enterprise = "\n".join(
+        text for _, text in meeting_document_service._enterprise_minutes_blocks({}, records)
+    )
+    generic = "\n".join(
+        text for text, _ in meeting_document_service._template_minutes_lines(records)
+    )
+    detailed = "\n".join(
+        text for text, _ in meeting_document_service._formal_record_lines(records)
+    )
+
+    for output in (enterprise, generic, detailed):
+        assert "需要提供业主花名册完成数据联通" in output
+        assert "暂无已确认的讨论要点" not in output
+        assert "没有可靠内容的空议题" not in output
+        assert "错误挂接内容" not in output
 
 
 def _records(proofread=True):
@@ -168,8 +209,14 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
         + [cell.text for table in formal_doc.tables for row in table.rows for cell in row.cells]
     )
     evidence_text = "\n".join(paragraph.text for paragraph in Document(evidence_path).paragraphs)
-    assert formal_path.name == "m1_会议记录_20260821160000.docx"
+    assert formal_path.name == "m1_会议纪要及记录_20260821160000.docx"
+    assert "会 议 纪 要" in formal_text
     assert "会 议 记 录" in formal_text
+    assert len(formal_doc.sections) == 2
+    assert len(formal_doc.tables) == 2
+    assert "会议性质" in formal_text and "办公会" in formal_text
+    assert "会议主题" in formal_text and "预算例会" in formal_text
+    assert "待办事项总结" in formal_text and "补充预算材料" in formal_text
     assert "会议名称" in formal_text and "预算例会" in formal_text
     assert "会议地点" in formal_text and "七楼会议室" in formal_text
     assert "主持人" in formal_text and "张三" in formal_text
@@ -181,6 +228,9 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
     assert "这是一条应保留的完整原始证据长句" in evidence_text
     assert "背景杂音" in evidence_text
     assert "没有原文支持的虚构决议" in evidence_text
+    with ZipFile(formal_path) as package:
+        assert "customXml/item1.xml" in package.namelist()
+        assert "word/theme/theme1.xml" in package.namelist()
 
 
 def test_document_template_changes_real_word_heading(tmp_path: Path):
@@ -193,3 +243,103 @@ def test_document_template_changes_real_word_heading(tmp_path: Path):
     text = "\n".join(paragraph.text for paragraph in Document(bundle["formal"]["path"]).paragraphs)
     assert "三重一大会议纪要" in text
     assert bundle["templateId"] == "major"
+
+
+def test_enterprise_redhead_template_preserves_artwork_and_appends_record(tmp_path: Path):
+    bundle = generate_document_bundle(
+        "m-red",
+        {
+            "title": "重点项目推进会",
+            "organization": "示范集团有限公司",
+            "issuerDepartment": "集团办公室",
+            "date": "2026-09-02 09:00-11:00",
+            "location": "第一会议室",
+            "host": "陈坚",
+            "recorder": "李明",
+            "participants": ["项目中心", "财务部", "审计部"],
+            "reportTo": "集团领导、相关部门",
+            "printNote": "（内部资料，按需印发）",
+        },
+        _records(),
+        _chronicle(),
+        tmp_path,
+        timestamp="20260902110000",
+        template_id="enterprise",
+    )
+    from docx import Document
+
+    formal_path = Path(bundle["formal"]["path"])
+    document = Document(formal_path)
+    paragraph_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    table_text = "\n".join(
+        cell.text for table in document.tables for row in table.rows for cell in row.cells
+    )
+    combined_text = f"{paragraph_text}\n{table_text}"
+    assert bundle["templateId"] == "enterprise"
+    assert bundle["templateTitle"] == "政企红头会议纪要"
+    assert len(document.sections) == 2
+    assert len(document.tables) == 1
+    assert "示范集团有限公司" in combined_text
+    assert "会议议题：重点项目推进会" in combined_text
+    assert "一、预算调整" in combined_text
+    assert "会议决议" in combined_text
+    assert "风险与披露事项" in combined_text
+    assert "待办事项" in combined_text
+    assert "会 议 记 录" in combined_text
+    assert "集团办公室" in combined_text
+    assert "集团领导、相关部门" in combined_text
+    assert "20XX" not in combined_text
+    assert "XXXX" not in combined_text
+    with ZipFile(formal_path) as package:
+        document_xml = package.read("word/document.xml").decode("utf-8")
+        assert "会议纪要" in document_xml
+        assert "FF0000" in document_xml
+        assert "wp:anchor" in document_xml
+        assert "v:shape" in document_xml
+        assert "（内部资料，按需印发）" in document_xml
+        assert "customXml/item1.xml" in package.namelist()
+
+
+def test_combined_formal_word_expands_action_rows_without_truncation(tmp_path: Path):
+    records = _records()
+    records["todos"] = [
+        {
+            "task": f"落实第{index}项工作并提交完整说明材料",
+            "owner": f"责任人{index}",
+            "deadline": f"2026-09-{index + 10:02d}",
+            "basis": {
+                "timeRange": "00:01:00-00:02:00",
+                "quotes": [{"text": "确认按程序补充材料", "segmentId": "s1"}],
+            },
+        }
+        for index in range(1, 8)
+    ]
+    bundle = generate_document_bundle(
+        "m3",
+        {
+            "title": "长待办测试会议",
+            "type": "总经理办公会",
+            "date": "2026-09-02 09:00-11:00",
+            "location": "第一会议室",
+            "recorder": "会议秘书",
+            "participants": ["甲", "乙", "丙"],
+        },
+        records,
+        _chronicle(),
+        tmp_path,
+        timestamp="20260902110000",
+    )
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    document = Document(bundle["formal"]["path"])
+    minutes_table = document.tables[0]
+    assert len(minutes_table.rows) == 14
+    assert [int(column.get(qn("w:w"))) for column in minutes_table._tbl.tblGrid] == [
+        1271, 2835, 1418, 2772,
+    ]
+    assert "落实第7项工作并提交完整说明材料" in minutes_table.rows[-1].cells[1].text
+    assert minutes_table.rows[-1].cells[2].text == "责任人7"
+    assert minutes_table.rows[-1].cells[3].text == "2026-09-17"
+    assert len(document.sections) == 2
+    assert len(document.tables) == 2

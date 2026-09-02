@@ -53,6 +53,7 @@ const CREATE_MEETING_TYPES = [
 
 const MINUTES_TEMPLATES = [
   { id: 'standard', name: '普通企业会议纪要', category: '通用', desc: '标准行政会议记录格式，适用于多数企业会议场景', icon: '▤', tone: 'blue' },
+  { id: 'enterprise', name: '政企红头会议纪要', category: '政企', desc: '红头公文版式，包含发文信息、纪要正文和公文尾记', icon: '文', tone: 'red' },
   { id: 'major', name: '三重一大会议纪要', category: '经营管理', desc: '包含决策事项、表决结果、责任部门等要素', icon: '▥', tone: 'orange' },
   { id: 'party', name: '党委会会议纪要', category: '党建会议', desc: '党委会议正式格式，突出党委决议内容', icon: '★', tone: 'red' },
   { id: 'board', name: '董事会会议纪要', category: '经营管理', desc: '董事会决议、表决情况、董事意见等内容', icon: '♙', tone: 'purple' },
@@ -62,7 +63,7 @@ const MINUTES_TEMPLATES = [
   { id: 'concise', name: '简洁会议纪要', category: '通用', desc: '极简版会议纪要，只保留核心内容要点', icon: '▱', tone: 'gray' },
 ];
 
-const MINUTES_TEMPLATE_CATEGORIES = ['全部', '通用', '经营管理', '党建会议', '工程项目', '审计会议'];
+const MINUTES_TEMPLATE_CATEGORIES = ['全部', '通用', '政企', '经营管理', '党建会议', '工程项目', '审计会议'];
 
 function meetingDurationForType(type) {
   return CREATE_MEETING_TYPES.find(item => item.value === type)?.duration || 60;
@@ -6493,25 +6494,56 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               <Tag color="blue"><FileTextOutlined /> Word 预览</Tag>
             </div>
             <div className="minutes-paper-stage">
-              <article className="minutes-paper">
-                <h1>{selectedMinutesTemplate === 'standard' ? '会 议 记 录' : MINUTES_TEMPLATES.find(item => item.id === selectedMinutesTemplate)?.name}</h1>
-                <div className="minutes-paper-meta">
-                  <div><b>会议名称：</b><span>{meetingTitle || '本次会议'}</span><b>附页：</b><span>无</span></div>
-                  <div><b>会议时间：</b><span>{meetingDate || '待确认'}</span><b>会议地点：</b><span>待确认</span></div>
-                  <div><b>主持人：</b><span>待确认</span><b>记录人：</b><span>{currentUser?.name || currentUser?.username || '系统管理员'}</span></div>
-                </div>
-                <div className="minutes-paper-attendees">参加单位及人员：{remoteSpeakerRows.map(item => item.name || item.displayName).filter(Boolean).join('、') || '待确认'}</div>
-                <div className="minutes-paper-body">
-                  <h2>一、会议议题</h2>
-                  <p>{agendaTitle || meetingAgendaItems[0]?.title || '本次会议主要议题'}</p>
-                  <h2>二、讨论情况</h2>
-                  {recordSummaryLines(meetingGeneratedRecords).slice(0, 2).map((line, index) => <p key={index}>• {line}</p>)}
-                  <h2>三、会议决议</h2>
-                  <p>{meetingGeneratedRecords?.decisions?.[0]?.content || '会议决议内容将在正式生成后写入。'}</p>
-                  <h2>四、待办事项</h2>
-                  <div className="minutes-paper-table">序号　　待办事项　　　责任人　　　完成时间</div>
-                </div>
-              </article>
+              {selectedMinutesTemplate === 'enterprise' ? (
+                <article className="minutes-paper minutes-paper-redhead">
+                  <h1>会议纪要</h1>
+                  <div className="minutes-redhead-issuer">
+                    <strong>单位名称待确认</strong>
+                    <span>{meetingDate || '日期待确认'}</span>
+                  </div>
+                  <div className="minutes-redhead-rule" />
+                  <div className="minutes-redhead-meta">
+                    <p><b>会议时间：</b>{meetingDate || '待确认'}</p>
+                    <p><b>会议地点：</b>待确认</p>
+                    <p><b>会议议题：</b>{meetingTitle || agendaTitle || '本次会议'}</p>
+                    <p><b>参会人员：</b>{remoteSpeakerRows.map(item => item.name || item.displayName).filter(Boolean).join('、') || '待确认'}</p>
+                  </div>
+                  <div className="minutes-paper-body minutes-redhead-body">
+                    <p>{meetingDate || '会议当日'}，围绕“{meetingTitle || agendaTitle || '本次会议'}”既定议题进行了讨论，并形成如下意见：</p>
+                    <h2>一、会议议题与讨论情况</h2>
+                    {recordSummaryLines(meetingGeneratedRecords).slice(0, 3).map((line, index) => <p key={index}>{line}</p>)}
+                    <h2>二、会议决议</h2>
+                    <p>{meetingGeneratedRecords?.decisions?.[0]?.content || '会议决议内容将在正式生成后写入。'}</p>
+                    <h2>三、待办事项</h2>
+                    <p>{meetingGeneratedRecords?.todos?.[0]?.task || '待办事项将在正式生成后写入。'}</p>
+                  </div>
+                  <div className="minutes-redhead-closing">
+                    <p><b>主题词：</b>会议纪要</p>
+                    <p><b>抄　报：</b>相关领导、相关部门</p>
+                    <p>会议管理部门　　　　　　　　　{meetingDate || '日期待确认'}印发</p>
+                  </div>
+                </article>
+              ) : (
+                <article className="minutes-paper">
+                  <h1>{selectedMinutesTemplate === 'standard' ? '会 议 纪 要' : MINUTES_TEMPLATES.find(item => item.id === selectedMinutesTemplate)?.name}</h1>
+                  <div className="minutes-paper-meta">
+                    <div><b>会议名称：</b><span>{meetingTitle || '本次会议'}</span><b>附页：</b><span>无</span></div>
+                    <div><b>会议时间：</b><span>{meetingDate || '待确认'}</span><b>会议地点：</b><span>待确认</span></div>
+                    <div><b>主持人：</b><span>待确认</span><b>记录人：</b><span>{currentUser?.name || currentUser?.username || '系统管理员'}</span></div>
+                  </div>
+                  <div className="minutes-paper-attendees">参加单位及人员：{remoteSpeakerRows.map(item => item.name || item.displayName).filter(Boolean).join('、') || '待确认'}</div>
+                  <div className="minutes-paper-body">
+                    <h2>一、会议议题</h2>
+                    <p>{agendaTitle || meetingAgendaItems[0]?.title || '本次会议主要议题'}</p>
+                    <h2>二、讨论情况</h2>
+                    {recordSummaryLines(meetingGeneratedRecords).slice(0, 2).map((line, index) => <p key={index}>• {line}</p>)}
+                    <h2>三、会议决议</h2>
+                    <p>{meetingGeneratedRecords?.decisions?.[0]?.content || '会议决议内容将在正式生成后写入。'}</p>
+                    <h2>四、待办事项</h2>
+                    <div className="minutes-paper-table">序号　　待办事项　　　责任人　　　完成时间</div>
+                  </div>
+                </article>
+              )}
             </div>
           </section>
         </div>

@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,9 +34,21 @@ from backend.services.meeting_proofread_service import (
 )
 
 
-DOCUMENT_SERVICE_VERSION = "meeting-document-v2"
+DOCUMENT_SERVICE_VERSION = "meeting-document-v4-template-switch"
 GAP_THRESHOLD_SECONDS = 120.0
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+FORMAL_MINUTES_TEMPLATE = (
+    Path(__file__).resolve().parents[1]
+    / "assets"
+    / "templates"
+    / "generic_meeting_minutes_v1.docx"
+)
+ENTERPRISE_MINUTES_TEMPLATE = (
+    Path(__file__).resolve().parents[1]
+    / "assets"
+    / "templates"
+    / "enterprise_redhead_minutes_v1.docx"
+)
 _TIME_RE = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.(\d+))?$")
 _TIME_RANGE_RE = re.compile(
     r"(?P<start>\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)\s*[-–—]\s*"
@@ -251,6 +264,9 @@ def _item_content(item: Any, *keys: str) -> str:
 
 def _formal_basis(item: Any) -> str:
     if not isinstance(item, Mapping):
+        return ""
+    basis = item.get("basis") if isinstance(item.get("basis"), Mapping) else {}
+    if basis.get("evidenceValid") is False:
         return ""
     time_range, quotes, _ = _basis(item)
     details: list[str] = []
@@ -713,6 +729,28 @@ def _add_table_geometry(table: Any, widths_dxa: Sequence[int]) -> None:
             cell.vertical_alignment = 1
 
 
+def _apply_table_grid_borders(table: Any) -> None:
+    """Apply deterministic grid borders without depending on a template style name."""
+
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl_pr = table._tbl.tblPr
+    borders = tbl_pr.find(qn("w:tblBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        node = borders.find(qn(f"w:{edge}"))
+        if node is None:
+            node = OxmlElement(f"w:{edge}")
+            borders.append(node)
+        node.set(qn("w:val"), "single")
+        node.set(qn("w:sz"), "4")
+        node.set(qn("w:space"), "0")
+        node.set(qn("w:color"), "000000")
+
+
 def _docx_paragraph(doc: Any, text: str, *, style: str | None = None, bold: bool = False, size: float = 11) -> Any:
     paragraph = doc.add_paragraph(style=style)
     run = paragraph.add_run(text)
@@ -747,19 +785,103 @@ def _meeting_value(meeting: Mapping[str, Any], *keys: str, default: str = "待�
     return default
 
 
+def _agenda_match_score(left: Any, right: Any) -> float:
+    """Return a conservative similarity score for two Chinese agenda labels."""
+
+    left_text = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", _compact_text(left)).lower()
+    right_text = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", _compact_text(right)).lower()
+    if not left_text or not right_text:
+        return 0.0
+    if left_text == right_text:
+        return 1.0
+    if min(len(left_text), len(right_text)) >= 4 and (
+        left_text in right_text or right_text in left_text
+    ):
+        return 0.92
+    sequence_score = SequenceMatcher(None, left_text, right_text).ratio()
+    left_pairs = {left_text[index:index + 2] for index in range(len(left_text) - 1)}
+    right_pairs = {right_text[index:index + 2] for index in range(len(right_text) - 1)}
+    shared_pairs = left_pairs & right_pairs
+    pair_score = len(shared_pairs) / max(1, min(len(left_pairs), len(right_pairs)))
+    if len(shared_pairs) < 2:
+        pair_score = 0.0
+    return max(sequence_score, pair_score)
+
+
+def _normalise_discussion_evidence(value: Any) -> str:
+    text = _compact_text(value, limit=1600)
+    if not text:
+        return ""
+    text = re.sub(r"\s*(?:\.{3,}|…+)\s*", "；", text)
+    text = re.sub(r"；+", "；", text).strip("；，。 ")
+    return f"{text}。" if text and text[-1] not in "。！？" else text
+
+
+def _minute_discussion_points(item: Any, records: Mapping[str, Any]) -> list[str]:
+    """Resolve reliable discussion text without emitting empty placeholders."""
+
+    if not isinstance(item, Mapping):
+        return []
+    explicit = [
+        _compact_text(point, limit=1600)
+        for point in item.get("keyPoints") or item.get("key_points") or []
+        if _compact_text(point)
+    ]
+    if explicit:
+        return explicit
+
+    agenda = _item_content(item, "agenda", "title", "topic", "content")
+    basis = item.get("basis") if isinstance(item.get("basis"), Mapping) else {}
+    if basis.get("evidenceValid"):
+        quotes = basis.get("quotes") if isinstance(basis.get("quotes"), list) else []
+        quote_text = "；".join(
+            _compact_text(quote.get("text") if isinstance(quote, Mapping) else quote)
+            for quote in quotes
+            if _compact_text(quote.get("text") if isinstance(quote, Mapping) else quote)
+        )
+        normalised = _normalise_discussion_evidence(quote_text)
+        if normalised and _agenda_match_score(agenda, quote_text) >= 0.28:
+            return [normalised]
+
+    best_topic: tuple[float, Mapping[str, Any]] | None = None
+    for map_result in records.get("mapResults") or []:
+        if not isinstance(map_result, Mapping):
+            continue
+        output = map_result.get("output") if isinstance(map_result.get("output"), Mapping) else {}
+        for topic in output.get("topics") or []:
+            if not isinstance(topic, Mapping):
+                continue
+            score = _agenda_match_score(
+                agenda, _item_content(topic, "title", "agenda", "topic")
+            )
+            if score >= 0.66 and (best_topic is None or score > best_topic[0]):
+                best_topic = (score, topic)
+    if best_topic:
+        evidence = _normalise_discussion_evidence(
+            _item_content(best_topic[1], "evidence", "summary", "content")
+        )
+        if evidence:
+            return [evidence]
+
+    return []
+
+
 def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
     decisions, risks, todos = _summary_sections(records)
     lines: list[tuple[str, bool]] = []
-    minutes = list(records.get("minutes") or [])
+    minutes = [
+        (item, _minute_discussion_points(item, records))
+        for item in list(records.get("minutes") or [])
+    ]
+    minutes = [(item, points) for item, points in minutes if points]
     if minutes:
         lines.append(("一、议题及讨论记录", True))
-        for index, item in enumerate(minutes, 1):
+        for index, (item, points) in enumerate(minutes, 1):
             title = _item_content(item, "agenda", "title", "topic", "content")
             lines.append((f"{index}. {title or '未命名议题'}", True))
             if isinstance(item, Mapping):
-                for point in item.get("keyPoints") or item.get("key_points") or []:
-                    if _as_text(point):
-                        lines.append((f"　　{_compact_text(point, limit=800)}", False))
+                for point in points:
+                    lines.append((f"　　{_compact_text(point, limit=800)}", False))
                 basis = _formal_basis(item)
                 if basis:
                     lines.append((f"　　依据：{basis}", False))
@@ -792,7 +914,8 @@ def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
 
 
 _FORMAL_TEMPLATE_TITLES = {
-    "standard": "会 议 记 录",
+    "standard": "会 议 纪 要",
+    "enterprise": "政企红头会议纪要",
     "major": "三重一大会议纪要",
     "party": "党委会议纪要",
     "board": "董事会会议纪要",
@@ -802,37 +925,496 @@ _FORMAL_TEMPLATE_TITLES = {
     "concise": "会 议 纪 要",
 }
 
+_DETAILED_RECORD_TITLE = "会 议 记 录"
 
-def _write_formal_docx(
-    path: Path,
+
+def _set_named_run_font(
+    run: Any,
+    font_name: str,
+    *,
+    size: float = 16,
+    bold: bool = False,
+    color: str | None = None,
+) -> None:
+    """Apply an exact font required by a retained source template."""
+
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
+
+    run.font.name = font_name
+    run.font.size = Pt(size)
+    run.bold = bold
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.rFonts
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    for key in ("ascii", "hAnsi", "eastAsia", "cs"):
+        r_fonts.set(qn(f"w:{key}"), font_name)
+    if color:
+        run.font.color.rgb = RGBColor.from_string(color)
+
+
+def _clear_text_runs_preserving_drawings(paragraph: Any) -> None:
+    """Remove editable text while retaining anchored DrawingML/VML furniture."""
+
+    from docx.oxml.ns import qn
+
+    drawing_tags = {qn("w:drawing"), qn("w:pict")}
+    for child in list(paragraph._p):
+        if child.tag != qn("w:r"):
+            continue
+        if any(node.tag in drawing_tags for node in child.iter()):
+            continue
+        paragraph._p.remove(child)
+
+
+def _remove_paragraph(paragraph: Any) -> None:
+    element = paragraph._element
+    element.getparent().remove(element)
+    paragraph._p = paragraph._element = None
+
+
+def _enterprise_issue_date(meeting: Mapping[str, Any]) -> str:
+    value = _meeting_value(meeting, "date", "time", "startTime", default="")
+    match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", value)
+    if match:
+        year, month, day = match.groups()
+        return f"{year}年{int(month)}月{int(day)}日"
+    return value or "日期待确认"
+
+
+def _enterprise_intro(meeting: Mapping[str, Any]) -> str:
+    issue_date = _enterprise_issue_date(meeting)
+    title = _compact_text(meeting.get("title") or meeting.get("name") or "本次会议")
+    location = _meeting_value(meeting, "location", "venue", "address", default="")
+    host = _meeting_value(meeting, "host", "moderator", "chairperson", default="")
+    if host and location:
+        opening = f"{issue_date}，{host}在{location}主持召开“{title}”会议"
+    elif location:
+        opening = f"{issue_date}，在{location}召开“{title}”会议"
+    else:
+        opening = f"{issue_date}，召开“{title}”会议"
+    return f"{opening}。会议围绕既定议题进行了讨论，并形成如下意见："
+
+
+def _chinese_section_number(index: int) -> str:
+    numbers = "零一二三四五六七八九"
+    if 1 <= index < 10:
+        return numbers[index]
+    if index == 10:
+        return "十"
+    if 10 < index < 20:
+        return f"十{numbers[index % 10]}"
+    if 20 <= index < 100:
+        ones = numbers[index % 10] if index % 10 else ""
+        return f"{numbers[index // 10]}十{ones}"
+    return str(index)
+
+
+def _enterprise_minutes_blocks(
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+) -> list[tuple[str, str]]:
+    """Return `(role, text)` blocks for the redhead minutes body."""
+
+    blocks: list[tuple[str, str]] = [("intro", _enterprise_intro(meeting))]
+    section_index = 1
+    minutes = list(records.get("minutes") or [])
+    if minutes:
+        for item in minutes:
+            points = _minute_discussion_points(item, records)
+            if not points:
+                continue
+            title = _item_content(item, "agenda", "title", "topic", "content") or "未命名议题"
+            blocks.append(("heading", f"{_chinese_section_number(section_index)}、{title}"))
+            section_index += 1
+            for point in points:
+                content = _compact_text(point, limit=1600)
+                if content:
+                    blocks.append(("body", content))
+        if section_index == 1:
+            summary = records.get("summary") if isinstance(records.get("summary"), Mapping) else {}
+            summary_items = [
+                _compact_text(item.get("content"), limit=1600)
+                for item in summary.get("conclusions") or []
+                if isinstance(item, Mapping)
+                and isinstance(item.get("basis"), Mapping)
+                and item["basis"].get("evidenceValid")
+                and _compact_text(item.get("content"))
+            ]
+            if summary_items:
+                blocks.append(("heading", "一、会议主要内容"))
+                section_index = 2
+                for item in summary_items:
+                    blocks.append(("body", item))
+    else:
+        blocks.append(("heading", f"{_chinese_section_number(section_index)}、会议主要内容"))
+        section_index += 1
+        summary = [
+            _compact_text(item, limit=1600)
+            for item in list(records.get("summary") or [])
+            if _compact_text(item)
+        ]
+        for item in summary or ["暂无已确认的会议内容。"]:
+            blocks.append(("body", item))
+
+    for title, items, fields in (
+        ("会议决议", list(records.get("decisions") or []), ("content", "decision", "description", "title", "summary")),
+        (
+            "风险与披露事项",
+            [*list(records.get("risks") or []), *list(records.get("disclosures") or [])],
+            ("content", "description", "title", "summary"),
+        ),
+    ):
+        if not items:
+            continue
+        blocks.append(("heading", f"{_chinese_section_number(section_index)}、{title}"))
+        section_index += 1
+        for item_index, item in enumerate(items, 1):
+            content = _item_content(item, *fields)
+            if content:
+                blocks.append(("body", f"{item_index}. {content}"))
+
+    todos = list(records.get("todos") or [])
+    if todos:
+        blocks.append(("heading", f"{_chinese_section_number(section_index)}、待办事项"))
+        for item_index, item in enumerate(todos, 1):
+            task = _item_content(item, "task", "content", "title", "summary")
+            owner = _compact_text(item.get("owner")) if isinstance(item, Mapping) else ""
+            deadline = _compact_text(item.get("deadline")) if isinstance(item, Mapping) else ""
+            suffix = f"（责任人：{owner or '待确认'}；期限：{deadline or '待定'}）"
+            blocks.append(("body", f"{item_index}. {task}{suffix}"))
+    return blocks
+
+
+def _set_enterprise_metadata_paragraph(paragraph: Any, label: str, value: Any) -> None:
+    from docx.shared import Pt
+
+    paragraph.clear()
+    paragraph.paragraph_format.first_line_indent = None
+    paragraph.paragraph_format.left_indent = None
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = Pt(30)
+    label_run = paragraph.add_run(label)
+    _set_named_run_font(label_run, "黑体")
+    value_run = paragraph.add_run(_compact_text(value) or "待确认")
+    _set_named_run_font(value_run, "仿宋_GB2312")
+
+
+def _insert_enterprise_body_paragraph(anchor: Any, role: str, text: str) -> Any:
+    from docx.shared import Cm, Pt
+
+    paragraph = anchor.insert_paragraph_before()
+    paragraph.style = "Normal (Web)"
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = Pt(30)
+    if role == "heading":
+        paragraph.paragraph_format.space_before = Pt(7.8)
+        paragraph.paragraph_format.first_line_indent = None
+        paragraph.paragraph_format.keep_with_next = True
+        run = paragraph.add_run(text)
+        _set_named_run_font(run, "黑体")
+    else:
+        paragraph.paragraph_format.space_before = Pt(23.4 if role == "intro" else 0)
+        paragraph.paragraph_format.first_line_indent = Cm(1.13)
+        run = paragraph.add_run(text)
+        _set_named_run_font(run, "仿宋_GB2312")
+    return paragraph
+
+
+def _fill_enterprise_minutes_template(
+    doc: Any,
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+) -> None:
+    """Fill the retained redhead template while preserving its anchored artwork."""
+
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt
+
+    if len(doc.paragraphs) < 20:
+        raise RuntimeError("政企红头会议纪要模板结构无效")
+    paragraphs = list(doc.paragraphs)
+    issuer = _meeting_value(
+        meeting,
+        "organization",
+        "company",
+        "organizer",
+        "issuer",
+        default="单位名称待确认",
+    )
+    issue_date = _enterprise_issue_date(meeting)
+    issuer_line = paragraphs[4]
+    _clear_text_runs_preserving_drawings(issuer_line)
+    issuer_line.paragraph_format.tab_stops.clear_all()
+    issuer_line.paragraph_format.tab_stops.add_tab_stop(Cm(14.5), WD_TAB_ALIGNMENT.RIGHT)
+    issuer_run = issuer_line.add_run(issuer)
+    _set_named_run_font(issuer_run, "仿宋_GB2312")
+    date_run = issuer_line.add_run(f"\t{issue_date}")
+    _set_named_run_font(date_run, "仿宋_GB2312")
+
+    title = _compact_text(meeting.get("title") or meeting.get("name") or "本次会议")
+    _set_enterprise_metadata_paragraph(
+        paragraphs[6], "会议时间：", _meeting_value(meeting, "time", "date", "startTime")
+    )
+    _set_enterprise_metadata_paragraph(
+        paragraphs[7], "会议地点：", _meeting_value(meeting, "location", "venue", "address")
+    )
+    _set_enterprise_metadata_paragraph(paragraphs[8], "会议议题：", title)
+    _set_enterprise_metadata_paragraph(
+        paragraphs[9],
+        "参会人员：",
+        _meeting_value(meeting, "participants", "attendees", "participantNames"),
+    )
+
+    for paragraph in paragraphs[10:17]:
+        _remove_paragraph(paragraph)
+    closing_topic, closing_report, closing_issue = paragraphs[17:20]
+    for role, text in _enterprise_minutes_blocks(meeting, records):
+        _insert_enterprise_body_paragraph(closing_topic, role, text)
+
+    closing_topic.clear()
+    closing_topic.paragraph_format.space_before = Pt(0)
+    closing_topic.paragraph_format.space_after = Pt(0)
+    closing_topic.paragraph_format.line_spacing = Pt(30)
+    topic_label = closing_topic.add_run("主题词")
+    _set_named_run_font(topic_label, "仿宋_GB2312", bold=True)
+    topic_value = closing_topic.add_run("：会议纪要")
+    _set_named_run_font(topic_value, "仿宋_GB2312")
+
+    _clear_text_runs_preserving_drawings(closing_report)
+    report_label = closing_report.add_run("抄  报")
+    _set_named_run_font(report_label, "仿宋_GB2312", bold=True)
+    report_value = closing_report.add_run(
+        f"：{_meeting_value(meeting, 'reportTo', 'copyTo', default='相关领导、相关部门')}"
+    )
+    _set_named_run_font(report_value, "仿宋_GB2312")
+
+    print_note = _meeting_value(
+        meeting, "printNote", "distributionNote", default="（印发范围待确认）"
+    )
+    print_note_size = "28" if len(print_note) > 8 else "32"
+    for text_node in closing_issue._p.iter(qn("w:t")):
+        if "一类文件" in (text_node.text or "") or "共印" in (text_node.text or ""):
+            text_node.text = print_note
+            run_element = text_node.getparent()
+            if run_element is not None and run_element.tag == qn("w:r"):
+                run_properties = run_element.find(qn("w:rPr"))
+                if run_properties is not None:
+                    for size_tag in ("w:sz", "w:szCs"):
+                        size_node = run_properties.find(qn(size_tag))
+                        if size_node is not None:
+                            size_node.set(qn("w:val"), print_note_size)
+    _clear_text_runs_preserving_drawings(closing_issue)
+    issue_office = _meeting_value(
+        meeting,
+        "issuerDepartment",
+        "department",
+        "organization",
+        default="会议管理部门",
+    )
+    office_run = closing_issue.add_run(issue_office)
+    _set_named_run_font(office_run, "仿宋_GB2312")
+    closing_issue.paragraph_format.tab_stops.clear_all()
+    closing_issue.paragraph_format.tab_stops.add_tab_stop(Cm(14.5), WD_TAB_ALIGNMENT.RIGHT)
+    issued_run = closing_issue.add_run(f"\t{issue_date}印发")
+    _set_named_run_font(issued_run, "仿宋_GB2312")
+
+
+def _set_template_run_font(run: Any, *, size: float = 10.5, bold: bool = False) -> None:
+    """Apply the source template's Microsoft YaHei typography explicitly."""
+
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    font_name = "Microsoft YaHei"
+    run.font.name = font_name
+    run.font.size = Pt(size)
+    run.bold = bold
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.rFonts
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    for key in ("ascii", "hAnsi", "eastAsia", "cs"):
+        r_fonts.set(qn(f"w:{key}"), font_name)
+
+
+def _set_template_cell_text(
+    cell: Any,
+    text: Any,
+    *,
+    bold: bool = False,
+    align: int = 0,
+    placeholder: str = "待补充",
+) -> None:
+    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+
+    cell.text = ""
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    paragraph = cell.paragraphs[0]
+    paragraph.alignment = align
+    paragraph.paragraph_format.space_before = 0
+    paragraph.paragraph_format.space_after = 0
+    run = paragraph.add_run(_compact_text(text) or placeholder)
+    _set_template_run_font(run, bold=bold)
+
+
+def _template_minutes_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
+    """Build the concise, agenda-centred content used by the provided template."""
+
+    lines: list[tuple[str, bool]] = []
+    minutes = [
+        (item, _minute_discussion_points(item, records))
+        for item in list(records.get("minutes") or [])
+    ]
+    minutes = [(item, points) for item, points in minutes if points]
+    for index, (item, points) in enumerate(minutes, 1):
+        title = _item_content(item, "agenda", "title", "topic", "content")
+        lines.append((f"议题{index}：{title or '未命名议题'}", True))
+        for point_index, point in enumerate(points, 1):
+            content = _compact_text(point, limit=1200)
+            if content:
+                lines.append((f"{point_index}. {content}", False))
+
+    decisions = list(records.get("decisions") or [])
+    if decisions:
+        lines.append(("会议决议：", True))
+        for index, item in enumerate(decisions, 1):
+            content = _item_content(item, "content", "decision", "description", "title", "summary")
+            if content:
+                lines.append((f"{index}. {content}", False))
+
+    risks, disclosures = list(records.get("risks") or []), list(records.get("disclosures") or [])
+    if risks or disclosures:
+        lines.append(("风险与披露事项：", True))
+        for index, item in enumerate([*risks, *disclosures], 1):
+            content = _item_content(item, "content", "description", "title", "summary")
+            if content:
+                lines.append((f"{index}. {content}", False))
+    return lines or [("（暂无已确认的会议内容）", False)]
+
+
+def _fill_minutes_template(
+    doc: Any,
     meeting: Mapping[str, Any],
     records: Mapping[str, Any],
     *,
-    template_id: str = "standard",
+    template_id: str,
 ) -> None:
-    try:
-        from docx import Document
-        from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
-        from docx.shared import Cm, Pt
-    except ImportError as exc:  # pragma: no cover - depends on deployment package set
-        raise RuntimeError("python-docx is required to generate meeting documents") from exc
-    doc = Document()
+    from copy import deepcopy
+
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    if not doc.paragraphs or not doc.tables:
+        raise RuntimeError("会议纪要模板结构无效")
+    title_paragraph = doc.paragraphs[0]
+    title_paragraph.text = ""
+    title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_paragraph.add_run(
+        _FORMAL_TEMPLATE_TITLES.get(template_id, _FORMAL_TEMPLATE_TITLES["standard"])
+    )
+    _set_template_run_font(title_run, size=16, bold=True)
+
+    table = doc.tables[0]
+    if len(table.rows) < 12 or len(table.columns) < 4:
+        raise RuntimeError("会议纪要模板表格结构无效")
     title = _compact_text(meeting.get("title") or meeting.get("name") or "会议")
-    _configure_document(doc, title=title)
-    section = doc.sections[0]
+    _set_template_cell_text(table.cell(0, 1), _meeting_value(meeting, "time", "date", "startTime"))
+    _set_template_cell_text(table.cell(0, 3), _meeting_value(meeting, "location", "venue", "address"))
+    _set_template_cell_text(
+        table.cell(1, 1),
+        _meeting_value(meeting, "type", "meetingType", "category", default="普通会议"),
+    )
+    _set_template_cell_text(table.cell(1, 3), _meeting_value(meeting, "recorder", "secretary"))
+    _set_template_cell_text(
+        table.cell(2, 1),
+        _meeting_value(meeting, "participants", "attendees", "participantNames"),
+    )
+    _set_template_cell_text(table.cell(3, 1), title)
+
+    content_cell = table.cell(4, 1)
+    content_cell.text = ""
+    for index, (text, bold) in enumerate(_template_minutes_lines(records)):
+        paragraph = content_cell.paragraphs[0] if index == 0 else content_cell.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        paragraph.paragraph_format.space_before = 0
+        paragraph.paragraph_format.space_after = 0
+        paragraph.paragraph_format.line_spacing = 1.15
+        run = paragraph.add_run(text)
+        _set_template_run_font(run, bold=bold)
+
+    todos = list(records.get("todos") or [])
+    required_rows = max(5, len(todos))
+    while len(table.rows) < 7 + required_rows:
+        table._tbl.append(deepcopy(table.rows[-1]._tr))
+    for index in range(required_rows):
+        row = table.rows[7 + index]
+        item = todos[index] if index < len(todos) else {}
+        task = _item_content(item, "task", "content", "title", "summary") if item else ""
+        owner = _compact_text(item.get("owner")) if isinstance(item, Mapping) else ""
+        deadline = _compact_text(item.get("deadline")) if isinstance(item, Mapping) else ""
+        _set_template_cell_text(
+            row.cells[0],
+            str(index + 1),
+            align=WD_ALIGN_PARAGRAPH.CENTER,
+            placeholder=str(index + 1),
+        )
+        _set_template_cell_text(row.cells[1], task, placeholder="")
+        _set_template_cell_text(
+            row.cells[2], owner, align=WD_ALIGN_PARAGRAPH.CENTER, placeholder=""
+        )
+        _set_template_cell_text(
+            row.cells[3], deadline, align=WD_ALIGN_PARAGRAPH.CENTER, placeholder=""
+        )
+
+
+def _append_detailed_record_section(
+    doc: Any,
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+) -> None:
+    """Append the previous formal meeting-record layout as a new section."""
+
+    from docx.enum.section import WD_SECTION_START
+    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt
+
+    section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.top_margin = Cm(1.6)
+    section.right_margin = Cm(1.6)
+    section.bottom_margin = Cm(1.6)
+    section.left_margin = Cm(1.6)
+    section.header_distance = Cm(0.8)
+    section.footer_distance = Cm(0.8)
+    section.header.is_linked_to_previous = False
+    section.footer.is_linked_to_previous = False
     section.header.paragraphs[0].text = ""
     section.footer.paragraphs[0].text = ""
+
+    title = _compact_text(meeting.get("title") or meeting.get("name") or "会议")
     heading = doc.add_paragraph()
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = heading.add_run(_FORMAL_TEMPLATE_TITLES.get(template_id, _FORMAL_TEMPLATE_TITLES["standard"]))
+    run = heading.add_run(_DETAILED_RECORD_TITLE)
     _set_run_font(run, size=18, bold=True, role="title")
     heading.paragraph_format.space_after = Pt(8)
 
     table = doc.add_table(rows=6, cols=6)
-    table.style = "Table Grid"
+    try:
+        table.style = "Table Grid"
+    except KeyError:
+        table.style = None
+    _apply_table_grid_borders(table)
     _add_table_geometry(table, (1260, 2100, 1260, 2100, 960, 1740))
     row = table.rows[0].cells
     _set_cell_text(row[0], "会议名称", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, role="heading")
@@ -865,8 +1447,8 @@ def _write_formal_docx(
         paragraph.paragraph_format.space_before = Pt(0)
         paragraph.paragraph_format.space_after = Pt(3)
         paragraph.paragraph_format.line_spacing = 1.15
-        run = paragraph.add_run(line)
-        _set_run_font(run, size=10.5, bold=bold, role="heading" if bold else "body")
+        line_run = paragraph.add_run(line)
+        _set_run_font(line_run, size=10.5, bold=bold, role="heading" if bold else "body")
     body_row = table.rows[4]
     body_row.height = Cm(14.2)
     body_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
@@ -880,8 +1462,7 @@ def _write_formal_docx(
     for row_index, table_row in enumerate(table.rows):
         tr_pr = table_row._tr.get_or_add_trPr()
         if row_index != 4:
-            cant_split = OxmlElement("w:cantSplit")
-            tr_pr.append(cant_split)
+            tr_pr.append(OxmlElement("w:cantSplit"))
         for cell in table_row.cells:
             tc_pr = cell._tc.get_or_add_tcPr()
             margin = tc_pr.first_child_found_in("w:tcMar")
@@ -895,6 +1476,32 @@ def _write_formal_docx(
                     margin.append(node)
                 node.set(qn("w:w"), "100")
                 node.set(qn("w:type"), "dxa")
+
+
+def _write_formal_docx(
+    path: Path,
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+    *,
+    template_id: str = "standard",
+) -> None:
+    """Write one formal DOCX containing concise minutes and the detailed record."""
+
+    try:
+        from docx import Document
+    except ImportError as exc:  # pragma: no cover - depends on deployment package set
+        raise RuntimeError("python-docx is required to generate meeting documents") from exc
+    template_path = (
+        ENTERPRISE_MINUTES_TEMPLATE if template_id == "enterprise" else FORMAL_MINUTES_TEMPLATE
+    )
+    if not template_path.is_file():
+        raise RuntimeError(f"会议纪要模板不存在：{template_path}")
+    doc = Document(template_path)
+    if template_id == "enterprise":
+        _fill_enterprise_minutes_template(doc, meeting, records)
+    else:
+        _fill_minutes_template(doc, meeting, records, template_id=template_id)
+    _append_detailed_record_section(doc, meeting, records)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(path)
 
@@ -990,7 +1597,7 @@ def generate_document_bundle(
     safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", _as_text(meeting_id) or "meeting")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    formal_path = output_path / f"{safe_id}_会议记录_{stamp}.docx"
+    formal_path = output_path / f"{safe_id}_会议纪要及记录_{stamp}.docx"
     evidence_path = output_path / f"{safe_id}_证据底稿_{stamp}.docx"
     template_id = template_id if template_id in _FORMAL_TEMPLATE_TITLES else "standard"
     _write_formal_docx(

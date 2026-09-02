@@ -13,7 +13,13 @@ from backend.dependencies import require_agenda, require_meeting, require_meetin
 from backend.deps import _append_meeting_activity_light, _get_request_user, _get_user_from_auth_token, _resolve_meeting_role
 from backend.models import MeetingTranscriptChunkRequest
 from backend.services.recording_service import audio_client_owned_by
-from backend.services.transcript_service import build_record, clean_asr_text, persist_record, resolve_agenda_id
+from backend.services.transcript_service import (
+    build_record,
+    clean_asr_text,
+    persist_record,
+    record_owned_by,
+    resolve_agenda_id,
+)
 
 
 router = APIRouter(tags=["transcripts"])
@@ -76,7 +82,14 @@ async def transcripts_sse(request: Request, meeting_id: str):
 
 
 @router.get("/api/meeting/transcripts/{meeting_id}")
-async def get_transcripts(request: Request, meeting_id: str, limit: int = 200, offset: int = 0, agenda_id: str = ""):
+async def get_transcripts(
+    request: Request,
+    meeting_id: str,
+    limit: int = 200,
+    offset: int = 0,
+    agenda_id: str = "",
+    owner_only: bool = False,
+):
     user, safe_id, meeting = require_meeting(request, meeting_id)
     if agenda_id:
         require_agenda(request, safe_id, agenda_id, "view")
@@ -89,6 +102,10 @@ async def get_transcripts(request: Request, meeting_id: str, limit: int = 200, o
         loaded["transcripts"] = [row for row in loaded.get("transcripts", []) if not row.get("agendaId") or row.get("agendaId") in allowed]
     all_events = loaded.get("events", [])
     all_transcripts = loaded.get("transcripts", [])
+    if owner_only:
+        role = _resolve_meeting_role(user)
+        all_events = [row for row in all_events if record_owned_by(row, user, role)]
+        all_transcripts = [row for row in all_transcripts if record_owned_by(row, user, role)]
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     loaded["events"] = all_events[-(limit + offset):-offset] if offset else all_events[-limit:]
@@ -98,4 +115,5 @@ async def get_transcripts(request: Request, meeting_id: str, limit: int = 200, o
         "agenda": loaded.get("agenda", ""), "meetingPhase": loaded.get("phase", ""),
         "updatedAt": loaded.get("updatedAt"), "events": loaded["events"], "transcripts": loaded["transcripts"],
         "totalEvents": len(all_events), "totalTranscripts": len(all_transcripts),
+        "totalAudioEvents": sum(1 for row in all_events if row.get("type") == "audio"),
     }

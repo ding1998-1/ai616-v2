@@ -17,6 +17,47 @@ from backend.db import (
 from backend.services.agenda_service import get_meeting_active_agenda, get_meeting_agenda
 
 
+def record_owned_by(record: dict, user: dict, role: dict | None = None) -> bool:
+    """Return whether a transcript/event belongs to the current recorder identity."""
+    role = role or {}
+    speaker = record.get("speaker") if isinstance(record.get("speaker"), dict) else {}
+    user_ids = {
+        str(value).strip()
+        for value in (user.get("id"), role.get("userId"))
+        if str(value or "").strip()
+    }
+    usernames = {
+        str(value).strip().lower()
+        for value in (user.get("username"), role.get("username"))
+        if str(value or "").strip()
+    }
+    display_names = {
+        str(value).strip()
+        for value in (user.get("name"), role.get("displayName"))
+        if str(value or "").strip()
+    }
+    record_user_ids = {
+        str(value).strip()
+        for value in (record.get("speakerUserId"), speaker.get("userId"))
+        if str(value or "").strip()
+    }
+    record_usernames = {
+        str(value).strip().lower()
+        for value in (record.get("username"), speaker.get("username"))
+        if str(value or "").strip()
+    }
+    record_names = {
+        str(value).strip()
+        for value in (record.get("speakerName"), speaker.get("displayName"), speaker.get("name"))
+        if str(value or "").strip()
+    }
+    return bool(
+        user_ids.intersection(record_user_ids)
+        or usernames.intersection(record_usernames)
+        or display_names.intersection(record_names)
+    )
+
+
 def clean_asr_text(text: str) -> str:
     if not text or not text.strip():
         return ""
