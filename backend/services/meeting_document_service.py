@@ -297,7 +297,7 @@ def render_formal_markdown(
             else:
                 lines.append(f"{index}. {_item_content(item)}")
     else:
-        lines.append("（暂无已提取结论，需人工确认）")
+        lines.append("（本次会议未形成有可核验原文支持的明确决议）")
     lines.extend(["", "## 三、合规风险与披露事项", ""])
     if risks:
         for index, item in enumerate(risks, 1):
@@ -474,6 +474,10 @@ def build_evidence_manifest(
         "qualityFlags": quality_flags,
         "mapBoundaries": _map_boundaries(records),
         "reverseIndex": _record_index(records),
+        "evidenceExceptions": [
+            dict(item) for item in (records.get("evidenceExceptions") or [])
+            if isinstance(item, Mapping)
+        ],
         "markers": [dict(item) for item in (markers or []) if isinstance(item, Mapping)],
         "coverage": {
             "sourceSegmentCount": len(source_ids),
@@ -546,14 +550,26 @@ def render_evidence_markdown(
             lines.append(f"- {segment_id}：{', '.join(_as_text(item) for item in entries)}")
     else:
         lines.append("（暂无带依据的正式条目）")
-    lines.extend(["", "## 七、会中标记", ""])
+    lines.extend(["", "## 七、系统自动排除的 AI 表述", ""])
+    exceptions = list(manifest.get("evidenceExceptions") or [])
+    if exceptions:
+        for exception in exceptions:
+            item = exception.get("item") if isinstance(exception.get("item"), Mapping) else {}
+            content = _item_content(item, "content", "task", "agenda", "title", "summary")
+            lines.append(
+                f"- {_compact_text(exception.get('field') or '未分类')}：{content or '未记录内容'}"
+                f"（原因：{_compact_text(exception.get('reason') or '无可核验原文依据')}）"
+            )
+    else:
+        lines.append("（无自动排除表述）")
+    lines.extend(["", "## 八、会中标记", ""])
     custom_markers = list(manifest.get("markers") or [])
     if custom_markers:
         for marker in custom_markers:
             lines.append(f"- {_compact_text(marker.get('time') or marker.get('timestamp') or '未标注')}：{_compact_text(marker.get('note') or marker.get('text') or marker)}")
     else:
         lines.append("（无会中标记）")
-    lines.extend(["", "## 八、生成参数快照", ""])
+    lines.extend(["", "## 九、生成参数快照", ""])
     for key in (
         "provider", "model", "temperature", "pipelineVersion", "promptVersion",
         "schemaVersion", "glossaryVersion", "chunkPolicy", "chunkCount",
@@ -762,6 +778,16 @@ def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
             owner = _compact_text(item.get("owner")) if isinstance(item, Mapping) else "待确认"
             deadline = _compact_text(item.get("deadline")) if isinstance(item, Mapping) else "待定"
             lines.append((f"{index}. {_item_content(item, 'task', 'content', 'title', 'summary')}（责任人：{owner or '待确认'}；期限：{deadline or '待定'}）", False))
+    override = records.get("latestFormalOverride") if isinstance(records.get("latestFormalOverride"), Mapping) else None
+    if override:
+        lines.append(("五、人工核验说明", True))
+        lines.append((
+            "本文件存在待人工核验内容，已由授权人员核对后放行。"
+            f"操作人：{_compact_text(override.get('operator')) or '未记录'}；"
+            f"时间：{_compact_text(override.get('time')) or '未记录'}；"
+            f"原因：{_compact_text(override.get('reason')) or '未记录'}。",
+            False,
+        ))
     return lines or [("（暂无会议记录）", False)]
 
 
@@ -918,7 +944,20 @@ def _write_evidence_docx(path: Path, meeting: Mapping[str, Any], records: Mappin
         _docx_paragraph(doc, f"{segment_id}：{', '.join(_as_text(item) for item in entries)}", size=9)
     if not reverse:
         _docx_paragraph(doc, "（暂无带依据的正式条目）", size=9)
-    doc.add_heading("六、生成参数快照", level=1)
+    doc.add_heading("六、系统自动排除的 AI 表述", level=1)
+    exceptions = list(manifest.get("evidenceExceptions") or [])
+    for exception in exceptions:
+        item = exception.get("item") if isinstance(exception.get("item"), Mapping) else {}
+        content = _item_content(item, "content", "task", "agenda", "title", "summary")
+        _docx_paragraph(
+            doc,
+            f"{_compact_text(exception.get('field') or '未分类')}：{content or '未记录内容'}"
+            f"（原因：{_compact_text(exception.get('reason') or '无可核验原文依据')}）",
+            size=9,
+        )
+    if not exceptions:
+        _docx_paragraph(doc, "（无自动排除表述）", size=9)
+    doc.add_heading("七、生成参数快照", level=1)
     snapshot = _snapshot(records, list(manifest.get("allRows") or []))
     for key in ("provider", "model", "pipelineVersion", "promptVersion", "schemaVersion", "glossaryVersion", "chunkPolicy", "inputSha256", "segmentCount", "generatedAt"):
         if key in snapshot and snapshot[key] not in (None, ""):

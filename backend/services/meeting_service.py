@@ -77,7 +77,13 @@ def patch_meeting(meeting_id: str, patch: dict, user: dict) -> dict:
     return meeting
 
 
-def update_stage(meeting_id: str, stage: str, phase: str, user: dict) -> dict:
+def update_stage(
+    meeting_id: str,
+    stage: str,
+    phase: str,
+    user: dict,
+    override_reason: str = "",
+) -> dict:
     safe_id = _safe_meeting_id(meeting_id)
     stage = stage if stage in PHASE_BY_STAGE else "collect"
     with MEETINGS_LOCK:
@@ -91,9 +97,15 @@ def update_stage(meeting_id: str, stage: str, phase: str, user: dict) -> dict:
         # 客户端绑定可靠；缺少声纹时仍允许开会、终审和进入签字流程。
         if stage == "archive":
             from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
-            from backend.services.outcome_service import require_basis_gate
+            from backend.services.outcome_service import authorize_basis_override
 
-            require_basis_gate(meeting.get("generatedRecords"), action="进入归档")
+            records = dict(meeting.get("generatedRecords") or {})
+            gate, override = authorize_basis_override(
+                records, meeting, user, action="进入归档", reason=override_reason,
+            )
+            records["basisGate"] = gate
+            if override:
+                meeting["generatedRecords"] = records
             if not is_fully_signed(safe_id):
                 raise ValueError(
                     f"尚未全员签字（已签 {signed_signer_count(safe_id)} / 应签 {required_signer_count(safe_id)}），无法正式归档"
@@ -115,7 +127,7 @@ def update_stage(meeting_id: str, stage: str, phase: str, user: dict) -> dict:
     return meeting
 
 
-def archive_meeting(meeting_id: str, user: dict) -> dict:
+def archive_meeting(meeting_id: str, user: dict, override_reason: str = "") -> dict:
     safe_id = _safe_meeting_id(meeting_id)
     with MEETINGS_LOCK:
         meetings = _load_meetings()
@@ -124,9 +136,15 @@ def archive_meeting(meeting_id: str, user: dict) -> dict:
             raise KeyError("会议不存在")
         _check_meeting_access(user, meeting)
         from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
-        from backend.services.outcome_service import require_basis_gate
+        from backend.services.outcome_service import authorize_basis_override
 
-        require_basis_gate(meeting.get("generatedRecords"), action="正式归档")
+        records = dict(meeting.get("generatedRecords") or {})
+        gate, override = authorize_basis_override(
+            records, meeting, user, action="正式归档", reason=override_reason,
+        )
+        records["basisGate"] = gate
+        if override:
+            meeting["generatedRecords"] = records
         if not is_fully_signed(safe_id):
             raise ValueError(f"尚未全员签字（已签 {signed_signer_count(safe_id)} / 应签 {required_signer_count(safe_id)}），无法正式归档")
         meeting["archived"] = True

@@ -65,3 +65,9 @@ def test_continuous_media_recorder_chunks_are_joined_byte_for_byte(tmp_path: Pat
     recording_service._join_continuous_chunks(chunks, output)
 
     assert output.read_bytes() == b"webm-headercluster-onecluster-two"
+
+
+def test_safari_mp4_mime_keeps_mp4_extension():
+    assert recording_service.extension_for_mime("audio/mp4", "chunk_0.webm") == ".mp4"
+    assert recording_service.extension_for_mime("audio/webm;codecs=opus", "chunk_0.mp4") == ".webm"
+    assert recording_service.extension_for_mime("audio/ogg;codecs=opus", "chunk_0.webm") == ".ogg"

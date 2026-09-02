@@ -1,4 +1,73 @@
+import asyncio
+
 from backend.services import meeting_service, outcome_service, signature_service
+
+
+def test_concurrent_record_generation_requests_share_one_task(monkeypatch):
+    calls = []
+
+    async def fake_generate(meeting_id, *, generation_id):
+        calls.append((meeting_id, generation_id))
+        await asyncio.sleep(0.03)
+        return {
+            "generated": True,
+            "generatedAt": "2026-09-01 16:30:00",
+            "generationId": generation_id,
+        }
+
+    monkeypatch.setattr(outcome_service, "_generate_records_v2_once", fake_generate)
+    outcome_service._record_generation_tasks.clear()
+    outcome_service._record_generation_states.clear()
+
+    async def exercise():
+        results = await asyncio.gather(*(
+            outcome_service.generate_records_v2("m1") for _ in range(5)
+        ))
+        status = outcome_service.record_generation_status("m1")
+        return results, status
+
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: {
+        "m1": {"id": "m1", "generatedRecords": {"generated": True}},
+    })
+    results, status = asyncio.run(exercise())
+
+    assert len(calls) == 1
+    assert len({item["generationId"] for item in results}) == 1
+    assert status["status"] == "done"
+    assert status["joinedRequests"] == 4
+
+
+def test_record_generation_failure_is_exposed_without_starting_duplicate(monkeypatch):
+    async def fake_generate(meeting_id, *, generation_id):
+        await asyncio.sleep(0)
+        raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr(outcome_service, "_generate_records_v2_once", fake_generate)
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: {
+        "m1": {"id": "m1", "generatedRecords": {"generated": True}},
+    })
+    outcome_service._record_generation_tasks.clear()
+    outcome_service._record_generation_states.clear()
+
+    try:
+        asyncio.run(outcome_service.generate_records_v2("m1"))
+    except RuntimeError as exc:
+        assert str(exc) == "LLM unavailable"
+    else:
+        raise AssertionError("expected generation failure")
+
+    status = outcome_service.record_generation_status("m1")
+    assert status["status"] == "failed"
+    assert status["hasRecords"] is True
+    assert status["error"] == "LLM unavailable"
+
+
+def test_degraded_retry_cannot_replace_existing_successful_records():
+    existing = {"generated": True, "pipelineStatus": "ok", "degraded": False}
+    degraded = {"generated": True, "pipelineStatus": "degraded", "degraded": True}
+
+    assert outcome_service._should_preserve_existing_records(existing, degraded) is True
+    assert outcome_service._should_preserve_existing_records({}, degraded) is False
 
 
 def test_records_update_creates_versionable_payload(monkeypatch):
@@ -43,7 +112,7 @@ def test_records_confirmation_enables_formal_documents(monkeypatch):
     monkeypatch.setattr(
         outcome_service,
         "_save_version",
-        lambda meeting_id, records, user, override: saved_versions.append((meeting_id, records, override)),
+        lambda meeting_id, records, user, override, **kwargs: saved_versions.append((meeting_id, records, override)),
     )
 
     records = outcome_service.confirm_records("m1", {"name": "主持人"})
@@ -52,11 +121,11 @@ def test_records_confirmation_enables_formal_documents(monkeypatch):
     assert records["proofreadStatus"] == "human-approved"
     assert records["proofreadBy"] == "主持人"
     assert records["humanReviewed"] is True
-    assert saved_versions[0][2] == {"humanReviewed": True}
+    assert saved_versions[0][2] == {"humanReviewed": True, "formalOverride": {}}
 
 
-def test_records_confirmation_blocks_unverifiable_decisions_and_todos(monkeypatch):
-    meetings = {"m1": {"id": "m1", "generatedRecords": {
+def test_records_confirmation_keeps_invalid_items_and_allows_audited_override(monkeypatch):
+    meetings = {"m1": {"id": "m1", "creator": "主持人", "events": [], "generatedRecords": {
         "generated": True,
         "minutes": [{
             "agenda": "预算调整", "keyPoints": [],
@@ -70,17 +139,58 @@ def test_records_confirmation_blocks_unverifiable_decisions_and_todos(monkeypatc
         "todos": [{"task": "周五提交方案", "basis": {"evidenceValid": False}}],
     }}}
     monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(outcome_service, "_save_meetings", lambda value: None)
+    monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
+    monkeypatch.setattr(outcome_service, "_invalidate_meetings_cache", lambda: None)
+    monkeypatch.setattr(outcome_service, "_whisper_source_from_meeting", lambda meeting: [{
+        "segmentId": "seg-1", "fileId": "whisper", "start": 0, "end": 3,
+        "text": "会议讨论预算调整", "speaker": "主持人",
+    }])
+    monkeypatch.setattr(outcome_service, "_realtime_source_from_meeting", lambda meeting_id: [])
+    saved_versions = []
+    monkeypatch.setattr(
+        outcome_service,
+        "_save_version",
+        lambda meeting_id, records, user, override, **kwargs: saved_versions.append((records, override, kwargs)),
+    )
+
+    records = outcome_service.confirm_records(
+        "m1",
+        {"name": "主持人"},
+        "已核对录音原文，同意人工确认并继续",
+    )
+
+    assert len(records["decisions"]) == 1
+    assert len(records["todos"]) == 1
+    assert records["proofreadStatus"] == "human-authorized-exception"
+    assert records["basisGate"]["ready"] is False
+    assert records["latestFormalOverride"]["reason"] == "已核对录音原文，同意人工确认并继续"
+    assert len(records["latestFormalOverride"]["failedItems"]) == 2
+    assert meetings["m1"]["events"][-1]["type"] == "formal-override"
+    assert len(saved_versions) == 1
+
+
+def test_records_confirmation_requires_reason_and_manager_for_invalid_gate(monkeypatch):
+    meetings = {"m1": {"id": "m1", "creator": "主持人", "generatedRecords": {
+        "generated": True,
+        "minutes": [{"agenda": "预算调整", "basis": {"evidenceValid": False}}],
+    }}}
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
     monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
 
     try:
         outcome_service.confirm_records("m1", {"name": "主持人"})
     except ValueError as exc:
-        message = str(exc)
-        assert "无法确认纪要" in message
-        assert "决议1条" in message
-        assert "待办1条" in message
+        assert "不可核验内容" in str(exc)
     else:
-        raise AssertionError("expected basis gate to block confirmation")
+        raise AssertionError("expected evidence gate to block without a reason")
+
+    try:
+        outcome_service.confirm_records("m1", {"name": "普通参会人"}, "已经核对原始录音并确认内容")
+    except PermissionError as exc:
+        assert "人工放行" in str(exc)
+    else:
+        raise AssertionError("expected non-manager override to be forbidden")
 
 
 def test_basis_gate_requires_verbatim_quote_and_segment_id():
@@ -121,6 +231,34 @@ def test_archive_stage_is_blocked_before_signature_check_when_basis_is_invalid(m
         assert "会议记录1条" in str(exc)
     else:
         raise AssertionError("expected archive basis gate to block the stage update")
+
+
+def test_archive_override_is_audited_but_does_not_bypass_signatures(monkeypatch):
+    meetings = {"m1": {"id": "m1", "creator": "主持人", "events": [], "generatedRecords": {
+        "generated": True,
+        "minutes": [{"agenda": "预算调整", "basis": {"evidenceValid": False}}],
+    }}}
+    monkeypatch.setattr(meeting_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(meeting_service, "_save_meetings", lambda value: None)
+    monkeypatch.setattr(meeting_service, "_check_meeting_access", lambda user, meeting: None)
+    monkeypatch.setattr(signature_service, "is_fully_signed", lambda meeting_id: False)
+    monkeypatch.setattr(signature_service, "signed_signer_count", lambda meeting_id: 1)
+    monkeypatch.setattr(signature_service, "required_signer_count", lambda meeting_id: 2)
+
+    try:
+        meeting_service.update_stage(
+            "m1",
+            "archive",
+            "待归档",
+            {"name": "主持人"},
+            "已经核对录音原文并确认归档",
+        )
+    except ValueError as exc:
+        assert "尚未全员签字" in str(exc)
+    else:
+        raise AssertionError("expected signatures to remain mandatory")
+
+    assert meetings["m1"].get("archiveDone") is not True
 
 
 def test_marker_lifecycle_is_scoped_to_meeting(monkeypatch):

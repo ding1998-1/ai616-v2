@@ -207,6 +207,45 @@ async def _run_review(meeting_id: str, force: bool) -> None:
                 },
             )
             _append_status(meeting_id, "done")
+            # Formal closeout is a server-side job. Users do not need to keep
+            # the browser open, repair evidence manually, or click several
+            # workflow actions before a usable Word file exists.
+            try:
+                from backend.services.outcome_service import generate_record_documents, generate_records_v2
+
+                records = await generate_records_v2(meeting_id)
+                # A realtime generation may still be finishing when Whisper
+                # completes. Run again when we joined that older task so the
+                # authoritative Whisper result becomes the formal source.
+                if not records.get("whisperEnhanced"):
+                    records = await generate_records_v2(meeting_id)
+                bundle = await asyncio.to_thread(generate_record_documents, meeting_id, "standard")
+                _append_meeting_activity_light(
+                    meeting_id,
+                    {
+                        "id": f"formal_output_{uuid.uuid4().hex[:10]}",
+                        "type": "document",
+                        "action": "formal-word-auto-generated",
+                        "meetingId": meeting_id,
+                        "serverTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "generationId": records.get("generationId", ""),
+                        "formal": (bundle.get("formal") or {}).get("filename", ""),
+                        "evidence": (bundle.get("evidence") or {}).get("filename", ""),
+                    },
+                )
+            except Exception as exc:
+                logger.exception("终审后自动生成正式 Word 失败 meeting=%s", meeting_id)
+                _append_meeting_activity_light(
+                    meeting_id,
+                    {
+                        "id": f"formal_output_failed_{uuid.uuid4().hex[:10]}",
+                        "type": "document",
+                        "action": "formal-word-auto-generation-failed",
+                        "meetingId": meeting_id,
+                        "serverTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "error": str(exc)[:500],
+                    },
+                )
         except asyncio.CancelledError:
             logger.warning("Whisper 终审因服务停机中断 meeting=%s", meeting_id)
             _append_status(meeting_id, "interrupted", "服务重启，任务可重新执行")

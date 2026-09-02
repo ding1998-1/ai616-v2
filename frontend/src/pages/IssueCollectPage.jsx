@@ -39,7 +39,7 @@ function parseIssueMeta(meta) {
 
 export default function IssueCollectPage({ currentUser, onLogout }) {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
-  const meetingId = params.get('meetingId') || 'meeting-gxq-fc-2026-02';
+  const meetingId = String(params.get('meetingId') || '').trim();
   const meetingTitle = params.get('meeting') || 'AI 会议问题收集';
   const agenda = params.get('agenda') || '待梳理议题';
   const projectName = params.get('project') || '本地项目';
@@ -52,6 +52,7 @@ export default function IssueCollectPage({ currentUser, onLogout }) {
   const [parsingFiles, setParsingFiles] = useState(false);
   const [attachmentRows, setAttachmentRows] = useState([]);
   const [submittedIssues, setSubmittedIssues] = useState([]);
+  const [meetingError, setMeetingError] = useState('');
 
   useEffect(() => {
     const root = document.getElementById('root');
@@ -67,15 +68,22 @@ export default function IssueCollectPage({ currentUser, onLogout }) {
 
   useEffect(() => {
     let alive = true;
+    if (!meetingId) {
+      setMeetingDetail(null);
+      setMeetingError('链接缺少会议 ID，请从会议详情页重新打开');
+      return () => { alive = false; };
+    }
     authFetchJson(`/api/meetings/${meetingId}`)
       .then(data => {
         if (!alive) return;
+        setMeetingError('');
         setMeetingDetail(data.meeting);
         setSubmittedIssues(Array.isArray(data.meeting?.issueSources) ? data.meeting.issueSources.slice(-5).reverse() : []);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
         setMeetingDetail(null);
+        setMeetingError(error?.message || '会议不存在或当前账号无权访问');
       });
     return () => { alive = false; };
   }, [meetingId]);
@@ -176,6 +184,10 @@ export default function IssueCollectPage({ currentUser, onLogout }) {
   };
 
   const submitIssue = async (values) => {
+    if (meetingError || !meetingDetail) {
+      message.error(meetingError || '会议尚未通过身份校验');
+      return;
+    }
     const content = compactText(values.content);
     if (!content && !attachmentRows.length) {
       message.warning(isMajorMeeting ? '请填写问题描述或上传材料' : '请填写问题描述或上传图片/附件');
@@ -214,21 +226,6 @@ export default function IssueCollectPage({ currentUser, onLogout }) {
 
     setSubmitting(true);
     try {
-      if (!meetingDetail) {
-        await authFetchJson('/api/meetings', {
-          method: 'POST',
-          body: JSON.stringify({
-            id: meetingId,
-            title: resolvedMeetingTitle,
-            project: resolvedProjectName,
-            agenda: resolvedAgenda,
-            date: resolvedDate,
-            type: '党委会',
-            meetingMode: resolvedMeetingMode,
-            phase: '问题收集中',
-          }),
-        });
-      }
       const data = await authFetchJson(`/api/meetings/${meetingId}/issues`, {
         method: 'POST',
         body: JSON.stringify({
@@ -253,6 +250,15 @@ export default function IssueCollectPage({ currentUser, onLogout }) {
   return (
     <div className="issue-collect-page">
       <main className="issue-collect-shell">
+        {meetingError && (
+          <Alert
+            type="error"
+            showIcon
+            message="无法进入本场会议"
+            description={meetingError}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <section className="issue-collect-hero">
           <div>
             <Space size={8} wrap>

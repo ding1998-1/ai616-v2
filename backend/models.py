@@ -165,6 +165,12 @@ class MeetingStageRequest(BaseModel):
     """会议阶段切换"""
     stage: str
     phase: str = ""
+    overrideReason: str = ""
+
+
+class FormalActionRequest(BaseModel):
+    """正式确认、导出等受控操作的人工放行说明。"""
+    overrideReason: str = ""
 
 
 class MeetingAgendaRealtimeCheckRequest(BaseModel):

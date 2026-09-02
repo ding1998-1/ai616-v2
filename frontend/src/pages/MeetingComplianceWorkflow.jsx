@@ -690,6 +690,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const agendaTimerRef = useRef(null);
   const [meetingGeneratedRecords, setMeetingGeneratedRecords] = useState(null);
   const [meetingRecordsLoading, setMeetingRecordsLoading] = useState(false);
+  const [recordGenerationStatus, setRecordGenerationStatus] = useState({ status: 'idle' });
+  const [recordGenerationVersions, setRecordGenerationVersions] = useState([]);
+  const recordGenerationStatusRef = useRef('idle');
   const [whisperStatus, setWhisperStatus] = useState('idle'); // idle | running | done | failed
   const [meetingMarkers, setMeetingMarkers] = useState([]);
   const [editingRecords, setEditingRecords] = useState(false);
@@ -2070,6 +2073,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         method: 'POST',
       });
       setMeetingGeneratedRecords(data.records || null);
+      await loadRecordGenerationVersions();
       return data.records || null;
     } catch (err) {
       message.error(`会议记录生成失败：${err.message}`);
@@ -2078,6 +2082,48 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       setMeetingRecordsLoading(false);
     }
   };
+
+  const loadRecordGenerationVersions = async () => {
+    if (!currentMeetingId) return;
+    try {
+      const data = await authFetchJson(`/api/meetings/${currentMeetingId}/versions`);
+      setRecordGenerationVersions((data.versions || []).filter(item =>
+        String(item.edit_summary || item.editSummary || '').startsWith('AI 生成纪要')
+      ));
+    } catch (err) {
+      console.warn('纪要历史版本加载失败:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeStage !== 'audit' && activeStage !== 'archive') return undefined;
+    if (!currentMeetingId) return undefined;
+    let alive = true;
+    const pollGeneration = async () => {
+      try {
+        const data = await authFetchJson(`/api/meetings/${currentMeetingId}/records/generation-status`);
+        if (!alive) return;
+        const previous = recordGenerationStatusRef.current;
+        const next = data.status || 'idle';
+        recordGenerationStatusRef.current = next;
+        setRecordGenerationStatus(data);
+        if (next === 'running') {
+          setMeetingRecordsLoading(true);
+        } else if (previous === 'running') {
+          setMeetingRecordsLoading(false);
+          await loadGeneratedMeetingRecords();
+          await loadRecordGenerationVersions();
+          if (next === 'failed' && data.error) message.error(`纪要生成失败：${data.error}`);
+        }
+      } catch (err) {
+        console.warn('纪要生成状态读取失败:', err);
+      }
+    };
+    pollGeneration();
+    loadRecordGenerationVersions();
+    const timer = window.setInterval(pollGeneration, 3000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [activeStage, currentMeetingId]);
 
   useEffect(() => {
     if (activeStage !== 'audit' && activeStage !== 'archive') return;
@@ -2822,8 +2868,23 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       setMeetingRecords(prev => prev.filter(item => item.id !== recordId));
       message.success('已从列表归档该会议，录音和转写不会被删除');
     } catch (error) {
-      setMeetingRecords(prev => prev.filter(item => item.id !== recordId));
-      message.warning(`后端归档失败，仅本地移除：${error.message}`);
+      if (String(error.message || '').includes('不可核验内容')) {
+        const overrideReason = await requestEvidenceOverrideReason('正式归档', null);
+        if (!overrideReason) return;
+        try {
+          await authFetchJson(`/api/meetings/${recordId}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ overrideReason }),
+          });
+          setMeetingRecords(prev => prev.filter(item => item.id !== recordId));
+          message.success('已人工确认并归档，放行原因已写入审计记录');
+          return;
+        } catch (overrideError) {
+          message.error(`归档失败：${overrideError.message}`);
+          return;
+        }
+      }
+      message.error(`归档失败：${error.message}`);
     }
   };
 
@@ -2838,11 +2899,50 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     });
   };
 
-  const persistStage = async (nextStage, phase) => {
+  const requestEvidenceOverrideReason = (actionLabel, knownInvalidCount = recordsBasisGate.invalidCount || 0) => new Promise((resolve) => {
+    let reason = '';
+    const invalidCount = knownInvalidCount;
+    Modal.confirm({
+      title: invalidCount ? `存在 ${invalidCount} 条待人工核验内容` : '存在待人工核验内容',
+      width: 520,
+      okText: '人工确认并继续',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ color: '#5f6b7a', lineHeight: 1.7, marginBottom: 12 }}>
+            系统默认阻止{actionLabel}。授权人员核对原始转写后可以人工放行，操作人、时间、原因和未通过项将写入审计记录。
+          </div>
+          <Input.TextArea
+            autoFocus
+            rows={3}
+            maxLength={300}
+            showCount
+            placeholder="请填写人工确认理由（至少 8 个字）"
+            onChange={(event) => { reason = event.target.value; }}
+          />
+        </div>
+      ),
+      onOk: () => {
+        if (reason.trim().length < 8) {
+          message.warning('人工确认理由至少填写 8 个字');
+          return Promise.reject(new Error('reason-too-short'));
+        }
+        resolve(reason.trim());
+      },
+      onCancel: () => resolve(''),
+    });
+  });
+
+  const persistStage = async (nextStage, phase, suppliedOverrideReason = '') => {
+    let overrideReason = suppliedOverrideReason;
+    if (nextStage === 'archive' && !recordsBasisGate.ready && !overrideReason) {
+      overrideReason = await requestEvidenceOverrideReason('进入归档');
+      if (!overrideReason) return false;
+    }
     try {
       const data = await authFetchJson(`/api/meetings/${currentMeetingId}/stage`, {
         method: 'POST',
-        body: JSON.stringify({ stage: nextStage, phase }),
+        body: JSON.stringify({ stage: nextStage, phase, overrideReason }),
       });
       hydrateMeetingDetail(data.meeting);
       await loadMeetings();
@@ -2927,6 +3027,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const downloadArchiveDocx = async (kind = 'formal', templateId = 'standard') => {
     setMinutesTemplateDownloading(true);
     try {
+      let overrideReason = '';
+      if (!recordsBasisGate.ready) {
+        overrideReason = await requestEvidenceOverrideReason('生成正式 Word');
+        if (!overrideReason) return;
+      }
       const headers = new Headers();
       const token = getStoredToken();
       if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -2934,22 +3039,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       let generation = await fetch(`/api/meetings/${currentMeetingId}/records/documents?template_id=${encodeURIComponent(templateId)}`, {
         method: 'POST',
         headers,
+        body: JSON.stringify({ overrideReason }),
       });
-      if (generation.status === 409 && reviewDone) {
-        const detail = await generation.clone().json().catch(() => ({}));
-        if (String(detail.detail || '').includes('校对')) {
-          const confirmation = await authFetchJson(`/api/meetings/${currentMeetingId}/records/confirm`, { method: 'POST' });
-          if (confirmation.records) setMeetingGeneratedRecords(confirmation.records);
-          generation = await fetch(`/api/meetings/${currentMeetingId}/records/documents?template_id=${encodeURIComponent(templateId)}`, {
-            method: 'POST',
-            headers,
-          });
-        }
-      }
       if (!generation.ok) {
         const detail = await generation.json().catch(() => ({}));
         throw new Error(detail.detail || `HTTP ${generation.status}`);
       }
+      const refreshedRecords = await authFetchJson(`/api/meetings/${currentMeetingId}/records`);
+      if (refreshedRecords.records) setMeetingGeneratedRecords(refreshedRecords.records);
       headers.delete('Content-Type');
       const response = await fetch(`/api/meetings/${currentMeetingId}/records/documents/${kind}`, { headers });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -3144,11 +3241,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       try {
         const records = await loadGeneratedMeetingRecords();
         const todoCount = (records?.todos || []).length;
+        if (records?.generated) {
+          try {
+            const documentsResult = await authFetchJson(
+              `/api/meetings/${currentMeetingId}/records/documents?template_id=standard`,
+              { method: 'POST' },
+            );
+            setMeetingGeneratedRecords(prev => prev ? { ...prev, documents: documentsResult.documents } : prev);
+          } catch (documentError) {
+            console.warn('会后 Word 自动生成将由 Whisper 终审任务重试', documentError);
+          }
+        }
         hideLoading();
         if (todoCount > 0) {
-          message.success(`AI 已提取 ${todoCount} 个待办事项，请查看会议决议面板`);
+          message.success(`AI 已自动生成纪要、Word 和 ${todoCount} 个待办事项`);
         } else {
-          message.info('会议已结束。待办事项可在终审页面手动生成。');
+          message.success('会议已结束，纪要与 Word 已自动生成；Whisper 终审完成后会在后台自动替换为正式版');
         }
       } catch (_) {
         hideLoading();
@@ -3194,13 +3302,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       message.warning(`还有 ${effectiveMissingMaterialCount} 项材料未上传，不能确认纪要`);
       return;
     }
-    if (!recordsBasisGate.ready) {
-      message.error('仍有会议成果未绑定可核验原文，请重新生成或补齐依据后再确认');
-      return;
-    }
     try {
+      let overrideReason = '';
+      if (!recordsBasisGate.ready) {
+        overrideReason = await requestEvidenceOverrideReason('确认纪要');
+        if (!overrideReason) return;
+      }
       const confirmation = await authFetchJson(`/api/meetings/${currentMeetingId}/records/confirm`, {
         method: 'POST',
+        body: JSON.stringify({ overrideReason }),
       });
       if (confirmation.records) setMeetingGeneratedRecords(confirmation.records);
       const data = await authFetchJson(`/api/meetings/${currentMeetingId}`, {
@@ -4660,7 +4770,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   ) : (
                     <div className="meeting-runtime-empty">
                       <strong>暂无会议纪要</strong>
-                      <span>结束会议后 AI 会自动生成纪要，或点击下方"生成纪要"手动触发。</span>
+                      <span>结束会议后 AI 会自动生成纪要和 Word；下方按钮仅用于运维重试。</span>
                     </div>
                   )
                 )}
@@ -5097,21 +5207,45 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     type="primary"
                     icon={meetingRecordsLoading ? <SyncOutlined spin /> : <FileDoneOutlined />}
                     loading={meetingRecordsLoading}
+                    disabled={recordGenerationStatus.status === 'running'}
                     onClick={generateArchiveRecords}
                     block
                     style={{ height: 40, fontWeight: 600 }}
                   >
-                    {meetingGeneratedRecords?.generated ? '重新生成纪要' : 'AI 生成纪要'}
+                    {recordGenerationStatus.status === 'running'
+                      ? '正在生成纪要'
+                      : meetingGeneratedRecords?.generated ? '重新生成纪要' : 'AI 生成纪要'}
                   </Button>
                 </div>
+                {recordGenerationStatus.status === 'running' && (
+                  <div style={{ marginTop: 8, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
+                    当前任务 {recordGenerationStatus.generationId || '处理中'} 正在分析完整转写；刷新页面不会中断，重复操作不会创建新任务。
+                  </div>
+                )}
+                {recordGenerationVersions.length > 0 && (
+                  <div style={{ marginTop: 8, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
+                    已保留 {recordGenerationVersions.length} 份 AI 生成历史，最近一次：{recordGenerationVersions[0].created_at || recordGenerationVersions[0].createdAt || '刚刚'}。
+                  </div>
+                )}
                 {meetingGeneratedRecords?.generated && !recordsBasisGate.ready && (
                   <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 8, background: '#fff7e6', border: '1px solid #ffd591', color: '#ad6800', fontSize: 12, lineHeight: 1.6 }}>
-                    <strong>原文依据待核验，暂不能确认或归档。</strong>
+                    <strong>有 {recordsBasisGate.invalidCount || 0} 条内容待人工核验。</strong>
                     <div>
+                      系统默认阻止正式确认、Word 和归档；授权人员核对原始转写后，可填写理由“人工确认并继续”。
+                    </div>
+                    <div style={{ marginTop: 3 }}>
                       {Object.entries(recordsBasisGate.missingByField || {})
                         .filter(([, count]) => count > 0)
-                        .map(([field, count]) => `${({ minutes: '会议记录', decisions: '决议', risks: '风险', disclosures: '披露事项', todos: '待办' })[field]} ${count} 条`)
-                        .join('、') || (recordsBasisGate.minutesEmpty ? '会议记录为空' : '请重新生成纪要')}
+                        .map(([field, count]) => `${({ minutes: '会议记录', decisions: '决议', risks: '风险', disclosures: '披露', todos: '待办' })[field] || field} ${count} 条`)
+                        .join('；')}
+                    </div>
+                  </div>
+                )}
+                {meetingGeneratedRecords?.latestFormalOverride && (
+                  <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 8, background: '#f0f5ff', border: '1px solid #adc6ff', color: '#1d39c4', fontSize: 12, lineHeight: 1.6 }}>
+                    <strong>最近一次为授权人工放行</strong>
+                    <div>
+                      {meetingGeneratedRecords.latestFormalOverride.operator || '授权人员'} · {meetingGeneratedRecords.latestFormalOverride.time || '时间未记录'} · {meetingGeneratedRecords.latestFormalOverride.reason || '原因未记录'}
                     </div>
                   </div>
                 )}
@@ -6103,7 +6237,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <Button
                   icon={<CheckCircleOutlined />}
                   onClick={confirmMeetingMinutes}
-                  disabled={reviewDone || !recordsBasisGate.ready}
+                  disabled={reviewDone || meetingRecordsLoading}
                   style={{ fontWeight: 600 }}
                 >
                   {reviewDone ? '纪要已确认' : '确认纪要'}

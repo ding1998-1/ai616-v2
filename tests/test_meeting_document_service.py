@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.services import meeting_document_service
 from backend.services.meeting_document_service import (
     ProofreadRequiredError,
     build_evidence_manifest,
@@ -9,6 +10,21 @@ from backend.services.meeting_document_service import (
     render_evidence_markdown,
     render_formal_markdown,
 )
+
+
+def test_formal_word_marks_authorized_human_override():
+    lines = meeting_document_service._formal_record_lines({
+        "minutes": [{"agenda": "预算调整", "keyPoints": []}],
+        "latestFormalOverride": {
+            "operator": "会议秘书",
+            "time": "2026-09-02 10:00:00",
+            "reason": "已核对录音原文并确认内容",
+        },
+    })
+    text = "\n".join(line for line, _ in lines)
+    assert "人工核验说明" in text
+    assert "会议秘书" in text
+    assert "已核对录音原文并确认内容" in text
 
 
 def _records(proofread=True):
@@ -75,6 +91,11 @@ def _records(proofread=True):
             "timeRange": "00:00:00-00:05:00",
             "chunkSegments": [{"segmentId": "s1"}, {"segmentId": "s2"}],
         }],
+        "evidenceExceptions": [{
+            "field": "decisions",
+            "reason": "unsupported_ai_claim",
+            "item": {"content": "没有原文支持的虚构决议"},
+        }],
     }
 
 
@@ -108,6 +129,8 @@ def test_formal_markdown_is_distilled_and_evidence_markdown_is_lossless():
     assert "噪音行" in evidence
     assert "录音断档" in evidence
     assert "chunk-0001" in evidence
+    assert "没有原文支持的虚构决议" in evidence
+    assert "没有原文支持的虚构决议" not in formal
 
 
 def test_formal_document_requires_proofread(tmp_path: Path):
@@ -157,6 +180,7 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
     assert "这是一条应保留的完整原始证据长句" not in formal_text
     assert "这是一条应保留的完整原始证据长句" in evidence_text
     assert "背景杂音" in evidence_text
+    assert "没有原文支持的虚构决议" in evidence_text
 
 
 def test_document_template_changes_real_word_heading(tmp_path: Path):

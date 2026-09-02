@@ -4,7 +4,11 @@
 上层异步调用后把结果写回 ``generatedRecords``，不会和人工修改混在一起。
 """
 
+import asyncio
+from copy import deepcopy
+import hashlib
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -22,6 +26,12 @@ from backend.db import (
 
 
 FORMAL_RECORD_FIELDS = ("minutes", "decisions", "risks", "disclosures", "todos")
+logger = logging.getLogger(__name__)
+
+# Keep exactly one shared generation task per meeting. Refreshes, duplicate
+# clicks and multiple tabs must not fan out a complete MAP/REDUCE run.
+_record_generation_tasks: dict[str, asyncio.Task] = {}
+_record_generation_states: dict[str, dict] = {}
 
 
 def basis_gate_status(records: dict | None) -> dict:
@@ -52,7 +62,18 @@ def basis_gate_status(records: dict | None) -> dict:
                 valid = bool(_evidence_supports_item(item, field))
             if not valid:
                 missing += 1
-                invalid_items.append({"field": field, "index": index, "reason": "缺少可核验原文依据"})
+                item_text = next((
+                    str(item.get(key) or "").strip()
+                    for key in ("agenda", "content", "task", "title", "description", "summary")
+                    if str(item.get(key) or "").strip()
+                ), "")
+                invalid_items.append({
+                    "field": field,
+                    "index": index,
+                    "itemId": str(item.get("id") or ""),
+                    "content": item_text[:200],
+                    "reason": "缺少可核验原文依据",
+                })
         missing_by_field[field] = missing
     minutes_empty = not bool(payload.get("minutes"))
     total_invalid = sum(missing_by_field.values())
@@ -86,6 +107,75 @@ def require_basis_gate(records: dict | None, *, action: str) -> dict:
         gaps.insert(0, "会议记录为空")
     detail = "、".join(gaps) or "成果尚未生成"
     raise ValueError(f"无法{action}：仍有不可核验内容（{detail}），请重新生成或补齐原文依据")
+
+
+def _basis_gate_fingerprint(gate: dict) -> str:
+    snapshot = {
+        "minutesEmpty": bool(gate.get("minutesEmpty")),
+        "missingByField": gate.get("missingByField") or {},
+        "invalidItems": gate.get("invalidItems") or [],
+    }
+    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def authorize_basis_override(
+    records: dict,
+    meeting: dict,
+    user: dict,
+    *,
+    action: str,
+    reason: str = "",
+) -> tuple[dict, dict | None]:
+    """Apply the shared evidence gate and optionally record an authorized exception."""
+
+    gate = basis_gate_status(records)
+    gate["fingerprint"] = _basis_gate_fingerprint(gate)
+    if gate["ready"]:
+        return gate, None
+    reason = str(reason or "").strip()
+    if not reason:
+        require_basis_gate(records, action=action)
+    if len(reason) < 8:
+        raise ValueError("人工确认理由至少填写 8 个字")
+
+    from backend.dependencies import can_manage_meeting
+
+    if not can_manage_meeting(user, meeting):
+        raise PermissionError("只有管理员、会议创建人、主持人或会议秘书可以人工放行")
+    now = _now_text()
+    actor = user.get("name") or user.get("username") or user.get("id") or ""
+    override = {
+        "id": f"override_{uuid.uuid4().hex[:12]}",
+        "action": action,
+        "reason": reason,
+        "operator": actor,
+        "operatorId": user.get("id") or user.get("username") or "",
+        "operatorRole": user.get("meetingRole") or user.get("role") or "",
+        "time": now,
+        "gateFingerprint": gate["fingerprint"],
+        "failedItems": deepcopy(gate.get("invalidItems") or []),
+        "missingByField": deepcopy(gate.get("missingByField") or {}),
+        "minutesEmpty": bool(gate.get("minutesEmpty")),
+    }
+    overrides = list(records.get("formalOverrides") or [])
+    overrides.append(override)
+    records["formalOverrides"] = overrides[-50:]
+    records["latestFormalOverride"] = override
+    meeting.setdefault("events", []).append({
+        "id": override["id"],
+        "type": "formal-override",
+        "action": action,
+        "operator": actor,
+        "operatorId": override["operatorId"],
+        "operatorRole": override["operatorRole"],
+        "reason": reason,
+        "gateFingerprint": gate["fingerprint"],
+        "failedItems": deepcopy(override["failedItems"]),
+        "serverTime": now,
+    })
+    meeting["events"] = meeting["events"][-200:]
+    return gate, override
 
 
 def _whisper_source_from_meeting(meeting: dict) -> list[dict]:
@@ -194,8 +284,147 @@ def _select_records_source(whisper_source: list[dict], realtime_source: list[dic
     return whisper_source, "whisper" if whisper_source else "empty"
 
 
+def _should_preserve_existing_records(existing: dict, candidate: dict) -> bool:
+    """Never replace a successful artifact with a degraded retry."""
+
+    return bool(
+        candidate.get("degraded")
+        and existing.get("generated")
+        and not existing.get("degraded")
+    )
+
+
+def auto_prepare_formal_records(
+    meeting_id: str,
+    *,
+    meeting: dict | None = None,
+    records: dict | None = None,
+    persist: bool = True,
+) -> dict:
+    """Automatically repair old generated records into an exportable formal set."""
+
+    from backend.services.meeting_record_generation_service import auto_resolve_formal_evidence
+
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = meeting or _load_meetings().get(safe_id)
+    if not meeting:
+        raise KeyError("会议不存在")
+    current_records = records if isinstance(records, dict) else meeting.get("generatedRecords")
+    if not isinstance(current_records, dict) or not current_records.get("generated"):
+        raise ValueError("请先生成会议纪要")
+    current_gate = basis_gate_status(current_records)
+    if current_gate["ready"]:
+        return current_records
+
+    whisper_source = _whisper_source_from_meeting(meeting)
+    realtime_source = _realtime_source_from_meeting(safe_id)
+    source, source_kind = _select_records_source(whisper_source, realtime_source)
+    if not source:
+        raise ValueError("没有可用于自动核验的录音转写")
+    repaired = deepcopy(current_records)
+    auto_resolve_formal_evidence(repaired, repaired.get("mapResults") or [], source)
+    repaired["basisGate"] = basis_gate_status(repaired)
+    if not repaired["basisGate"]["ready"]:
+        raise ValueError("系统自动依据恢复未形成可用会议记录，请重新生成纪要")
+    repaired.update({
+        "proofreadPassed": True,
+        "proofreadStatus": "auto-evidence-verified",
+        "proofreadAt": _now_text(),
+        "proofreadBy": "系统自动核验",
+        "humanReviewed": False,
+        "autoPreparedAt": _now_text(),
+        "source": source_kind,
+    })
+    if not persist:
+        return repaired
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        current = meetings.get(safe_id)
+        if not current:
+            raise KeyError("会议不存在")
+        current["generatedRecords"] = repaired
+        current["updatedAt"] = repaired["autoPreparedAt"]
+        meetings[safe_id] = current
+        _save_meetings(meetings)
+        _invalidate_meetings_cache()
+    _save_version(
+        safe_id,
+        repaired,
+        {"name": "系统自动核验"},
+        {"autoEvidenceResolution": True},
+        edit_summary="系统自动补齐原文依据并生成正式内容",
+    )
+    return repaired
+
+
+def record_generation_status(meeting_id: str) -> dict:
+    """Return recoverable UI state for the current or latest generation."""
+
+    safe_id = _safe_meeting_id(meeting_id)
+    state = dict(_record_generation_states.get(safe_id) or {})
+    task = _record_generation_tasks.get(safe_id)
+    if task is not None and not task.done():
+        state["status"] = "running"
+    meeting = _load_meetings().get(safe_id) or {}
+    records = meeting.get("generatedRecords") if isinstance(meeting.get("generatedRecords"), dict) else {}
+    if not state:
+        state = {
+            "status": "done" if records.get("generated") else "idle",
+            "generationId": records.get("generationId", ""),
+            "startedAt": "",
+            "finishedAt": records.get("generatedAt", ""),
+            "error": "",
+            "joinedRequests": 0,
+        }
+    state["meetingId"] = safe_id
+    state["hasRecords"] = bool(records.get("generated"))
+    return state
+
+
 async def generate_records_v2(meeting_id: str) -> dict:
-    """Generate and persist Records Pipeline v2 output using local Qwen only."""
+    """Coalesce duplicate requests into one shielded Records Pipeline task."""
+
+    safe_id = _safe_meeting_id(meeting_id)
+    current = _record_generation_tasks.get(safe_id)
+    if current is not None and not current.done():
+        state = _record_generation_states.setdefault(safe_id, {})
+        state["joinedRequests"] = int(state.get("joinedRequests") or 0) + 1
+        return await asyncio.shield(current)
+
+    generation_id = f"gen_{uuid.uuid4().hex[:12]}"
+    _record_generation_states[safe_id] = {
+        "status": "running",
+        "generationId": generation_id,
+        "startedAt": _now_text(),
+        "finishedAt": "",
+        "error": "",
+        "joinedRequests": 0,
+    }
+
+    async def runner() -> dict:
+        try:
+            records = await _generate_records_v2_once(safe_id, generation_id=generation_id)
+            _record_generation_states[safe_id].update({
+                "status": "done",
+                "finishedAt": records.get("generatedAt") or _now_text(),
+            })
+            return records
+        except Exception as exc:
+            _record_generation_states[safe_id].update({
+                "status": "failed",
+                "finishedAt": _now_text(),
+                "error": str(exc)[:500],
+            })
+            raise
+
+    task = asyncio.create_task(runner(), name=f"records-generation-{safe_id}-{generation_id}")
+    _record_generation_tasks[safe_id] = task
+    # A browser refresh or disconnected request must not cancel the shared job.
+    return await asyncio.shield(task)
+
+
+async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> dict:
+    """Generate and persist one Records Pipeline v2 result using local Qwen."""
 
     from backend.llm_client import QwenLocalLLM, llm_semaphore
     from backend.services.meeting_record_generation_service import MeetingRecordGenerationService
@@ -243,9 +472,16 @@ async def generate_records_v2(meeting_id: str) -> dict:
     )
     records["generated"] = True
     records["generatedAt"] = _now_text()
+    records["generationId"] = generation_id
     records["source"] = source_kind
     records["whisperEnhanced"] = source_kind == "whisper"
     records["basisGate"] = basis_gate_status(records)
+
+    # A failed REDUCE may still return deterministic fallback content.  Do not
+    # let that lower-quality fallback replace an existing successful result;
+    # the user can keep using the previous version and retry later.
+    if _should_preserve_existing_records(cached, records):
+        raise RuntimeError("本次纪要生成已降级，系统已保留上一份正常结果，请稍后重试")
 
     with MEETINGS_LOCK:
         meetings = _load_meetings()
@@ -257,10 +493,29 @@ async def generate_records_v2(meeting_id: str) -> dict:
         meetings[safe_id] = current
         _save_meetings(meetings)
         _invalidate_meetings_cache()
+    try:
+        _save_version(
+            safe_id,
+            records,
+            {"name": "AI 纪要生成器"},
+            {"generated": True, "source": source_kind},
+            edit_summary=(
+                f"AI 生成纪要（{source_kind}，"
+                f"{records.get('pipelineStatus') or 'unknown'}，任务 {generation_id}）"
+            ),
+        )
+    except Exception:
+        logger.exception("保存 AI 纪要历史版本失败 meeting=%s generation=%s", safe_id, generation_id)
     return records
 
 
-def generate_record_documents(meeting_id: str, template_id: str = "standard") -> dict:
+def generate_record_documents(
+    meeting_id: str,
+    template_id: str = "standard",
+    *,
+    user: dict | None = None,
+    override_reason: str = "",
+) -> dict:
     """Generate the formal minutes and independent evidence attachment."""
 
     from backend.services.meeting_document_service import generate_document_bundle
@@ -272,7 +527,23 @@ def generate_record_documents(meeting_id: str, template_id: str = "standard") ->
     records = meeting.get("generatedRecords")
     if not isinstance(records, dict) or not records.get("generated"):
         raise ValueError("请先生成会议纪要")
-    require_basis_gate(records, action="生成正式文件")
+    records = deepcopy(records)
+    gate, override = authorize_basis_override(
+        records,
+        meeting,
+        user or {},
+        action="生成正式文件",
+        reason=override_reason,
+    )
+    records["basisGate"] = gate
+    if override:
+        records.update({
+            "proofreadPassed": True,
+            "proofreadStatus": "human-authorized-exception",
+            "proofreadAt": override["time"],
+            "proofreadBy": override["operator"],
+            "humanReviewed": True,
+        })
 
     whisper_source = _whisper_source_from_meeting(meeting)
     realtime_source = _realtime_source_from_meeting(safe_id)
@@ -309,6 +580,10 @@ def generate_record_documents(meeting_id: str, template_id: str = "standard") ->
         if not current:
             raise KeyError("会议不存在")
         current_records = dict(current.get("generatedRecords") or {})
+        if override:
+            current_records["formalOverrides"] = records.get("formalOverrides") or []
+            current_records["latestFormalOverride"] = override
+            current["events"] = meeting.get("events") or current.get("events") or []
         current_records["documents"] = bundle
         current["generatedRecords"] = current_records
         current["updatedAt"] = _now_text()
@@ -366,6 +641,8 @@ def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
         records["proofreadPassed"] = False
         records["proofreadStatus"] = "needs_review"
         records["humanReviewed"] = False
+        records["formalOverrides"] = []
+        records.pop("latestFormalOverride", None)
         records["basisGate"] = basis_gate_status(records)
         records["updatedAt"] = _now_text()
         meeting["generatedRecords"] = records
@@ -377,10 +654,17 @@ def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
     return records
 
 
-def confirm_records(meeting_id: str, user: dict) -> dict:
+def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> dict:
     """Record an explicit human review before formal Word generation."""
 
     safe_id = _safe_meeting_id(meeting_id)
+    initial_meeting = _load_meetings().get(safe_id)
+    if not initial_meeting:
+        raise KeyError("会议不存在")
+    _check_meeting_access(user, initial_meeting)
+    initial_records = dict(initial_meeting.get("generatedRecords") or {})
+    if not initial_records.get("generated"):
+        raise ValueError("请先生成会议纪要")
     with MEETINGS_LOCK:
         meetings = _load_meetings()
         meeting = meetings.get(safe_id)
@@ -390,12 +674,18 @@ def confirm_records(meeting_id: str, user: dict) -> dict:
         records = dict(meeting.get("generatedRecords") or {})
         if not records.get("generated"):
             raise ValueError("请先生成会议纪要")
-        gate = require_basis_gate(records, action="确认纪要")
+        gate, override = authorize_basis_override(
+            records,
+            meeting,
+            user,
+            action="确认纪要",
+            reason=override_reason,
+        )
         now = _now_text()
         reviewer = user.get("name") or user.get("username") or ""
         records.update({
             "proofreadPassed": True,
-            "proofreadStatus": "human-approved",
+            "proofreadStatus": "human-authorized-exception" if override else "human-approved",
             "proofreadAt": now,
             "proofreadBy": reviewer,
             "humanReviewed": True,
@@ -406,11 +696,24 @@ def confirm_records(meeting_id: str, user: dict) -> dict:
         meetings[safe_id] = meeting
         _save_meetings(meetings)
         _invalidate_meetings_cache()
-        _save_version(safe_id, records, user, {"humanReviewed": True})
+        _save_version(
+            safe_id,
+            records,
+            user,
+            {"humanReviewed": True, "formalOverride": override or {}},
+            edit_summary="人工确认并放行证据异常" if override else "人工确认会议纪要",
+        )
     return records
 
 
-def _save_version(meeting_id: str, records: dict, user: dict, override: dict) -> dict:
+def _save_version(
+    meeting_id: str,
+    records: dict,
+    user: dict,
+    override: dict,
+    *,
+    edit_summary: str = "",
+) -> dict:
     _init_app_db()
     now = _now_text()
     editor = user.get("name") or user.get("username") or ""
@@ -427,7 +730,7 @@ def _save_version(meeting_id: str, records: dict, user: dict, override: dict) ->
                    (id, meeting_id, version, editor, edit_summary, records_json, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (version_id, meeting_id, version, editor,
-                 f"编辑了{', '.join(override.keys())}", _json_dumps(records), now),
+                 edit_summary or f"编辑了{', '.join(override.keys())}", _json_dumps(records), now),
             )
     return {"id": version_id, "meetingId": meeting_id, "version": version, "editor": editor, "createdAt": now}
 

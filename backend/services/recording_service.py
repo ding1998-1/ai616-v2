@@ -49,6 +49,8 @@ def extension_for_mime(mime: str, filename: str = "") -> str:
     mime = (mime or "").lower()
     if "mp4" in mime:
         return ".mp4"
+    if "webm" in mime:
+        return ".webm"
     if "ogg" in mime:
         return ".ogg"
     suffix = Path(filename or "").suffix.lower()

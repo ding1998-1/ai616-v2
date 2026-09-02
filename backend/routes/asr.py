@@ -38,11 +38,31 @@ from backend.config import (
     QWEN_ASR_URL,
 )
 from backend.deps import _get_user_from_auth_token, _resolve_meeting_role
-from backend.db import _db_load_transcripts_for_meeting, _load_meetings, _safe_meeting_id
+from backend.db import _check_meeting_access, _db_load_transcripts_for_meeting, _load_meetings, _safe_meeting_id
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["asr"])
+
+
+async def _require_asr_meeting(websocket: WebSocket, user: dict, raw_meeting_id: str) -> tuple[str, dict] | None:
+    if not str(raw_meeting_id or "").strip():
+        await websocket.send_json({"type": "error", "message": "会议链接缺少会议 ID"})
+        await websocket.close(code=4404)
+        return None
+    safe_id = _safe_meeting_id(raw_meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        await websocket.send_json({"type": "error", "message": "会议不存在"})
+        await websocket.close(code=4404)
+        return None
+    try:
+        _check_meeting_access(user, meeting)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "message": exc.detail})
+        await websocket.close(code=4403)
+        return None
+    return safe_id, meeting
 
 
 def _pcm16_rms(pcm_bytes: bytes) -> int:
@@ -123,6 +143,10 @@ async def meeting_asr_websocket(websocket: WebSocket):
         await websocket.close(code=4401)
         return
 
+    meeting_context = await _require_asr_meeting(websocket, user, websocket.query_params.get("meetingId") or "")
+    if not meeting_context:
+        return
+    meeting_id, _ = meeting_context
     if not DASHSCOPE_API_KEY:
         await websocket.send_json({
             "type": "error",
@@ -130,8 +154,6 @@ async def meeting_asr_websocket(websocket: WebSocket):
         })
         await websocket.close(code=1011)
         return
-
-    meeting_id = websocket.query_params.get("meetingId") or "meeting-gxq-fc-2026-02"
     meeting_title = websocket.query_params.get("meetingTitle") or ""
     agenda = websocket.query_params.get("agenda") or ""
     user_role = _resolve_meeting_role(user)
@@ -470,7 +492,10 @@ async def meeting_asr_qwen_websocket(websocket: WebSocket):
         await websocket.close(code=4401)
         return
 
-    meeting_id = websocket.query_params.get("meetingId") or "meeting-gxq-fc-2026-02"
+    meeting_context = await _require_asr_meeting(websocket, user, websocket.query_params.get("meetingId") or "")
+    if not meeting_context:
+        return
+    meeting_id, _ = meeting_context
     meeting_title = websocket.query_params.get("meetingTitle") or ""
     agenda = websocket.query_params.get("agenda") or ""
     user_role = _resolve_meeting_role(user)
@@ -906,10 +931,12 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
         await websocket.close(code=4401)
         return
 
-    meeting_id = websocket.query_params.get("meetingId") or ""
+    meeting_context = await _require_asr_meeting(websocket, user, websocket.query_params.get("meetingId") or "")
+    if not meeting_context:
+        return
+    meeting_id, meeting = meeting_context
     meeting_title = websocket.query_params.get("meetingTitle") or ""
     agenda = websocket.query_params.get("agenda") or ""
-    meeting = _load_meetings().get(_safe_meeting_id(meeting_id), {}) if meeting_id else {}
     meeting_title = meeting_title or str(meeting.get("title") or "")
     project = str(meeting.get("project") or "")
     user_role = _resolve_meeting_role(user)

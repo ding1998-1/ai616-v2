@@ -218,8 +218,9 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(basis["quotes"][0]["text"], source[0]["text"])
         self.assertNotIn("润色后的预算依据", [quote["text"] for quote in basis["quotes"]])
         self.assertEqual(records["coverage"]["evidenceSegmentCount"], 1)
-        self.assertFalse(records["proofreadPassed"])
-        self.assertIn("minutes_empty", records["qualityIssues"])
+        self.assertTrue(records["proofreadPassed"])
+        self.assertEqual(records["proofreadStatus"], "auto-evidence-verified")
+        self.assertTrue(records["minutes"])
 
     async def test_qwen_reduce_missing_basis_and_minutes_is_recovered_from_map(self):
         source = [
@@ -278,7 +279,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(records["todos"][0]["basis"]["evidenceValid"])
         self.assertEqual(records["todos"][0]["owner"], "张三")
         self.assertTrue(records["proofreadPassed"])
-        self.assertEqual(records["proofreadStatus"], "passed")
+        self.assertEqual(records["proofreadStatus"], "auto-evidence-verified")
 
     async def test_cross_segment_evidence_with_copy_noise_recovers_verbatim_rows(self):
         source = [
@@ -334,7 +335,10 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(records["basisRecovery"]["invalidMapEvidence"], 1)
         self.assertTrue(records["basisRecovery"]["unmatched"] >= 1)
-        self.assertIn("basis_invalid", records["qualityIssues"])
+        self.assertEqual(records["todos"], [])
+        self.assertEqual(records["qualityIssues"], [])
+        self.assertTrue(records["proofreadPassed"])
+        self.assertTrue(any(item["field"] == "todos" for item in records["evidenceExceptions"]))
 
     async def test_reduce_combined_decision_merges_two_verified_map_bases(self):
         source = [
@@ -374,7 +378,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(basis["sourceSegmentIds"], ["seg-1", "seg-2"])
         self.assertEqual(records["basisRecovery"]["unmatched"], 0)
 
-    async def test_unmatched_reduce_item_stays_needs_review(self):
+    async def test_unmatched_reduce_item_is_replaced_by_verified_map_content(self):
         source = [{
             "id": "seg-1",
             "fileId": "audio-a",
@@ -406,10 +410,14 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(records["basisRecovery"]["minutesGenerated"], 1)
         self.assertEqual(records["basisRecovery"]["unmatched"], 1)
-        self.assertFalse(records["decisions"][0]["basis"]["evidenceValid"])
-        self.assertIn("basis_recovery_unmatched", records["qualityIssues"])
-        self.assertFalse(records["proofreadPassed"])
-        self.assertEqual(records["proofreadStatus"], "needs_review")
+        self.assertEqual(records["decisions"][0]["content"], "同意调整预算")
+        self.assertTrue(records["decisions"][0]["basis"]["evidenceValid"])
+        self.assertTrue(any(
+            item["field"] == "decisions" and item["item"]["content"] == "完全无关的虚构事项"
+            for item in records["evidenceExceptions"]
+        ))
+        self.assertEqual(records["qualityIssues"], [])
+        self.assertTrue(records["proofreadPassed"])
 
     async def test_reduce_failure_retries_once_and_records_actual_calls(self):
         source = [{"id": "seg-1", "fileId": "audio-a", "start": 0, "end": 2, "text": "同意推进项目"}]

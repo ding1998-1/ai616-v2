@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from backend.dependencies import require_meeting, require_user
 from backend.db import _public_meeting
-from backend.models import MeetingPatchRequest, MeetingStageRequest, MeetingUpsertRequest
+from backend.models import FormalActionRequest, MeetingPatchRequest, MeetingStageRequest, MeetingUpsertRequest
 from backend.services.meeting_service import (
     archive_meeting,
     get_meeting,
@@ -65,13 +65,15 @@ async def patch_meeting_route(request: Request, meeting_id: str, body: MeetingPa
 async def update_stage_route(request: Request, meeting_id: str, body: MeetingStageRequest):
     user, _, _ = require_meeting(request, meeting_id)
     try:
-        meeting = update_stage(meeting_id, body.stage, body.phase, user)
+        meeting = update_stage(meeting_id, body.stage, body.phase, user, body.overrideReason)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except VoiceprintPreflightError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     response = {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
     if body.stage == "audit":
         from backend.services.asr_hotword_learning_service import learn_meeting_context
@@ -105,12 +107,18 @@ async def voiceprint_preflight_route(request: Request, meeting_id: str):
 
 
 @router.delete("/{meeting_id}")
-async def archive_meeting_route(request: Request, meeting_id: str):
+async def archive_meeting_route(
+    request: Request,
+    meeting_id: str,
+    body: FormalActionRequest | None = None,
+):
     user, _, _ = require_meeting(request, meeting_id)
     try:
-        meeting = archive_meeting(meeting_id, user)
+        meeting = archive_meeting(meeting_id, user, body.overrideReason if body else "")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"success": True, "meeting": _public_meeting(meeting, include_detail=False)}

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from backend.dependencies import require_meeting, require_user
 from backend.config import MEETING_FILES_DIR, RECORDS_PIPELINE
-from backend.models import MeetingMarkerRequest, MeetingRecordsUpdateRequest
+from backend.models import FormalActionRequest, MeetingMarkerRequest, MeetingRecordsUpdateRequest
 from backend.services.outcome_service import (
     add_marker,
     confirm_records,
@@ -18,6 +18,7 @@ from backend.services.outcome_service import (
     generate_records_v2,
     generate_record_documents,
     get_version,
+    record_generation_status,
     list_markers,
     list_todos,
     list_versions,
@@ -55,27 +56,51 @@ async def generate_meeting_records(request: Request, meeting_id: str):
     return {"success": True, "meetingId": meeting_id, "records": records}
 
 
+@router.get("/meetings/{meeting_id}/records/generation-status")
+async def meeting_records_generation_status(request: Request, meeting_id: str):
+    require_meeting(request, meeting_id)
+    return {"success": True, **record_generation_status(meeting_id)}
+
+
 @router.post("/meetings/{meeting_id}/records/confirm")
-async def confirm_meeting_records(request: Request, meeting_id: str):
+async def confirm_meeting_records(
+    request: Request,
+    meeting_id: str,
+    body: FormalActionRequest | None = None,
+):
     user, _, _ = require_meeting(request, meeting_id)
     try:
-        records = confirm_records(meeting_id, user)
+        records = confirm_records(meeting_id, user, (body.overrideReason if body else ""))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"success": True, "meetingId": meeting_id, "records": records}
 
 
 @router.post("/meetings/{meeting_id}/records/documents")
-async def generate_meeting_documents(request: Request, meeting_id: str, template_id: str = "standard"):
-    require_meeting(request, meeting_id)
+async def generate_meeting_documents(
+    request: Request,
+    meeting_id: str,
+    template_id: str = "standard",
+    body: FormalActionRequest | None = None,
+):
+    user, _, _ = require_meeting(request, meeting_id)
     try:
-        bundle = generate_record_documents(meeting_id, template_id=template_id)
+        bundle = generate_record_documents(
+            meeting_id,
+            template_id=template_id,
+            user=user,
+            override_reason=(body.overrideReason if body else ""),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"success": True, "meetingId": meeting_id, "documents": bundle}
 
 

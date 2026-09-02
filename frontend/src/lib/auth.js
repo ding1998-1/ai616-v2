@@ -41,7 +41,10 @@ export async function authFetch(url, options = {}) {
   const response = await fetch(url, { ...options, headers });
   const path = window.location.pathname.replace(/\/+$/, '');
   const externalMeetingEntry = path === '/mobile-recorder' || path === '/issue-collect';
-  if (response.status === 401 || (externalMeetingEntry && response.status === 403)) {
+  // 401 means the login token is invalid. 403 means the login is valid but
+  // this account cannot access the requested meeting; clearing the token on
+  // 403 caused mobile users to bounce back to the login page indefinitely.
+  if (response.status === 401) {
     notifyAuthExpired(response.status);
     const resetKey = 'ai616_external_auth_reset';
     if (externalMeetingEntry && window.sessionStorage.getItem(resetKey) !== window.location.href) {
