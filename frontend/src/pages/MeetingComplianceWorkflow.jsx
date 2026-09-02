@@ -64,6 +64,7 @@ const MINUTES_TEMPLATES = [
 ];
 
 const MINUTES_TEMPLATE_CATEGORIES = ['全部', '通用', '政企', '经营管理', '党建会议', '工程项目', '审计会议'];
+const DEFAULT_EVIDENCE_OVERRIDE_REASON = '已核对会议原始记录，确认本次操作并继续办理';
 
 function meetingDurationForType(type) {
   return CREATE_MEETING_TYPES.find(item => item.value === type)?.duration || 60;
@@ -607,6 +608,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [downloadTemplateOpen, setDownloadTemplateOpen] = useState(false);
   const [selectedMinutesTemplate, setSelectedMinutesTemplate] = useState('standard');
+  const [selectedDocumentKind, setSelectedDocumentKind] = useState('complete');
   const [minutesTemplateCategory, setMinutesTemplateCategory] = useState('全部');
   const [minutesTemplateQuery, setMinutesTemplateQuery] = useState('');
   const [minutesTemplateDownloading, setMinutesTemplateDownloading] = useState(false);
@@ -2901,7 +2903,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const requestEvidenceOverrideReason = (actionLabel, knownInvalidCount = recordsBasisGate.invalidCount || 0) => new Promise((resolve) => {
-    let reason = '';
+    let reason = DEFAULT_EVIDENCE_OVERRIDE_REASON;
     const invalidCount = knownInvalidCount;
     Modal.confirm({
       title: invalidCount ? `存在 ${invalidCount} 条待人工核验内容` : '存在待人工核验内容',
@@ -2918,7 +2920,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             rows={3}
             maxLength={300}
             showCount
-            placeholder="请填写人工确认理由（至少 8 个字）"
+            defaultValue={DEFAULT_EVIDENCE_OVERRIDE_REASON}
+            placeholder="可直接使用预置说明，也可按实际情况修改"
             onChange={(event) => { reason = event.target.value; }}
           />
         </div>
@@ -3056,13 +3059,21 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       const safeTitle = (meetingTitle || currentMeetingId).replace(/[\\/:*?"<>|]/g, '_');
       const link = document.createElement('a');
       link.href = url;
-      link.download = kind === 'evidence' ? `${safeTitle}_证据底稿.docx` : `${safeTitle}_会议纪要.docx`;
+      const kindLabels = {
+        minutes: '会议纪要',
+        record: '会议记录',
+        evidence: '证据核验附件',
+        complete: '完整会议材料',
+        formal: '完整会议材料',
+      };
+      const kindLabel = kindLabels[kind] || '会议材料';
+      link.download = `${safeTitle}_${kindLabel}.docx`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      message.success(kind === 'evidence' ? '已下载证据底稿 Word' : '已下载可编辑会议纪要 Word');
-      if (kind === 'formal') setDownloadTemplateOpen(false);
+      message.success(`已下载${kindLabel} Word`);
+      setDownloadTemplateOpen(false);
     } catch (error) {
       message.error(`Word 下载失败：${error.message}`);
     } finally {
@@ -6452,7 +6463,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         <div className="minutes-template-head">
           <div>
             <div className="minutes-template-title">选择会议纪要模板</div>
-            <div className="minutes-template-subtitle">选择模板并下载 Word，可预览模板效果</div>
+            <div className="minutes-template-subtitle">选择材料类型与纪要模板，四类文件均来自同一次生成快照</div>
           </div>
         </div>
         <div className="minutes-template-toolbar">
@@ -6548,10 +6559,28 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           </section>
         </div>
         <div className="minutes-template-footer">
-          <div>最近使用：<Tag color="blue">{MINUTES_TEMPLATES.find(item => item.id === selectedMinutesTemplate)?.name}</Tag></div>
+          <div className="minutes-document-kind" role="radiogroup" aria-label="下载材料类型">
+            {[
+              ['complete', '完整会议材料', '推荐'],
+              ['minutes', '会议纪要', ''],
+              ['record', '会议记录', ''],
+              ['evidence', '证据核验附件', ''],
+            ].map(([kind, label, badge]) => (
+              <button
+                key={kind}
+                type="button"
+                role="radio"
+                aria-checked={selectedDocumentKind === kind}
+                className={selectedDocumentKind === kind ? 'active' : ''}
+                onClick={() => setSelectedDocumentKind(kind)}
+              >
+                {label}{badge ? <em>{badge}</em> : null}
+              </button>
+            ))}
+          </div>
           <Space>
             <Button onClick={() => setDownloadTemplateOpen(false)}>取消</Button>
-            <Button type="primary" icon={<DownloadOutlined />} loading={minutesTemplateDownloading} onClick={() => downloadArchiveDocx('formal', selectedMinutesTemplate)}>
+            <Button type="primary" icon={<DownloadOutlined />} loading={minutesTemplateDownloading} onClick={() => downloadArchiveDocx(selectedDocumentKind, selectedMinutesTemplate)}>
               下载 Word
             </Button>
           </Space>

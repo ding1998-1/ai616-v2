@@ -2904,7 +2904,12 @@
 .minutes-redhead-body > p { text-indent: 2em; }
 .minutes-redhead-closing { margin-top: 26px; font-size: 11px; line-height: 1.65; }
 .minutes-redhead-closing p { margin: 0; border-bottom: 1px solid #8f96a0; }
-.minutes-template-footer { position: relative; z-index: 2; min-height: 0; padding: 14px 28px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e8edf4; background: #fff; box-shadow: 0 -6px 18px rgba(32, 54, 85, .035); }
+.minutes-template-footer { position: relative; z-index: 2; min-height: 0; padding: 10px 28px; display: flex; justify-content: space-between; align-items: center; gap: 16px; border-top: 1px solid #e8edf4; background: #fff; box-shadow: 0 -6px 18px rgba(32, 54, 85, .035); }
+.minutes-document-kind { min-width: 0; display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; }
+.minutes-document-kind::-webkit-scrollbar { display: none; }
+.minutes-document-kind button { flex: 0 0 auto; height: 34px; padding: 0 12px; border: 1px solid #dce4ef; border-radius: 8px; background: #fff; color: #52627a; font-size: 13px; cursor: pointer; }
+.minutes-document-kind button.active { color: #0868e8; border-color: #75adff; background: #eff6ff; font-weight: 650; }
+.minutes-document-kind em { margin-left: 5px; padding: 1px 5px; border-radius: 999px; background: #dff7e8; color: #18864b; font-size: 10px; font-style: normal; }
 
 @media (max-height: 820px) {
   .minutes-template-modal .ant-modal-container { height: calc(100dvh - 24px); max-height: calc(100dvh - 24px); }

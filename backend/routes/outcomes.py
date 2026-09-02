@@ -107,7 +107,7 @@ async def generate_meeting_documents(
 @router.get("/meetings/{meeting_id}/records/documents/{kind}")
 async def download_meeting_document(request: Request, meeting_id: str, kind: str):
     require_meeting(request, meeting_id)
-    if kind not in {"formal", "evidence"}:
+    if kind not in {"formal", "minutes", "record", "evidence", "complete"}:
         raise HTTPException(status_code=404, detail="文档类型不存在")
     records = get_records(meeting_id).get("records") or {}
     artifact = ((records.get("documents") or {}).get(kind) or {})

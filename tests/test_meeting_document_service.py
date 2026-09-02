@@ -182,7 +182,7 @@ def test_formal_document_requires_proofread(tmp_path: Path):
         )
 
 
-def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
+def test_document_bundle_writes_four_independent_docx_files_from_one_snapshot(tmp_path: Path):
     bundle = generate_document_bundle(
         "m1", {
             "title": "预算例会",
@@ -197,9 +197,13 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
         _records(), _chronicle(), tmp_path, timestamp="20260821160000",
     )
     formal_path = Path(bundle["formal"]["path"])
+    minutes_path = Path(bundle["minutes"]["path"])
+    record_path = Path(bundle["record"]["path"])
     evidence_path = Path(bundle["evidence"]["path"])
-    assert formal_path.exists() and evidence_path.exists()
-    assert formal_path != evidence_path
+    complete_path = Path(bundle["complete"]["path"])
+    assert all(path.exists() for path in (minutes_path, record_path, evidence_path, complete_path))
+    assert len({minutes_path, record_path, evidence_path, complete_path}) == 4
+    assert formal_path == complete_path
     assert bundle["coverage"]["coverageRatio"] == 1.0
     from docx import Document
 
@@ -209,10 +213,13 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
         + [cell.text for table in formal_doc.tables for row in table.rows for cell in row.cells]
     )
     evidence_text = "\n".join(paragraph.text for paragraph in Document(evidence_path).paragraphs)
-    assert formal_path.name == "m1_会议纪要及记录_20260821160000.docx"
+    assert formal_path.name == "预算例会_完整会议材料_20260821160000.docx"
+    assert minutes_path.name == "预算例会_会议纪要_20260821160000.docx"
+    assert record_path.name == "预算例会_会议记录_20260821160000.docx"
+    assert evidence_path.name == "预算例会_证据核验附件_20260821160000.docx"
     assert "会 议 纪 要" in formal_text
     assert "会 议 记 录" in formal_text
-    assert len(formal_doc.sections) == 2
+    assert len(formal_doc.sections) == 3
     assert len(formal_doc.tables) == 2
     assert "会议性质" in formal_text and "办公会" in formal_text
     assert "会议主题" in formal_text and "预算例会" in formal_text
@@ -223,11 +230,24 @@ def test_document_bundle_writes_two_independent_docx_files(tmp_path: Path):
     assert "记录人" in formal_text and "李四" in formal_text
     assert "参加单位及人员：王五、赵六" in formal_text
     assert "编制人" in formal_text
-    assert "生成参数快照" not in formal_text
-    assert "这是一条应保留的完整原始证据长句" not in formal_text
+    assert "生成参数快照" in formal_text
+    assert "这是一条应保留的完整原始证据长句" in formal_text
     assert "这是一条应保留的完整原始证据长句" in evidence_text
     assert "背景杂音" in evidence_text
     assert "没有原文支持的虚构决议" in evidence_text
+    minutes_text = "\n".join(
+        [paragraph.text for paragraph in Document(minutes_path).paragraphs]
+        + [cell.text for table in Document(minutes_path).tables for row in table.rows for cell in row.cells]
+    )
+    record_text = "\n".join(
+        [paragraph.text for paragraph in Document(record_path).paragraphs]
+        + [cell.text for table in Document(record_path).tables for row in table.rows for cell in row.cells]
+    )
+    assert "会 议 记 录" not in minutes_text
+    assert "生成参数快照" not in minutes_text
+    assert "这是一条应保留的完整原始证据长句" not in minutes_text
+    assert "会 议 记 录" in record_text
+    assert "会 议 纪 要" not in record_text
     with ZipFile(formal_path) as package:
         assert "customXml/item1.xml" in package.namelist()
         assert "word/theme/theme1.xml" in package.namelist()
@@ -243,6 +263,35 @@ def test_document_template_changes_real_word_heading(tmp_path: Path):
     text = "\n".join(paragraph.text for paragraph in Document(bundle["formal"]["path"]).paragraphs)
     assert "三重一大会议纪要" in text
     assert bundle["templateId"] == "major"
+
+
+def test_formal_word_prefers_formal_summary_and_filters_non_decisions(tmp_path: Path):
+    records = _records()
+    records["minutes"][0]["formalSummary"] = "经讨论，会议明确按节点推进预算材料复核。"
+    records["minutes"][0]["keyPoints"] = ["嗯那个原始口语不应进入正式纪要"]
+    records["decisions"] = [
+        {"content": "同意按节点推进。", "outcomeType": "decision"},
+        {"content": "建议后续关注。", "outcomeType": "suggestion"},
+    ]
+    bundle = generate_document_bundle(
+        "m-formal",
+        {"title": "正式表达测试会"},
+        records,
+        _chronicle(),
+        tmp_path,
+        timestamp="20260902120000",
+    )
+    from docx import Document
+
+    document = Document(bundle["minutes"]["path"])
+    text = "\n".join(
+        [paragraph.text for paragraph in document.paragraphs]
+        + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+    )
+    assert "经讨论，会议明确按节点推进预算材料复核" in text
+    assert "嗯那个原始口语" not in text
+    assert "同意按节点推进" in text
+    assert "建议后续关注" not in text
 
 
 def test_enterprise_redhead_template_preserves_artwork_and_appends_record(tmp_path: Path):
@@ -277,13 +326,13 @@ def test_enterprise_redhead_template_preserves_artwork_and_appends_record(tmp_pa
     combined_text = f"{paragraph_text}\n{table_text}"
     assert bundle["templateId"] == "enterprise"
     assert bundle["templateTitle"] == "政企红头会议纪要"
-    assert len(document.sections) == 2
+    assert len(document.sections) == 3
     assert len(document.tables) == 1
     assert "示范集团有限公司" in combined_text
     assert "会议议题：重点项目推进会" in combined_text
     assert "一、预算调整" in combined_text
-    assert "会议决议" in combined_text
-    assert "风险与披露事项" in combined_text
+    assert "会议议定事项" in combined_text
+    assert "需要关注的事项" in combined_text
     assert "待办事项" in combined_text
     assert "会 议 记 录" in combined_text
     assert "集团办公室" in combined_text
@@ -341,5 +390,5 @@ def test_combined_formal_word_expands_action_rows_without_truncation(tmp_path: P
     assert "落实第7项工作并提交完整说明材料" in minutes_table.rows[-1].cells[1].text
     assert minutes_table.rows[-1].cells[2].text == "责任人7"
     assert minutes_table.rows[-1].cells[3].text == "2026-09-17"
-    assert len(document.sections) == 2
+    assert len(document.sections) == 3
     assert len(document.tables) == 2

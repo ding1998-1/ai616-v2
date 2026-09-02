@@ -34,7 +34,7 @@ from backend.services.meeting_proofread_service import (
 )
 
 
-DOCUMENT_SERVICE_VERSION = "meeting-document-v4-template-switch"
+DOCUMENT_SERVICE_VERSION = "meeting-document-v5-four-artifacts"
 GAP_THRESHOLD_SECONDS = 120.0
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 FORMAL_MINUTES_TEMPLATE = (
@@ -249,10 +249,27 @@ def _summary_sections(records: Mapping[str, Any]) -> tuple[list[Any], list[Any],
         todos = []
     else:
         conclusions, risks, todos = [], [], []
+    decision_rows = list(records.get("decisions") or conclusions)
+    decision_rows = [
+        item for item in decision_rows
+        if not isinstance(item, Mapping)
+        or not _compact_text(item.get("outcomeType") or item.get("outcome_type"))
+        or _compact_text(item.get("outcomeType") or item.get("outcome_type")).lower()
+        in {"decision", "principle"}
+    ]
+    todo_rows = list(records.get("todos") or todos)
+    todo_rows = [
+        item for item in todo_rows
+        if not isinstance(item, Mapping)
+        or (
+            _item_content(item, "task", "content", "title", "summary")
+            and (_compact_text(item.get("owner")) or _compact_text(item.get("deadline")))
+        )
+    ]
     return (
-        list(records.get("decisions") or conclusions),
+        decision_rows,
         list(records.get("risks") or risks) + list(records.get("disclosures") or []),
-        list(records.get("todos") or todos),
+        todo_rows,
     )
 
 
@@ -607,7 +624,7 @@ def _cjk_font_name(role: str = "body") -> str:
     if configured:
         return configured
     if platform.system() == "Darwin":
-        return {"title": "FZCuSong-B09S", "heading": "Alibaba PuHuiTi", "body": "STFangsong"}.get(role, "STFangsong")
+        return "Arial Unicode MS"
     return {"title": "Source Han Serif CN", "heading": "Source Han Sans CN", "body": "Source Han Serif CN"}.get(role, "Source Han Serif CN")
 
 
@@ -822,6 +839,16 @@ def _minute_discussion_points(item: Any, records: Mapping[str, Any]) -> list[str
 
     if not isinstance(item, Mapping):
         return []
+    formal_summary = item.get("formalSummary") or item.get("formal_summary")
+    formal_items = formal_summary if isinstance(formal_summary, list) else [formal_summary]
+    formal_points = [
+        _compact_text(point, limit=1600)
+        for point in formal_items
+        if _compact_text(point)
+    ]
+    if formal_points:
+        return formal_points[:3]
+
     explicit = [
         _compact_text(point, limit=1600)
         for point in item.get("keyPoints") or item.get("key_points") or []
@@ -867,6 +894,28 @@ def _minute_discussion_points(item: Any, records: Mapping[str, Any]) -> list[str
 
 
 def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
+    chronicle_rows = [
+        row for row in records.get("_chronicleRows") or [] if isinstance(row, Mapping)
+    ]
+    if chronicle_rows:
+        lines: list[tuple[str, bool]] = [("一、会议过程记录", True)]
+        current_agenda = ""
+        for row in chronicle_rows:
+            agenda = _compact_text(row.get("agenda") or row.get("agendaTitle"))
+            if agenda and agenda != current_agenda:
+                current_agenda = agenda
+                lines.append((f"议题：{agenda}", True))
+            time_text = _compact_text(row.get("time") or row.get("timeRange") or "未标注")
+            speaker = _compact_text(row.get("speaker") or "说话人未识别")
+            text = _compact_text(
+                row.get("correctedText") or row.get("rawText") or row.get("text"),
+                limit=2400,
+            )
+            if text:
+                lines.append((f"[{time_text}] {speaker}：{text}", False))
+        if len(lines) > 1:
+            return lines
+
     decisions, risks, todos = _summary_sections(records)
     lines: list[tuple[str, bool]] = []
     minutes = [
@@ -1060,11 +1109,12 @@ def _enterprise_minutes_blocks(
         for item in summary or ["暂无已确认的会议内容。"]:
             blocks.append(("body", item))
 
+    formal_decisions, attention_items, formal_todos = _summary_sections(records)
     for title, items, fields in (
-        ("会议决议", list(records.get("decisions") or []), ("content", "decision", "description", "title", "summary")),
+        ("会议议定事项", formal_decisions, ("content", "decision", "description", "title", "summary")),
         (
-            "风险与披露事项",
-            [*list(records.get("risks") or []), *list(records.get("disclosures") or [])],
+            "需要关注的事项",
+            attention_items,
             ("content", "description", "title", "summary"),
         ),
     ):
@@ -1077,7 +1127,7 @@ def _enterprise_minutes_blocks(
             if content:
                 blocks.append(("body", f"{item_index}. {content}"))
 
-    todos = list(records.get("todos") or [])
+    todos = formal_todos
     if todos:
         blocks.append(("heading", f"{_chinese_section_number(section_index)}、待办事项"))
         for item_index, item in enumerate(todos, 1):
@@ -1226,13 +1276,13 @@ def _fill_enterprise_minutes_template(
 
 
 def _set_template_run_font(run: Any, *, size: float = 10.5, bold: bool = False) -> None:
-    """Apply the source template's Microsoft YaHei typography explicitly."""
+    """Apply a portable Chinese font while preserving template hierarchy."""
 
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Pt
 
-    font_name = "Microsoft YaHei"
+    font_name = _cjk_font_name("heading" if bold else "body")
     run.font.name = font_name
     run.font.size = Pt(size)
     run.bold = bold
@@ -1282,18 +1332,17 @@ def _template_minutes_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]
             if content:
                 lines.append((f"{point_index}. {content}", False))
 
-    decisions = list(records.get("decisions") or [])
+    decisions, attention_items, todos = _summary_sections(records)
     if decisions:
-        lines.append(("会议决议：", True))
+        lines.append(("会议议定事项：", True))
         for index, item in enumerate(decisions, 1):
             content = _item_content(item, "content", "decision", "description", "title", "summary")
             if content:
                 lines.append((f"{index}. {content}", False))
 
-    risks, disclosures = list(records.get("risks") or []), list(records.get("disclosures") or [])
-    if risks or disclosures:
-        lines.append(("风险与披露事项：", True))
-        for index, item in enumerate([*risks, *disclosures], 1):
+    if attention_items:
+        lines.append(("需要关注的事项：", True))
+        for index, item in enumerate(attention_items, 1):
             content = _item_content(item, "content", "description", "title", "summary")
             if content:
                 lines.append((f"{index}. {content}", False))
@@ -1349,7 +1398,7 @@ def _fill_minutes_template(
         run = paragraph.add_run(text)
         _set_template_run_font(run, bold=bold)
 
-    todos = list(records.get("todos") or [])
+    _, _, todos = _summary_sections(records)
     required_rows = max(5, len(todos))
     while len(table.rows) < 7 + required_rows:
         table._tbl.append(deepcopy(table.rows[-1]._tr))
@@ -1378,6 +1427,8 @@ def _append_detailed_record_section(
     doc: Any,
     meeting: Mapping[str, Any],
     records: Mapping[str, Any],
+    *,
+    new_section: bool = True,
 ) -> None:
     """Append the previous formal meeting-record layout as a new section."""
 
@@ -1388,7 +1439,7 @@ def _append_detailed_record_section(
     from docx.oxml.ns import qn
     from docx.shared import Cm, Pt
 
-    section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+    section = doc.add_section(WD_SECTION_START.NEW_PAGE) if new_section else doc.sections[0]
     section.page_width = Cm(21)
     section.page_height = Cm(29.7)
     section.top_margin = Cm(1.6)
@@ -1484,8 +1535,9 @@ def _write_formal_docx(
     records: Mapping[str, Any],
     *,
     template_id: str = "standard",
+    include_record: bool = False,
 ) -> None:
-    """Write one formal DOCX containing concise minutes and the detailed record."""
+    """Write a formal minutes DOCX, optionally followed by the detailed record."""
 
     try:
         from docx import Document
@@ -1497,35 +1549,113 @@ def _write_formal_docx(
     if not template_path.is_file():
         raise RuntimeError(f"会议纪要模板不存在：{template_path}")
     doc = Document(template_path)
+    # Retained templates may reference fonts unavailable on the rendering host.
+    # Normalize existing runs before filling them so Chinese labels never render as boxes.
+    for paragraph in doc.paragraphs:
+        for run in paragraph.runs:
+            _set_named_run_font(
+                run,
+                _cjk_font_name("heading" if run.bold else "body"),
+                size=run.font.size.pt if run.font.size else 10.5,
+                bold=bool(run.bold),
+            )
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        _set_named_run_font(
+                            run,
+                            _cjk_font_name("heading" if run.bold else "body"),
+                            size=run.font.size.pt if run.font.size else 10.5,
+                            bold=bool(run.bold),
+                        )
     if template_id == "enterprise":
         _fill_enterprise_minutes_template(doc, meeting, records)
     else:
         _fill_minutes_template(doc, meeting, records, template_id=template_id)
-    _append_detailed_record_section(doc, meeting, records)
+    if include_record:
+        _append_detailed_record_section(doc, meeting, records)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(path)
 
 
-def _write_evidence_docx(path: Path, meeting: Mapping[str, Any], records: Mapping[str, Any], manifest: Mapping[str, Any]) -> None:
+def _write_record_docx(
+    path: Path,
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+) -> None:
+    """Write the faithful meeting record as an independent document."""
+
     try:
         from docx import Document
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("python-docx is required to generate meeting documents") from exc
     doc = Document()
+    _append_detailed_record_section(doc, meeting, records, new_section=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+
+
+def _write_evidence_docx(
+    path: Path,
+    meeting: Mapping[str, Any],
+    records: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    doc: Any | None = None,
+) -> None:
+    try:
+        from docx import Document
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("python-docx is required to generate meeting documents") from exc
+    standalone = doc is None
+    if standalone:
+        doc = Document()
+    else:
+        from docx.enum.section import WD_SECTION_START
+        from docx.shared import Cm
+
+        section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+        section.page_width = Cm(21)
+        section.page_height = Cm(29.7)
+        section.top_margin = Cm(2)
+        section.right_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2)
+        section.header.is_linked_to_previous = False
+        section.footer.is_linked_to_previous = False
+        section.header.paragraphs[0].text = ""
+        section.footer.paragraphs[0].text = ""
     title = _compact_text(meeting.get("title") or meeting.get("name") or "会议")
-    _configure_document(doc, title=f"{title}｜证据底稿")
+    if standalone:
+        _configure_document(doc, title=f"{title}｜证据底稿")
+
+    def evidence_heading(text: str) -> None:
+        try:
+            doc.add_heading(text, level=1)
+        except KeyError:
+            paragraph = doc.add_paragraph()
+            run = paragraph.add_run(text)
+            _set_run_font(run, size=14, bold=True, role="heading")
+
     heading = doc.add_paragraph()
     run = heading.add_run(f"{title}｜证据底稿")
     _set_run_font(run, size=20, bold=True, color="0B2545")
     _docx_paragraph(doc, "本附件保留全量有效转写、剔除行和质量标记；正式文件只引用蒸馏结果。", size=10)
-    doc.add_heading("一、质量标记", level=1)
+    evidence_heading("一、质量标记")
     flags = list(manifest.get("qualityFlags") or [])
     if flags:
         for flag in flags:
-            _docx_paragraph(doc, f"{_compact_text(flag.get('type') or 'quality')}：{_compact_text(flag.get('label') or flag.get('reason') or flag.get('segmentId') or '')}", style="List Bullet", size=9)
+            _docx_paragraph(
+                doc,
+                f"{_compact_text(flag.get('type') or 'quality')}：{_compact_text(flag.get('label') or flag.get('reason') or flag.get('segmentId') or '')}",
+                style="List Bullet" if standalone else None,
+                size=9,
+            )
     else:
         _docx_paragraph(doc, "未发现断档、噪音或空白标记", size=9)
-    doc.add_heading("二、全量有效转写", level=1)
+    evidence_heading("二、全量有效转写")
     rows = list(manifest.get("rows") or [])
     for row in rows:
         _docx_paragraph(doc, f"[{_compact_text(row.get('time') or '未标注')}] {_compact_text(row.get('speaker') or '说话人未识别')}：{_as_text(row.get('rawText'))}", size=9)
@@ -1534,24 +1664,24 @@ def _write_evidence_docx(path: Path, meeting: Mapping[str, Any], records: Mappin
             _docx_paragraph(doc, f"校对稿：{corrected}", size=9)
     if not rows:
         _docx_paragraph(doc, "（暂无有效转写）", size=9)
-    doc.add_heading("三、已剔除行（保留审计）", level=1)
+    evidence_heading("三、已剔除行（保留审计）")
     excluded = list(manifest.get("excludedRows") or [])
     for row in excluded:
         _docx_paragraph(doc, f"[{_compact_text(row.get('time') or '未标注')}] {_compact_text(row.get('speaker') or '说话人未识别')}：{_as_text(row.get('rawText'))}（原因：{_compact_text(row.get('excludeReason') or '标记为噪音/无效')}）", size=9)
     if not excluded:
         _docx_paragraph(doc, "（无剔除行）", size=9)
-    doc.add_heading("四、Map 分段边界", level=1)
+    evidence_heading("四、Map 分段边界")
     for boundary in manifest.get("mapBoundaries") or []:
         _docx_paragraph(doc, f"{_compact_text(boundary.get('chunkId') or '未命名')}｜文件 {_compact_text(boundary.get('fileId') or '未标注')}｜{_compact_text(boundary.get('timeRange') or '未标注')}｜{len(boundary.get('sourceSegmentIds') or [])} 个分段", size=9)
     if not manifest.get("mapBoundaries"):
         _docx_paragraph(doc, "（未提供 Map 分段信息）", size=9)
-    doc.add_heading("五、正式条目反向索引", level=1)
+    evidence_heading("五、正式条目反向索引")
     reverse = manifest.get("reverseIndex") or {}
     for segment_id, entries in reverse.items():
         _docx_paragraph(doc, f"{segment_id}：{', '.join(_as_text(item) for item in entries)}", size=9)
     if not reverse:
         _docx_paragraph(doc, "（暂无带依据的正式条目）", size=9)
-    doc.add_heading("六、系统自动排除的 AI 表述", level=1)
+    evidence_heading("六、系统自动排除的 AI 表述")
     exceptions = list(manifest.get("evidenceExceptions") or [])
     for exception in exceptions:
         item = exception.get("item") if isinstance(exception.get("item"), Mapping) else {}
@@ -1564,7 +1694,7 @@ def _write_evidence_docx(path: Path, meeting: Mapping[str, Any], records: Mappin
         )
     if not exceptions:
         _docx_paragraph(doc, "（无自动排除表述）", size=9)
-    doc.add_heading("七、生成参数快照", level=1)
+    evidence_heading("七、生成参数快照")
     snapshot = _snapshot(records, list(manifest.get("allRows") or []))
     for key in ("provider", "model", "pipelineVersion", "promptVersion", "schemaVersion", "glossaryVersion", "chunkPolicy", "inputSha256", "segmentCount", "generatedAt"):
         if key in snapshot and snapshot[key] not in (None, ""):
@@ -1586,7 +1716,7 @@ def generate_document_bundle(
     timestamp: str | None = None,
     template_id: str = "standard",
 ) -> dict[str, Any]:
-    """Generate the formal document and independent evidence attachment."""
+    """Generate four Word artifacts from one immutable generation snapshot."""
 
     if require_proofread and not records_are_proofread(records):
         raise ProofreadRequiredError("正式文件必须在校对通过后生成")
@@ -1594,19 +1724,67 @@ def generate_document_bundle(
     snapshot = _snapshot(records, rows)
     manifest = build_evidence_manifest(records, chronicle, file_offsets=file_offsets, markers=markers)
     stamp = timestamp or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", _as_text(meeting_id) or "meeting")
+    safe_title = re.sub(
+        r"[\\/:*?\"<>|]+",
+        "_",
+        _compact_text(meeting.get("title") or meeting.get("name") or meeting_id) or "会议",
+    ).strip(" ._")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    formal_path = output_path / f"{safe_id}_会议纪要及记录_{stamp}.docx"
-    evidence_path = output_path / f"{safe_id}_证据底稿_{stamp}.docx"
+    minutes_path = output_path / f"{safe_title}_会议纪要_{stamp}.docx"
+    record_path = output_path / f"{safe_title}_会议记录_{stamp}.docx"
+    evidence_path = output_path / f"{safe_title}_证据核验附件_{stamp}.docx"
+    complete_path = output_path / f"{safe_title}_完整会议材料_{stamp}.docx"
     template_id = template_id if template_id in _FORMAL_TEMPLATE_TITLES else "standard"
+    document_records = {
+        **dict(records),
+        "generationSnapshot": snapshot,
+        "_chronicleRows": rows,
+    }
     _write_formal_docx(
-        formal_path,
+        minutes_path,
         meeting,
-        {**dict(records), "generationSnapshot": snapshot},
+        document_records,
         template_id=template_id,
     )
-    _write_evidence_docx(evidence_path, meeting, {**dict(records), "generationSnapshot": snapshot}, manifest)
+    _write_record_docx(
+        record_path,
+        meeting,
+        document_records,
+    )
+    _write_evidence_docx(evidence_path, meeting, document_records, manifest)
+    _write_formal_docx(
+        complete_path,
+        meeting,
+        document_records,
+        template_id=template_id,
+        include_record=True,
+    )
+    try:
+        from docx import Document
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("python-docx is required to generate meeting documents") from exc
+    complete_doc = Document(complete_path)
+    _write_evidence_docx(
+        complete_path,
+        meeting,
+        document_records,
+        manifest,
+        doc=complete_doc,
+    )
+
+    def artifact(kind: str, path: Path) -> dict[str, Any]:
+        return DocumentArtifact(
+            kind=kind,
+            path=str(path),
+            filename=path.name,
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        ).to_dict()
+
+    minutes_artifact = artifact("minutes", minutes_path)
+    record_artifact = artifact("record", record_path)
+    evidence_artifact = artifact("evidence", evidence_path)
+    complete_artifact = artifact("complete", complete_path)
     return {
         "serviceVersion": DOCUMENT_SERVICE_VERSION,
         "meetingId": str(meeting_id),
@@ -1615,18 +1793,12 @@ def generate_document_bundle(
         "templateId": template_id,
         "templateTitle": _FORMAL_TEMPLATE_TITLES[template_id],
         "evidenceManifest": manifest,
-        "formal": DocumentArtifact(
-            kind="formal",
-            path=str(formal_path),
-            filename=formal_path.name,
-            sha256=hashlib.sha256(formal_path.read_bytes()).hexdigest(),
-        ).to_dict(),
-        "evidence": DocumentArtifact(
-            kind="evidence",
-            path=str(evidence_path),
-            filename=evidence_path.name,
-            sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
-        ).to_dict(),
+        "minutes": minutes_artifact,
+        "record": record_artifact,
+        "evidence": evidence_artifact,
+        "complete": complete_artifact,
+        # Backward compatibility for archived clients that still request `formal`.
+        "formal": {**complete_artifact, "kind": "formal"},
     }
 
 
