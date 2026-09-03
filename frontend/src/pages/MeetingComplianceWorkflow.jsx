@@ -65,6 +65,54 @@ const MINUTES_TEMPLATES = [
 
 const MINUTES_TEMPLATE_CATEGORIES = ['全部', '通用', '政企', '经营管理', '党建会议', '工程项目', '审计会议'];
 const DEFAULT_EVIDENCE_OVERRIDE_REASON = '已核对会议原始记录，确认本次操作并继续办理';
+const EMPTY_EXPORT_VALUES = new Set(['', '-', '--', '待确认', '待定', '未知', '未明确', '未指定', '暂无', '待补充']);
+
+function exportPreflightWarnings(meeting, templateId, generatedRecords = {}) {
+  const values = {
+    会议地点: meeting?.location || meeting?.venue || meeting?.address,
+    主持人: meeting?.host || meeting?.moderator || meeting?.chairperson,
+    记录人: meeting?.recorder || meeting?.secretary,
+    参会人员: meeting?.participants || meeting?.attendees || meeting?.participantNames,
+  };
+  const missingFields = Object.entries(values).filter(([, value]) => {
+    if (Array.isArray(value)) return value.length === 0;
+    return EMPTY_EXPORT_VALUES.has(String(value || '').trim());
+  }).map(([label]) => label);
+  const meetingType = String(meeting?.type || meeting?.meetingType || '普通企业会议');
+  const templateRules = {
+    party: ['党委', '党组'],
+    board: ['董事'],
+    major: ['三重一大'],
+    project: ['项目', '工程'],
+    engineering: ['工程', '项目'],
+    audit: ['审计'],
+  };
+  const expected = templateRules[templateId] || [];
+  const missingFormalSummaries = (generatedRecords?.minutes || []).filter(item => {
+    const summaries = Array.isArray(item?.formalSummary) ? item.formalSummary : [item?.formalSummary];
+    return !summaries.some(value => String(value || '').trim());
+  }).map(item => item?.agenda || '未命名议题');
+  const formalMinutesMissing = !(generatedRecords?.minutes || []).length
+    && (generatedRecords?.mapResults || []).some(item => (item?.output?.topics || []).length > 0);
+  return {
+    missingFields,
+    missingFormalSummaries,
+    formalMinutesMissing,
+    meetingType,
+    templateMismatch: expected.length > 0 && !expected.some(keyword => meetingType.includes(keyword)),
+  };
+}
+
+function recommendedTemplateForMeetingType(meetingType) {
+  const value = String(meetingType || '');
+  if (/党委|党组/.test(value)) return 'party';
+  if (/董事/.test(value)) return 'board';
+  if (/三重一大/.test(value)) return 'major';
+  if (/审计/.test(value)) return 'audit';
+  if (/工程/.test(value)) return 'engineering';
+  if (/项目/.test(value)) return 'project';
+  return 'standard';
+}
 
 function meetingDurationForType(type) {
   return CREATE_MEETING_TYPES.find(item => item.value === type)?.duration || 60;
@@ -3031,6 +3079,45 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const downloadArchiveDocx = async (kind = 'formal', templateId = 'standard') => {
     setMinutesTemplateDownloading(true);
     try {
+      const meetingDetail = await authFetchJson(`/api/meetings/${currentMeetingId}`);
+      const exportMeeting = meetingDetail?.meeting || {};
+      const preflight = exportPreflightWarnings(exportMeeting, templateId, meetingGeneratedRecords);
+      if (preflight.missingFields.length || preflight.missingFormalSummaries.length || preflight.formalMinutesMissing || preflight.templateMismatch) {
+        const shouldContinue = await new Promise(resolve => {
+          Modal.confirm({
+            title: '正式文件导出前检查',
+            width: 520,
+            okText: '确认继续导出',
+            cancelText: '返回补充',
+            content: (
+              <div style={{ display: 'grid', gap: 10, lineHeight: 1.7 }}>
+                {preflight.missingFields.length > 0 && (
+                  <div>以下信息尚未补充：<strong>{preflight.missingFields.join('、')}</strong>。</div>
+                )}
+                {preflight.templateMismatch && (
+                  <div>
+                    当前会议性质为“<strong>{preflight.meetingType}</strong>”，与“
+                    <strong>{MINUTES_TEMPLATES.find(item => item.id === templateId)?.name || '所选模板'}</strong>”不一致。
+                  </div>
+                )}
+                {preflight.missingFormalSummaries.length > 0 && (
+                  <div>
+                    有 <strong>{preflight.missingFormalSummaries.length}</strong> 个议题尚未生成正式书面表述，
+                    继续导出会显示“待生成正式纪要表述”。请先重新生成纪要，避免输出不可交付文件。
+                  </div>
+                )}
+                {preflight.formalMinutesMissing && (
+                  <div><strong>正式议题为空</strong>，但分段提取结果中存在议题。请先重新生成纪要，禁止直接导出空壳文件。</div>
+                )}
+                <div style={{ color: '#64748b' }}>继续导出会保留缺失项提示；建议返回会议信息页补充后再生成正式文件。</div>
+              </div>
+            ),
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!shouldContinue) return;
+      }
       let overrideReason = '';
       if (!recordsBasisGate.ready) {
         overrideReason = await requestEvidenceOverrideReason('生成正式 Word');
@@ -5669,7 +5756,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           <Text strong style={{ color: palette.ink }}><FileDoneOutlined style={{ color: palette.blue, marginRight: 8 }} />04 公文归档</Text>
           {meetingGeneratedRecords?.generated ? (
             <Space size={8} wrap>
-              <Button type="primary" icon={<DownloadOutlined />} onClick={() => setDownloadTemplateOpen(true)} style={{ fontWeight: 600 }}>
+              <Button type="primary" icon={<DownloadOutlined />} onClick={() => {
+                setSelectedMinutesTemplate(recommendedTemplateForMeetingType(meetingOrg));
+                setDownloadTemplateOpen(true);
+              }} style={{ fontWeight: 600 }}>
                 下载会议纪要 Word
               </Button>
               <Button icon={<FileTextOutlined />} onClick={() => downloadArchiveDocx('evidence')} style={{ fontWeight: 600 }}>

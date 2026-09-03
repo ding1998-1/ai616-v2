@@ -15,11 +15,89 @@ import unittest
 from backend.services.meeting_record_generation_service import (
     MeetingRecordGenerationService,
     _drop_semantically_unsupported,
+    _deduplicate_formal_minutes,
+    _moderate_formal_summary,
+    auto_resolve_formal_evidence,
     chunk_transcript_segments,
 )
 
 
 class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_formal_summary_never_upgrades_discussion_to_binding_outcome(self):
+        text = _moderate_formal_summary(
+            "会议明确必须强制上传照片，严禁直接支付，并规定完成联通。"
+        )
+        self.assertEqual(
+            text,
+            "会议提出应当上传照片，应避免直接支付，并提出完成联通。",
+        )
+        self.assertEqual(
+            _moderate_formal_summary("会议要求报告符合审计要求。"),
+            "会议提出报告符合审计要求。",
+        )
+
+    def test_evidence_recovery_duplicate_agenda_is_merged_without_losing_summary(self):
+        records = {"minutes": [
+            {"agenda": "顺达项目合同条款与利率数据缺失", "formalSummary": ["会议讨论了合同及利率数据。"]},
+            {"agenda": "顺达项目合同与利率问题", "formalSummary": []},
+        ]}
+        result = _deduplicate_formal_minutes(records)
+        self.assertEqual(result["mergedCount"], 1)
+        self.assertEqual(len(records["minutes"]), 1)
+        self.assertEqual(records["minutes"][0]["formalSummary"], ["会议讨论了合同及利率数据。"])
+
+    def test_semantically_duplicate_land_agendas_merge_but_related_compliance_topics_do_not(self):
+        records = {"minutes": [
+            {"agenda": "查山土地款审核与取证流程", "formalSummary": ["核实土地成本。"]},
+            {"agenda": "土地费用审核与资料整理", "formalSummary": ["整理土地费用资料。"]},
+            {"agenda": "水头项目合规风险与暂停处理", "formalSummary": ["评估项目风险。"]},
+            {"agenda": "委托程序合规性要求", "formalSummary": ["规范委托程序。"]},
+        ]}
+        result = _deduplicate_formal_minutes(records)
+        self.assertEqual(result, {"inputCount": 4, "outputCount": 3, "mergedCount": 1})
+        self.assertEqual(
+            [item["agenda"] for item in records["minutes"]],
+            ["查山土地款审核与取证流程", "水头项目合规风险与暂停处理", "委托程序合规性要求"],
+        )
+
+    def test_auto_evidence_resolution_never_refills_formal_minutes_from_raw_map_topic(self):
+        basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "核实土地成本资料", "segmentId": "s1"}],
+        }
+        records = {"minutes": [
+            {"agenda": "土地成本审核", "formalSummary": ["会议讨论了土地成本审核工作。"], "basis": basis},
+            {"agenda": "空壳议题", "formalSummary": ["无法核验。"], "basis": {"evidenceValid": False}},
+        ], "decisions": [], "risks": [], "disclosures": [], "todos": []}
+        map_results = [{"ok": True, "output": {"topics": [
+            {"title": "宁海县中医院项目进度", "basis": basis},
+        ]}}]
+        auto_resolve_formal_evidence(
+            records,
+            map_results,
+            [{"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "核实土地成本资料"}],
+        )
+        self.assertEqual([item["agenda"] for item in records["minutes"]], ["土地成本审核"])
+
+    def test_uncertain_statement_is_not_promoted_to_formal_decision(self):
+        basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "CAD图纸可默认为完成设计交付", "segmentId": "s1"}],
+        }
+        records = {
+            "minutes": [{"agenda": "设计交付", "formalSummary": ["会议讨论了设计交付资料。"], "basis": basis}],
+            "decisions": [{"content": "CAD图纸可默认为完成设计交付", "basis": basis}],
+            "risks": [], "disclosures": [], "todos": [],
+        }
+        auto_resolve_formal_evidence(
+            records,
+            [],
+            [{"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "CAD图纸可默认为完成设计交付"}],
+        )
+        self.assertEqual(records["decisions"], [])
+
     def test_unrelated_real_quote_cannot_anchor_hallucinated_topic(self):
         records = {
             "minutes": [
@@ -123,6 +201,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
                     "agenda": "保留第0项",
                     "status": "已记录",
                     "keyPoints": ["同意保留第0项"],
+                    "formalSummary": ["会议同意保留第0项。"],
                     "basis": {"timeRange": "00:00:00-00:00:04", "quotes": [{"text": first["evidence"]}]},
                 }],
                 "decisions": [{
@@ -362,7 +441,11 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def reduce_call(_prompt, _context):
             return {
-                "minutes": [{"agenda": "公共收益账户管理", "keyPoints": []}],
+                "minutes": [{
+                    "agenda": "公共收益账户管理",
+                    "keyPoints": [],
+                    "formalSummary": ["会议明确公共收益及房屋租金的账户管理要求。"],
+                }],
                 "decisions": [{
                     "content": "公共收益和房屋租金必须进入业主委员会账户，再转给物业公司",
                     "type": "决定",

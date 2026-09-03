@@ -96,12 +96,14 @@ class MinuteRecord(RecordModel):
     agenda: str = ""
     status: str = "待整理"
     keyPoints: List[str] = Field(default_factory=list)
+    formalSummary: List[str] = Field(default_factory=list)
     basis: Basis = Field(default_factory=Basis)
 
 
 class DecisionRecord(RecordModel):
     content: str = ""
     type: str = "知悉"
+    outcomeType: str = ""
     confidence: Optional[float] = None
     status: str = "待确认"
     basis: Basis = Field(default_factory=Basis)

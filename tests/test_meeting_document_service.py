@@ -28,7 +28,7 @@ def test_formal_word_marks_authorized_human_override():
     assert "已核对录音原文并确认内容" in text
 
 
-def test_empty_keypoints_fall_back_to_verified_map_evidence_without_placeholders():
+def test_formal_minutes_never_fall_back_to_keypoints_or_map_evidence():
     records = {
         "minutes": [
             {
@@ -61,11 +61,11 @@ def test_empty_keypoints_fall_back_to_verified_map_evidence_without_placeholders
         text for text, _ in meeting_document_service._formal_record_lines(records)
     )
 
-    for output in (enterprise, generic, detailed):
-        assert "需要提供业主花名册完成数据联通" in output
-        assert "暂无已确认的讨论要点" not in output
-        assert "没有可靠内容的空议题" not in output
+    for output in (enterprise, generic):
+        assert "需要提供业主花名册完成数据联通" not in output
+        assert "待生成正式纪要表述" in output
         assert "错误挂接内容" not in output
+    assert "需要提供业主花名册完成数据联通" not in detailed
 
 
 def _records(proofread=True):
@@ -87,6 +87,7 @@ def _records(proofread=True):
             "agenda": "预算调整",
             "status": "已记录",
             "keyPoints": ["确认按程序补充材料"],
+            "formalSummary": ["会议明确按程序补充预算材料。"],
             "basis": {
                 "timeRange": "00:01:00-00:02:00",
                 "quotes": [{"text": "确认按程序补充材料", "segmentId": "s1"}],
@@ -294,6 +295,51 @@ def test_formal_word_prefers_formal_summary_and_filters_non_decisions(tmp_path: 
     assert "建议后续关注" not in text
 
 
+def test_todo_placeholders_are_not_treated_as_real_owner_or_deadline():
+    records = _records()
+    records["todos"] = [
+        {"task": "无效待办", "owner": "待确认", "deadline": "待定"},
+        {"task": "有效待办", "owner": "项目中心", "deadline": "待定"},
+    ]
+    _, _, todos = meeting_document_service._summary_sections(records)
+    assert [item["task"] for item in todos] == ["有效待办"]
+
+
+def test_chronicle_merges_same_speaker_agenda_within_five_seconds():
+    rows = [
+        {"id": "s1", "start": 1, "end": 2, "speaker": "张三", "agenda": "预算", "text": "第一句"},
+        {"id": "s2", "start": 4, "end": 5, "speaker": "张三", "agenda": "预算", "text": "第二句"},
+        {"id": "s3", "start": 12, "end": 13, "speaker": "张三", "agenda": "预算", "text": "第三句"},
+    ]
+    merged = meeting_document_service._merged_chronicle_rows(rows)
+    assert len(merged) == 2
+    assert merged[0]["_mergedText"] == "第一句，第二句"
+    assert merged[0]["_mergedSegmentIds"] == ["s1", "s2"]
+    assert merged[0]["_mergedStart"] == 1
+    assert merged[0]["_mergedEnd"] == 5
+
+
+def test_iso_meeting_time_is_rendered_as_chinese_datetime():
+    assert meeting_document_service._format_meeting_datetime("2026-09-01T09:00") == "2026年9月1日 09:00"
+
+
+def test_formal_minutes_are_conservatively_deduplicated_and_limited_to_eight():
+    records = {
+        "minutes": [
+            {"agenda": "物业合同数据归类", "formalSummary": ["会议明确按价格区间归类物业合同数据。"]},
+            {"agenda": "物业合同数据归类标准", "formalSummary": ["会议要求复核合同归类标准。"]},
+            *[
+                {"agenda": f"独立议题{index}", "formalSummary": [f"正式表述{index}。"]}
+                for index in range(1, 10)
+            ],
+        ]
+    }
+    groups = meeting_document_service._formal_minute_groups(records)
+    assert len(groups) == 8
+    assert groups[0]["title"] == "物业合同数据归类"
+    assert len(groups[0]["points"]) == 2
+
+
 def test_enterprise_redhead_template_preserves_artwork_and_appends_record(tmp_path: Path):
     bundle = generate_document_bundle(
         "m-red",
@@ -389,6 +435,6 @@ def test_combined_formal_word_expands_action_rows_without_truncation(tmp_path: P
     ]
     assert "落实第7项工作并提交完整说明材料" in minutes_table.rows[-1].cells[1].text
     assert minutes_table.rows[-1].cells[2].text == "责任人7"
-    assert minutes_table.rows[-1].cells[3].text == "2026-09-17"
+    assert minutes_table.rows[-1].cells[3].text == "2026年9月17日"
     assert len(document.sections) == 3
     assert len(document.tables) == 2

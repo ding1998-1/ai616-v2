@@ -34,7 +34,7 @@ from backend.services.meeting_proofread_service import (
 )
 
 
-DOCUMENT_SERVICE_VERSION = "meeting-document-v5-four-artifacts"
+DOCUMENT_SERVICE_VERSION = "meeting-document-v6-formal-quality"
 GAP_THRESHOLD_SECONDS = 120.0
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 FORMAL_MINUTES_TEMPLATE = (
@@ -55,6 +55,9 @@ _TIME_RANGE_RE = re.compile(
     r"(?P<end>\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)"
 )
 _WHITESPACE_RE = re.compile(r"\s+")
+_EMPTY_BUSINESS_VALUES = {
+    "", "-", "--", "待确认", "待定", "未知", "未明确", "未指定", "暂无", "待补充",
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,35 @@ def _as_text(value: Any) -> str:
 def _compact_text(value: Any, *, limit: int = 0) -> str:
     text = _WHITESPACE_RE.sub(" ", _as_text(value)).strip()
     return text[:limit] if limit and len(text) > limit else text
+
+
+def _business_value(value: Any) -> str:
+    """Return an empty string for placeholders that are not business data."""
+
+    text = _compact_text(value)
+    return "" if text in _EMPTY_BUSINESS_VALUES else text
+
+
+def _format_meeting_datetime(value: Any) -> str:
+    """Render common ISO meeting timestamps as formal Chinese date text."""
+
+    text = _compact_text(value)
+    if not text:
+        return ""
+    match = re.match(
+        r"^(?P<year>\d{4})[-/.年](?P<month>\d{1,2})[-/.月](?P<day>\d{1,2})(?:日)?"
+        r"(?:[T\s]+(?P<hour>\d{1,2}):(?P<minute>\d{2}))?(?P<tail>.*)$",
+        text,
+    )
+    if not match:
+        return text.replace("T", " ")
+    result = f"{int(match.group('year'))}年{int(match.group('month'))}月{int(match.group('day'))}日"
+    if match.group("hour") is not None:
+        result += f" {int(match.group('hour')):02d}:{match.group('minute')}"
+    tail = (match.group("tail") or "").strip()
+    if tail:
+        result += tail.replace("T", " ")
+    return result
 
 
 def _first(mapping: Mapping[str, Any], *keys: str) -> Any:
@@ -250,20 +282,26 @@ def _summary_sections(records: Mapping[str, Any]) -> tuple[list[Any], list[Any],
     else:
         conclusions, risks, todos = [], [], []
     decision_rows = list(records.get("decisions") or conclusions)
-    decision_rows = [
-        item for item in decision_rows
-        if not isinstance(item, Mapping)
-        or not _compact_text(item.get("outcomeType") or item.get("outcome_type"))
-        or _compact_text(item.get("outcomeType") or item.get("outcome_type")).lower()
-        in {"decision", "principle"}
-    ]
+
+    def is_formal_decision(item: Any) -> bool:
+        if not isinstance(item, Mapping):
+            return False
+        outcome_type = _compact_text(
+            item.get("outcomeType") or item.get("outcome_type")
+        ).lower()
+        if outcome_type:
+            return outcome_type in {"decision", "principle"}
+        legacy_type = _compact_text(item.get("type") or item.get("kind"))
+        return any(keyword in legacy_type for keyword in ("决定", "决议", "原则", "同意", "否决", "授权"))
+
+    decision_rows = [item for item in decision_rows if is_formal_decision(item)]
     todo_rows = list(records.get("todos") or todos)
     todo_rows = [
         item for item in todo_rows
         if not isinstance(item, Mapping)
         or (
             _item_content(item, "task", "content", "title", "summary")
-            and (_compact_text(item.get("owner")) or _compact_text(item.get("deadline")))
+            and (_business_value(item.get("owner")) or _business_value(item.get("deadline")))
         )
     ]
     return (
@@ -308,7 +346,7 @@ def render_formal_markdown(
     lines = [f"# {meeting_type}会议纪要", "", "## 一、会议基本信息", ""]
     lines.extend([
         f"- 会议名称：{title}",
-        f"- 会议日期：{_compact_text(meeting.get('date') or meeting.get('startTime') or '未标注')}",
+        f"- 会议日期：{_format_meeting_datetime(meeting.get('date') or meeting.get('startTime')) or '未标注'}",
         f"- 会议类型：{meeting_type}",
         f"- 所属项目：{_compact_text(meeting.get('project') or '未标注')}",
         "- 原始转写：见独立《证据底稿》附件（不纳入本正式件正文）",
@@ -835,7 +873,7 @@ def _normalise_discussion_evidence(value: Any) -> str:
 
 
 def _minute_discussion_points(item: Any, records: Mapping[str, Any]) -> list[str]:
-    """Resolve reliable discussion text without emitting empty placeholders."""
+    """Return formal prose only; raw evidence never enters official minutes."""
 
     if not isinstance(item, Mapping):
         return []
@@ -848,69 +886,120 @@ def _minute_discussion_points(item: Any, records: Mapping[str, Any]) -> list[str
     ]
     if formal_points:
         return formal_points[:3]
-
-    explicit = [
-        _compact_text(point, limit=1600)
-        for point in item.get("keyPoints") or item.get("key_points") or []
-        if _compact_text(point)
-    ]
-    if explicit:
-        return explicit
-
-    agenda = _item_content(item, "agenda", "title", "topic", "content")
-    basis = item.get("basis") if isinstance(item.get("basis"), Mapping) else {}
-    if basis.get("evidenceValid"):
-        quotes = basis.get("quotes") if isinstance(basis.get("quotes"), list) else []
-        quote_text = "；".join(
-            _compact_text(quote.get("text") if isinstance(quote, Mapping) else quote)
-            for quote in quotes
-            if _compact_text(quote.get("text") if isinstance(quote, Mapping) else quote)
-        )
-        normalised = _normalise_discussion_evidence(quote_text)
-        if normalised and _agenda_match_score(agenda, quote_text) >= 0.28:
-            return [normalised]
-
-    best_topic: tuple[float, Mapping[str, Any]] | None = None
-    for map_result in records.get("mapResults") or []:
-        if not isinstance(map_result, Mapping):
-            continue
-        output = map_result.get("output") if isinstance(map_result.get("output"), Mapping) else {}
-        for topic in output.get("topics") or []:
-            if not isinstance(topic, Mapping):
-                continue
-            score = _agenda_match_score(
-                agenda, _item_content(topic, "title", "agenda", "topic")
-            )
-            if score >= 0.66 and (best_topic is None or score > best_topic[0]):
-                best_topic = (score, topic)
-    if best_topic:
-        evidence = _normalise_discussion_evidence(
-            _item_content(best_topic[1], "evidence", "summary", "content")
-        )
-        if evidence:
-            return [evidence]
-
     return []
 
 
+def _formal_minute_groups(records: Mapping[str, Any], *, limit: int = 8) -> list[dict[str, Any]]:
+    """Build a compact official agenda list without changing the evidence layer."""
+
+    source = records.get("formalAgendaGroups") or records.get("formal_agenda_groups")
+    if not isinstance(source, list) or not source:
+        source = list(records.get("minutes") or [])
+
+    def is_similar(left: str, right: str, threshold: float) -> bool:
+        left_numbers = re.findall(r"\d+", left)
+        right_numbers = re.findall(r"\d+", right)
+        if left_numbers and right_numbers and left_numbers != right_numbers:
+            return False
+        return _agenda_match_score(left, right) >= threshold
+
+    groups: list[dict[str, Any]] = []
+    for item in source:
+        if not isinstance(item, Mapping):
+            continue
+        title = _item_content(item, "agenda", "title", "topic", "content")
+        if not title:
+            continue
+        points = _minute_discussion_points(item, records)
+        match = next(
+            (
+                group for group in groups
+                if is_similar(title, group["title"], 0.58)
+            ),
+            None,
+        )
+        if match is None:
+            groups.append({"title": title, "points": list(points), "items": [item]})
+            continue
+        if len(title) < len(match["title"]):
+            match["title"] = title
+        match["items"].append(item)
+        for point in points:
+            if not any(is_similar(point, existing, 0.86) for existing in match["points"]):
+                match["points"].append(point)
+    return groups[:limit]
+
+
+def _merged_chronicle_rows(
+    rows: Sequence[Mapping[str, Any]], *, max_gap_seconds: float = 5.0
+) -> list[dict[str, Any]]:
+    """Merge adjacent rows without discarding their source segment identifiers."""
+
+    merged: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        text = _compact_text(
+            _first(row, "correctedText", "correctedContent", "rawText", "text", "content"),
+            limit=2400,
+        )
+        if not text:
+            continue
+        start, end = _row_bounds(row)
+        speaker = _compact_text(_first(row, "speaker", "speakerName", "_speaker")) or "说话人未识别"
+        agenda = _compact_text(_first(row, "agenda", "agendaTitle", "agenda_title"))
+        file_id = _compact_text(_first(row, "fileId", "file_id", "_fileId"))
+        segment_id = _compact_text(_first(row, "segmentId", "segment_id", "id", "_segmentId"))
+        candidate = {
+            **row,
+            "_mergedText": text,
+            "_mergedStart": start,
+            "_mergedEnd": end,
+            "_mergedSpeaker": speaker,
+            "_mergedAgenda": agenda,
+            "_mergedFileId": file_id,
+            "_mergedSegmentIds": [segment_id] if segment_id else [],
+        }
+        previous = merged[-1] if merged else None
+        if previous is not None:
+            previous_end = previous.get("_mergedEnd")
+            same_identity = (
+                previous.get("_mergedSpeaker") == speaker
+                and previous.get("_mergedAgenda") == agenda
+                and previous.get("_mergedFileId") == file_id
+            )
+            time_is_adjacent = (
+                previous_end is None and start is None
+            ) or (
+                previous_end is not None
+                and start is not None
+                and 0 <= start - previous_end <= max_gap_seconds
+            )
+            if same_identity and time_is_adjacent:
+                separator = "" if previous["_mergedText"].endswith(("，", "。", "；", "！", "？")) else "，"
+                previous["_mergedText"] = f"{previous['_mergedText']}{separator}{text}"
+                previous["_mergedEnd"] = end if end is not None else previous_end
+                previous["_mergedSegmentIds"].extend(candidate["_mergedSegmentIds"])
+                continue
+        merged.append(candidate)
+    return merged
+
+
 def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
-    chronicle_rows = [
+    chronicle_rows = _merged_chronicle_rows([
         row for row in records.get("_chronicleRows") or [] if isinstance(row, Mapping)
-    ]
+    ])
     if chronicle_rows:
         lines: list[tuple[str, bool]] = [("一、会议过程记录", True)]
         current_agenda = ""
         for row in chronicle_rows:
-            agenda = _compact_text(row.get("agenda") or row.get("agendaTitle"))
+            agenda = row.get("_mergedAgenda") or ""
             if agenda and agenda != current_agenda:
                 current_agenda = agenda
                 lines.append((f"议题：{agenda}", True))
-            time_text = _compact_text(row.get("time") or row.get("timeRange") or "未标注")
-            speaker = _compact_text(row.get("speaker") or "说话人未识别")
-            text = _compact_text(
-                row.get("correctedText") or row.get("rawText") or row.get("text"),
-                limit=2400,
-            )
+            start, end = row.get("_mergedStart"), row.get("_mergedEnd")
+            time_text = _format_gap(start, end) if start is not None else _compact_text(row.get("time") or row.get("timeRange") or "未标注")
+            speaker = row.get("_mergedSpeaker") or "说话人未识别"
+            text = row.get("_mergedText") or ""
             if text:
                 lines.append((f"[{time_text}] {speaker}：{text}", False))
         if len(lines) > 1:
@@ -1070,13 +1159,11 @@ def _enterprise_minutes_blocks(
 
     blocks: list[tuple[str, str]] = [("intro", _enterprise_intro(meeting))]
     section_index = 1
-    minutes = list(records.get("minutes") or [])
+    minutes = _formal_minute_groups(records)
     if minutes:
         for item in minutes:
-            points = _minute_discussion_points(item, records)
-            if not points:
-                continue
-            title = _item_content(item, "agenda", "title", "topic", "content") or "未命名议题"
+            points = item["points"] or ["待生成正式纪要表述。"]
+            title = item["title"] or "未命名议题"
             blocks.append(("heading", f"{_chinese_section_number(section_index)}、{title}"))
             section_index += 1
             for point in points:
@@ -1209,7 +1296,7 @@ def _fill_enterprise_minutes_template(
 
     title = _compact_text(meeting.get("title") or meeting.get("name") or "本次会议")
     _set_enterprise_metadata_paragraph(
-        paragraphs[6], "会议时间：", _meeting_value(meeting, "time", "date", "startTime")
+        paragraphs[6], "会议时间：", _format_meeting_datetime(_meeting_value(meeting, "time", "date", "startTime"))
     )
     _set_enterprise_metadata_paragraph(
         paragraphs[7], "会议地点：", _meeting_value(meeting, "location", "venue", "address")
@@ -1319,13 +1406,10 @@ def _template_minutes_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]
     """Build the concise, agenda-centred content used by the provided template."""
 
     lines: list[tuple[str, bool]] = []
-    minutes = [
-        (item, _minute_discussion_points(item, records))
-        for item in list(records.get("minutes") or [])
-    ]
-    minutes = [(item, points) for item, points in minutes if points]
-    for index, (item, points) in enumerate(minutes, 1):
-        title = _item_content(item, "agenda", "title", "topic", "content")
+    minutes = _formal_minute_groups(records)
+    for index, item in enumerate(minutes, 1):
+        title = item["title"]
+        points = item["points"] or ["待生成正式纪要表述。"]
         lines.append((f"议题{index}：{title or '未命名议题'}", True))
         for point_index, point in enumerate(points, 1):
             content = _compact_text(point, limit=1200)
@@ -1374,7 +1458,7 @@ def _fill_minutes_template(
     if len(table.rows) < 12 or len(table.columns) < 4:
         raise RuntimeError("会议纪要模板表格结构无效")
     title = _compact_text(meeting.get("title") or meeting.get("name") or "会议")
-    _set_template_cell_text(table.cell(0, 1), _meeting_value(meeting, "time", "date", "startTime"))
+    _set_template_cell_text(table.cell(0, 1), _format_meeting_datetime(_meeting_value(meeting, "time", "date", "startTime")))
     _set_template_cell_text(table.cell(0, 3), _meeting_value(meeting, "location", "venue", "address"))
     _set_template_cell_text(
         table.cell(1, 1),
@@ -1419,7 +1503,7 @@ def _fill_minutes_template(
             row.cells[2], owner, align=WD_ALIGN_PARAGRAPH.CENTER, placeholder=""
         )
         _set_template_cell_text(
-            row.cells[3], deadline, align=WD_ALIGN_PARAGRAPH.CENTER, placeholder=""
+            row.cells[3], _format_meeting_datetime(deadline), align=WD_ALIGN_PARAGRAPH.CENTER, placeholder=""
         )
 
 
@@ -1476,7 +1560,7 @@ def _append_detailed_record_section(
 
     row = table.rows[1].cells
     _set_cell_text(row[0], "会议时间", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, role="heading")
-    _set_cell_text(row[1].merge(row[2]), _meeting_value(meeting, "time", "date", "startTime"))
+    _set_cell_text(row[1].merge(row[2]), _format_meeting_datetime(_meeting_value(meeting, "time", "date", "startTime")))
     _set_cell_text(row[3], "会议地点", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, role="heading")
     _set_cell_text(row[4].merge(row[5]), _meeting_value(meeting, "location", "venue", "address"))
 
@@ -1508,7 +1592,18 @@ def _append_detailed_record_section(
     _set_cell_text(row[0], "编制人", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, role="heading")
     _set_cell_text(row[1].merge(row[2]), _meeting_value(meeting, "compiler", "createdBy", "creator"), align=WD_ALIGN_PARAGRAPH.CENTER)
     _set_cell_text(row[3], "日期", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, role="heading")
-    _set_cell_text(row[4].merge(row[5]), _meeting_value(meeting, "compiledDate", "date", default=datetime.now().strftime("%Y.%m.%d")), align=WD_ALIGN_PARAGRAPH.CENTER)
+    _set_cell_text(
+        row[4].merge(row[5]),
+        _format_meeting_datetime(
+            _meeting_value(
+                meeting,
+                "compiledDate",
+                "date",
+                default=datetime.now().strftime("%Y.%m.%d"),
+            )
+        ),
+        align=WD_ALIGN_PARAGRAPH.CENTER,
+    )
 
     for row_index, table_row in enumerate(table.rows):
         tr_pr = table_row._tr.get_or_add_trPr()
@@ -1736,6 +1831,39 @@ def generate_document_bundle(
     evidence_path = output_path / f"{safe_title}_证据核验附件_{stamp}.docx"
     complete_path = output_path / f"{safe_title}_完整会议材料_{stamp}.docx"
     template_id = template_id if template_id in _FORMAL_TEMPLATE_TITLES else "standard"
+    missing_fields = [
+        label
+        for label, keys in (
+            ("会议地点", ("location", "venue", "address")),
+            ("主持人", ("host", "moderator", "chairperson")),
+            ("记录人", ("recorder", "secretary")),
+            ("参会人员", ("participants", "attendees", "participantNames")),
+        )
+        if not _business_value(_meeting_value(meeting, *keys, default=""))
+    ]
+    missing_formal_summaries = [
+        _compact_text(item.get("agenda")) or f"议题{index}"
+        for index, item in enumerate(list(records.get("minutes") or []), 1)
+        if isinstance(item, Mapping) and not _minute_discussion_points(item, records)
+    ]
+    formal_minutes_missing = not list(records.get("minutes") or []) and any(
+        list((item.get("output") or {}).get("topics") or [])
+        for item in list(records.get("mapResults") or [])
+        if isinstance(item, Mapping)
+    )
+    meeting_type = _meeting_value(meeting, "type", "meetingType", "category", default="")
+    template_rules = {
+        "party": ("党委", "党组"),
+        "board": ("董事",),
+        "major": ("三重一大",),
+        "project": ("项目", "工程"),
+        "engineering": ("工程", "项目"),
+        "audit": ("审计",),
+    }
+    expected_types = template_rules.get(template_id, ())
+    template_mismatch = bool(
+        expected_types and not any(keyword in meeting_type for keyword in expected_types)
+    )
     document_records = {
         **dict(records),
         "generationSnapshot": snapshot,
@@ -1792,6 +1920,13 @@ def generate_document_bundle(
         "coverage": manifest["coverage"],
         "templateId": template_id,
         "templateTitle": _FORMAL_TEMPLATE_TITLES[template_id],
+        "preflight": {
+            "missingFields": missing_fields,
+            "missingFormalSummaries": missing_formal_summaries,
+            "formalMinutesMissing": formal_minutes_missing,
+            "templateMismatch": template_mismatch,
+            "meetingType": meeting_type,
+        },
         "evidenceManifest": manifest,
         "minutes": minutes_artifact,
         "record": record_artifact,
