@@ -87,6 +87,65 @@ def test_formal_minutes_never_fall_back_to_keypoints_or_map_evidence():
     assert "需要提供业主花名册完成数据联通" not in detailed
 
 
+def test_meeting_record_uses_cleaned_paragraphs_and_never_raw_chronicle():
+    lines = meeting_document_service._formal_record_lines({
+        "recordBlocks": [
+            {
+                "id": "record-1",
+                "topic": "合同数据整理",
+                "startTime": "00:00:00",
+                "endTime": "00:02:00",
+                "speaker": "发言人未确认",
+                "recordText": "现场讨论了合同数据的分类方式。",
+                "contentType": "meeting_speech",
+                "includeInRecord": True,
+                "sourceSegmentIds": ["s1"],
+            },
+            {
+                "id": "record-2",
+                "topic": "背景媒体",
+                "startTime": "00:02:00",
+                "endTime": "00:02:20",
+                "recordText": "现场播放平台功能演示视频，相关宣传音频略。",
+                "contentType": "background_media",
+                "includeInRecord": False,
+                "sourceSegmentIds": ["s2"],
+            },
+            {
+                "id": "record-3",
+                "topic": "噪声",
+                "recordText": "bearing spring",
+                "contentType": "noise",
+                "includeInRecord": False,
+                "sourceSegmentIds": ["s3"],
+            },
+        ],
+        "recordTopics": [{
+            "id": "topic-001",
+            "title": "合同数据与系统演示",
+            "startTime": "00:00:00",
+            "endTime": "00:02:00",
+            "blockIds": ["record-1", "record-2", "record-3"],
+            "subTopics": [{"title": "合同数据整理", "blockIds": ["record-1"]}],
+        }],
+        "_chronicleRows": [{"segmentId": "s4", "text": "不应进入会议记录的原始逐字稿"}],
+    })
+    text = "\n".join(item for item, _bold in lines)
+    assert "合同数据的分类方式" in text
+    assert "现场播放平台功能演示视频" not in text
+    assert "bearing spring" not in text
+    assert "不应进入会议记录的原始逐字稿" not in text
+
+
+def test_missing_cleaned_record_shows_safe_instruction_instead_of_raw_asr():
+    lines = meeting_document_service._formal_record_lines({
+        "_chronicleRows": [{"segmentId": "s1", "text": "完整原始长句"}],
+    })
+    text = "\n".join(item for item, _bold in lines)
+    assert "重新整理会议记录" in text
+    assert "完整原始长句" not in text
+
+
 def _records(proofread=True):
     return {
         "pipeline": "records-v2",

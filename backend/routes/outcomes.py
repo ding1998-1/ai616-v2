@@ -24,6 +24,7 @@ from backend.services.outcome_service import (
     list_versions,
     update_records,
     review_record_item,
+    regenerate_record_paragraphs,
     update_todo,
 )
 
@@ -61,6 +62,20 @@ async def generate_meeting_records(request: Request, meeting_id: str):
 async def meeting_records_generation_status(request: Request, meeting_id: str):
     require_meeting(request, meeting_id)
     return {"success": True, **record_generation_status(meeting_id)}
+
+
+@router.post("/meetings/{meeting_id}/records/cleanup")
+async def cleanup_meeting_record(request: Request, meeting_id: str):
+    """Reorganize the saved transcript without rerunning Whisper."""
+
+    require_meeting(request, meeting_id)
+    try:
+        result = await regenerate_record_paragraphs(meeting_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "meetingId": meeting_id, **result}
 
 
 @router.post("/meetings/{meeting_id}/records/confirm")

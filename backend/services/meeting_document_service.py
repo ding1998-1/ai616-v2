@@ -1070,62 +1070,48 @@ def _merged_chronicle_rows(
 
 
 def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
-    chronicle_rows = _merged_chronicle_rows([
-        row for row in records.get("_chronicleRows") or [] if isinstance(row, Mapping)
-    ])
-    if chronicle_rows:
-        lines: list[tuple[str, bool]] = [("一、会议过程记录", True)]
-        current_agenda = ""
-        for row in chronicle_rows:
-            agenda = row.get("_mergedAgenda") or ""
-            if agenda and agenda != current_agenda:
-                current_agenda = agenda
-                lines.append((f"议题：{agenda}", True))
-            start, end = row.get("_mergedStart"), row.get("_mergedEnd")
-            time_text = _format_gap(start, end) if start is not None else _compact_text(row.get("time") or row.get("timeRange") or "未标注")
-            speaker = row.get("_mergedSpeaker") or "说话人未识别"
-            text = row.get("_mergedText") or ""
-            if text:
-                lines.append((f"[{time_text}] {speaker}：{text}", False))
-        if len(lines) > 1:
-            return lines
-
-    decisions, risks, todos = _summary_sections(records)
-    lines: list[tuple[str, bool]] = []
-    minutes = [
-        (item, _minute_discussion_points(item, records))
-        for item in list(records.get("minutes") or [])
-    ]
-    minutes = [(item, points) for item, points in minutes if points]
-    if minutes:
-        lines.append(("一、议题及讨论记录", True))
-        for index, (item, points) in enumerate(minutes, 1):
-            title = _item_content(item, "agenda", "title", "topic", "content")
-            lines.append((f"{index}. {title or '未命名议题'}", True))
-            if isinstance(item, Mapping):
-                for point in points:
-                    lines.append((f"　　{_compact_text(point, limit=800)}", False))
-                basis = _formal_basis(item)
-                if basis:
-                    lines.append((f"　　依据：{basis}", False))
-    if decisions:
-        lines.append(("二、结论与决议", True))
-        for index, item in enumerate(decisions, 1):
-            lines.append((f"{index}. {_item_content(item, 'content', 'decision', 'description', 'title', 'summary')}", False))
-    if risks:
-        lines.append(("三、合规风险与披露事项", True))
-        for index, item in enumerate(risks, 1):
-            severity = f"〔{_compact_text(item.get('severity'))}〕" if isinstance(item, Mapping) and item.get("severity") else ""
-            lines.append((f"{index}. {severity}{_item_content(item, 'content', 'description', 'title', 'summary')}", False))
-    if todos:
-        lines.append(("四、待办事项", True))
-        for index, item in enumerate(todos, 1):
-            owner = _compact_text(item.get("owner")) if isinstance(item, Mapping) else "待确认"
-            deadline = _compact_text(item.get("deadline")) if isinstance(item, Mapping) else "待定"
-            lines.append((f"{index}. {_item_content(item, 'task', 'content', 'title', 'summary')}（责任人：{owner or '待确认'}；期限：{deadline or '待定'}）", False))
+    blocks = [item for item in records.get("recordBlocks") or [] if isinstance(item, Mapping)]
+    topics = [item for item in records.get("recordTopics") or [] if isinstance(item, Mapping)]
+    by_id = {str(item.get("id")): item for item in blocks if item.get("id")}
+    lines: list[tuple[str, bool]] = [("一、会议过程记录", True)]
+    rendered_ids: set[str] = set()
+    chinese_numbers = "一二三四五六七八九十"
+    for topic_index, topic in enumerate(topics, 1):
+        block_ids = [str(item) for item in topic.get("blockIds") or [] if str(item) in by_id]
+        eligible_ids = [
+            block_id for block_id in block_ids
+            if by_id[block_id].get("includeInRecord")
+            and by_id[block_id].get("recordText")
+            and by_id[block_id].get("contentType") not in {"background_media", "operation", "noise"}
+        ]
+        if not eligible_ids:
+            continue
+        numeral = chinese_numbers[topic_index - 1] if topic_index <= len(chinese_numbers) else str(topic_index)
+        lines.append((f"（{numeral}）{_compact_text(topic.get('title')) or '会议讨论'}", True))
+        start = _compact_text(topic.get("startTime"))
+        end = _compact_text(topic.get("endTime"))
+        if start or end:
+            lines.append((f"{start}–{end}" if start and end else start or end, False))
+        sub_topics = [item for item in topic.get("subTopics") or [] if isinstance(item, Mapping)]
+        if not sub_topics:
+            sub_topics = [{"title": by_id[block_id].get("title") or "讨论内容", "blockIds": [block_id]} for block_id in eligible_ids]
+        sub_index = 0
+        for sub_topic in sub_topics:
+            sub_ids = [str(item) for item in sub_topic.get("blockIds") or [] if str(item) in eligible_ids and str(item) not in rendered_ids]
+            if not sub_ids:
+                continue
+            sub_index += 1
+            lines.append((f"{sub_index}. {_compact_text(sub_topic.get('title')) or '讨论内容'}", True))
+            for block_id in sub_ids:
+                text = _compact_text(by_id[block_id].get("recordText"), limit=800)
+                if text:
+                    lines.append((text, False))
+                    rendered_ids.add(block_id)
+    if len(lines) == 1:
+        lines.append(("本次会议记录尚未完成 AI 忠实整理，请先执行“重新整理会议记录”；原始转写仍完整保存在证据核验附件中。", False))
     override = records.get("latestFormalOverride") if isinstance(records.get("latestFormalOverride"), Mapping) else None
     if override:
-        lines.append(("五、人工核验说明", True))
+        lines.append(("二、人工核验说明", True))
         lines.append((
             "本文件存在待人工核验内容，已由授权人员核对后放行。"
             f"操作人：{_compact_text(override.get('operator')) or '未记录'}；"
@@ -1133,7 +1119,7 @@ def _formal_record_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]]:
             f"原因：{_compact_text(override.get('reason')) or '未记录'}。",
             False,
         ))
-    return lines or [("（暂无会议记录）", False)]
+    return lines
 
 
 _FORMAL_TEMPLATE_TITLES = {

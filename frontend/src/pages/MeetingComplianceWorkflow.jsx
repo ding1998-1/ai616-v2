@@ -2136,6 +2136,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
+  const regenerateReadableMeetingRecord = async () => {
+    if (!currentMeetingId) return;
+    setMeetingRecordsLoading(true);
+    try {
+      const data = await authFetchJson(`/api/meetings/${currentMeetingId}/records/cleanup`, {
+        method: 'POST',
+      });
+      setMeetingGeneratedRecords(data.records || null);
+      message.success('会议记录已基于现有原始转写重新整理，无需重跑 Whisper');
+    } catch (err) {
+      message.error(`会议记录整理失败：${err.message}`);
+    } finally {
+      setMeetingRecordsLoading(false);
+    }
+  };
+
   const loadRecordGenerationVersions = async () => {
     if (!currentMeetingId) return;
     try {
@@ -5378,6 +5394,17 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       ? '正在生成纪要'
                       : meetingGeneratedRecords?.generated ? '重新生成纪要' : 'AI 生成纪要'}
                   </Button>
+                  {meetingGeneratedRecords?.generated && (
+                    <Button
+                      onClick={regenerateReadableMeetingRecord}
+                      loading={meetingRecordsLoading}
+                      disabled={recordGenerationStatus.status === 'running'}
+                      block
+                      style={{ height: 36, marginTop: 8 }}
+                    >
+                      重新整理会议记录
+                    </Button>
+                  )}
                 </div>
                 {recordGenerationStatus.status === 'running' && (
                   <div style={{ marginTop: 8, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>

@@ -540,6 +540,28 @@ async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> d
         participants=participants,
         agenda_titles=agenda_titles,
     )
+    from backend.services.meeting_record_cleanup_service import MeetingRecordCleanupService
+
+    cleanup_service = MeetingRecordCleanupService(
+        cleanup_call=map_llm,
+        topic_reduce_call=reduce_llm,
+        semaphore=llm_semaphore,
+        concurrency=3,
+        model_name=map_llm.get_active_model_name(),
+    )
+    cleanup_result = await cleanup_service.build_record_paragraphs(
+        source,
+        meeting_context={
+            "title": meeting.get("title") or "",
+            "project": meeting.get("project") or meeting.get("projectName") or "",
+        },
+        existing=cached.get("_recordParagraphs") or [],
+        existing_topics=cached.get("recordTopics") or [],
+    )
+    records["_recordParagraphs"] = cleanup_result["recordParagraphs"]
+    records["recordBlocks"] = cleanup_result["recordBlocks"]
+    records["recordTopics"] = cleanup_result["recordTopics"]
+    records["recordCleanupSnapshot"] = cleanup_result["snapshot"]
     normalize_review_metadata(records, cached)
     records["generated"] = True
     records["generatedAt"] = _now_text()
@@ -578,6 +600,58 @@ async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> d
     except Exception:
         logger.exception("保存 AI 纪要历史版本失败 meeting=%s generation=%s", safe_id, generation_id)
     return records
+
+
+async def regenerate_record_paragraphs(meeting_id: str) -> dict:
+    """Rebuild only the readable meeting record from saved transcripts."""
+
+    from backend.llm_client import QwenLocalLLM, llm_semaphore
+    from backend.services.meeting_record_cleanup_service import MeetingRecordCleanupService
+
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise KeyError("会议不存在")
+    records = meeting.get("generatedRecords") if isinstance(meeting.get("generatedRecords"), dict) else {}
+    whisper_source = _whisper_source_from_meeting(meeting)
+    realtime_source = _realtime_source_from_meeting(safe_id)
+    source, source_kind = _select_records_source(whisper_source, realtime_source)
+    if not source:
+        raise ValueError("当前会议没有可整理的转写原文")
+    llm = QwenLocalLLM(max_tokens=4000)
+    service = MeetingRecordCleanupService(
+        cleanup_call=llm,
+        topic_reduce_call=llm,
+        semaphore=llm_semaphore,
+        concurrency=3,
+        model_name=llm.get_active_model_name(),
+    )
+    result = await service.build_record_paragraphs(
+        source,
+        meeting_context={
+            "title": meeting.get("title") or "",
+            "project": meeting.get("project") or meeting.get("projectName") or "",
+            "source": source_kind,
+        },
+        existing=records.get("_recordParagraphs") or [],
+        existing_topics=records.get("recordTopics") or [],
+    )
+    records["_recordParagraphs"] = result["recordParagraphs"]
+    records["recordBlocks"] = result["recordBlocks"]
+    records["recordTopics"] = result["recordTopics"]
+    records["recordCleanupSnapshot"] = result["snapshot"]
+    records["updatedAt"] = _now_text()
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        current = meetings.get(safe_id)
+        if not current:
+            raise KeyError("会议不存在")
+        current["generatedRecords"] = records
+        current["updatedAt"] = records["updatedAt"]
+        meetings[safe_id] = current
+        _save_meetings(meetings)
+        _invalidate_meetings_cache()
+    return {"records": records, "cleanup": result["snapshot"]}
 
 
 def generate_record_documents(
