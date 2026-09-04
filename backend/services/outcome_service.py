@@ -871,7 +871,7 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
                         "reviewerName": reviewer,
                         "reviewedAt": now,
                         "reasonCode": "authorized_override" if override else "batch_verified",
-                        "reasonText": override_reason if override else "一键确认全部有依据的 AI 提炼建议",
+                        "reasonText": override_reason if override else "一键确认全部有依据的昇晟会议 AI 提炼",
                     },
                 })
         normalize_review_metadata(records)

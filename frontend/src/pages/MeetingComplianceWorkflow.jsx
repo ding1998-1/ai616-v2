@@ -5313,7 +5313,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     return (
       <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <Tag color={status === 'human_supported' ? 'green' : status === 'rejected' ? 'default' : 'blue'}>
-          {status === 'human_supported' ? '✓ 人工支持' : status === 'rejected' ? '已否决' : 'AI 提炼建议'}
+          {status === 'human_supported' ? '✓ 人工支持' : status === 'rejected' ? '已否决' : '昇晟会议 AI 提炼'}
         </Tag>
         {review.reviewerName && <span style={{ fontSize: 11, color: palette.muted }}>{review.reviewerName} · {review.reviewedAt}</span>}
         {status === 'ai_suggested' && (
@@ -5421,7 +5421,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               {/* AI 会议纪要 */}
               <section className="minutes-document-panel" style={{ ...panelStyle, padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                  <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />AI 提炼建议与人工支持</Text>
+                  <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />昇晟会议 AI 提炼与人工支持</Text>
                   <Select
                     size="small"
                     value={recordReviewFilter}

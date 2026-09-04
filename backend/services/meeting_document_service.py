@@ -1922,7 +1922,7 @@ def generate_document_bundle(
         ]
         if publication_mode == "review":
             for item in source_records[field]:
-                label = "【人工支持】" if _support_status(item) == "human_supported" else "【AI提炼建议】"
+                label = "【人工支持】" if _support_status(item) == "human_supported" else "【昇晟会议 AI 提炼】"
                 if field == "minutes":
                     values = item.get("formalSummary") if isinstance(item.get("formalSummary"), list) else [item.get("formalSummary")]
                     item["formalSummary"] = [f"{label}{value}" for value in values if _compact_text(value)]
