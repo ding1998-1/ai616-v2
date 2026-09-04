@@ -122,6 +122,41 @@ def test_records_confirmation_enables_formal_documents(monkeypatch):
     assert records["proofreadBy"] == "主持人"
     assert records["humanReviewed"] is True
     assert saved_versions[0][2] == {"humanReviewed": True, "formalOverride": {}}
+    assert records["minutes"][0]["supportStatus"] == "human_supported"
+    assert records["minutes"][0]["locked"] is True
+
+
+def test_single_item_review_preserves_ai_original_and_audit(monkeypatch):
+    meetings = {"m1": {"id": "m1", "creator": "主持人", "generatedRecords": {
+        "generated": True,
+        "minutes": [{
+            "agenda": "预算调整",
+            "formalSummary": ["AI 原始建议。"],
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s1"], "quotes": [{"text": "讨论预算调整"}]},
+        }],
+    }}}
+    saved = []
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(outcome_service, "_save_meetings", lambda value: None)
+    monkeypatch.setattr(outcome_service, "_invalidate_meetings_cache", lambda: None)
+    monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
+    monkeypatch.setattr(outcome_service, "_save_version", lambda *args, **kwargs: saved.append((args, kwargs)))
+    initial = outcome_service.normalize_review_metadata(meetings["m1"]["generatedRecords"])
+    item_id = initial["minutes"][0]["id"]
+
+    records = outcome_service.review_record_item(
+        "m1", "minutes", item_id, "edit_and_support", {"name": "主持人"},
+        content="会议明确按程序调整预算。", reason_code="edited_and_verified",
+    )
+
+    item = records["minutes"][0]
+    assert item["supportStatus"] == "human_supported"
+    assert item["formalSummary"] == ["会议明确按程序调整预算。"]
+    assert item["originalAiSummary"] == "AI 原始建议。"
+    assert item["editedByHuman"] is True
+    assert item["locked"] is True
+    assert item["humanReview"]["reviewerName"] == "主持人"
+    assert saved
 
 
 def test_records_confirmation_keeps_invalid_items_and_allows_audited_override(monkeypatch):

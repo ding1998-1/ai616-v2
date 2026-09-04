@@ -207,6 +207,14 @@ class MeetingRecordsUpdateRequest(BaseModel):
     todos: Optional[List[dict]] = None
 
 
+class MeetingRecordReviewRequest(BaseModel):
+    """单条 AI 会议成果的人工核验动作。"""
+    action: str
+    content: str = ""
+    reasonCode: str = "verified"
+    reasonText: str = ""
+
+
 class ChatRequest(BaseModel):
     """流式审核请求"""
     matter_type: str

@@ -740,6 +740,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const lastTodoExtractCountRef = useRef(0); // 上次提取时的转写条数
   const agendaTimerRef = useRef(null);
   const [meetingGeneratedRecords, setMeetingGeneratedRecords] = useState(null);
+  const [recordReviewFilter, setRecordReviewFilter] = useState('all');
+  const [reviewingRecordId, setReviewingRecordId] = useState('');
   const [meetingRecordsLoading, setMeetingRecordsLoading] = useState(false);
   const [recordGenerationStatus, setRecordGenerationStatus] = useState({ status: 'idle' });
   const [recordGenerationVersions, setRecordGenerationVersions] = useState([]);
@@ -3076,13 +3078,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
-  const downloadArchiveDocx = async (kind = 'formal', templateId = 'standard') => {
+  const downloadArchiveDocx = async (kind = 'formal', templateId = 'standard', publicationMode = 'formal') => {
     setMinutesTemplateDownloading(true);
     try {
       const meetingDetail = await authFetchJson(`/api/meetings/${currentMeetingId}`);
       const exportMeeting = meetingDetail?.meeting || {};
       const preflight = exportPreflightWarnings(exportMeeting, templateId, meetingGeneratedRecords);
-      if (preflight.missingFields.length || preflight.missingFormalSummaries.length || preflight.formalMinutesMissing || preflight.templateMismatch) {
+      if (publicationMode === 'formal' && (preflight.missingFields.length || preflight.missingFormalSummaries.length || preflight.formalMinutesMissing || preflight.templateMismatch)) {
         const shouldContinue = await new Promise(resolve => {
           Modal.confirm({
             title: '正式文件导出前检查',
@@ -3119,7 +3121,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         if (!shouldContinue) return;
       }
       let overrideReason = '';
-      if (!recordsBasisGate.ready) {
+      if (publicationMode === 'formal' && !recordsBasisGate.ready) {
         overrideReason = await requestEvidenceOverrideReason('生成正式 Word');
         if (!overrideReason) return;
       }
@@ -3127,7 +3129,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       const token = getStoredToken();
       if (token) headers.set('Authorization', `Bearer ${token}`);
       headers.set('Content-Type', 'application/json');
-      let generation = await fetch(`/api/meetings/${currentMeetingId}/records/documents?template_id=${encodeURIComponent(templateId)}`, {
+      let generation = await fetch(`/api/meetings/${currentMeetingId}/records/documents?template_id=${encodeURIComponent(templateId)}&mode=${publicationMode}`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ overrideReason }),
@@ -3159,7 +3161,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      message.success(`已下载${kindLabel} Word`);
+      message.success(`已下载${publicationMode === 'review' ? '内部审阅版' : '正式发布版'}${kindLabel} Word`);
       setDownloadTemplateOpen(false);
     } catch (error) {
       message.error(`Word 下载失败：${error.message}`);
@@ -5268,6 +5270,65 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     );
   };
 
+  const reviewGeneratedItem = async (field, item, action, content = '', reasonCode = 'verified') => {
+    if (!item?.id) { message.error('该条内容缺少核验编号，请重新生成纪要'); return; }
+    setReviewingRecordId(item.id);
+    try {
+      const data = await authFetchJson(
+        `/api/meetings/${currentMeetingId}/records/${field}/${encodeURIComponent(item.id)}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ action, content, reasonCode, reasonText: '' }),
+        },
+      );
+      setMeetingGeneratedRecords(data.records);
+      message.success(action === 'reject' ? '已标记为不采用' : '已完成人工支持');
+    } catch (error) {
+      message.error(`核验失败：${error.message}`);
+    } finally {
+      setReviewingRecordId('');
+    }
+  };
+
+  const editAndSupportGeneratedItem = (field, item) => {
+    let edited = field === 'minutes'
+      ? (Array.isArray(item.formalSummary) ? item.formalSummary.join('\n') : item.formalSummary || '')
+      : (field === 'todos' ? item.task : item.content) || '';
+    Modal.confirm({
+      title: '编辑后支持',
+      width: 620,
+      okText: '保存并支持',
+      cancelText: '取消',
+      content: <Input.TextArea defaultValue={edited} rows={6} onChange={event => { edited = event.target.value; }} />,
+      onOk: async () => {
+        if (!edited.trim()) { message.warning('正式表述不能为空'); throw new Error('empty'); }
+        await reviewGeneratedItem(field, item, 'edit_and_support', edited.trim(), 'edited_and_verified');
+      },
+    });
+  };
+
+  const renderReviewActions = (field, item) => {
+    const status = item.supportStatus || 'ai_suggested';
+    const review = item.humanReview || {};
+    return (
+      <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Tag color={status === 'human_supported' ? 'green' : status === 'rejected' ? 'default' : 'blue'}>
+          {status === 'human_supported' ? '✓ 人工支持' : status === 'rejected' ? '已否决' : 'AI 提炼建议'}
+        </Tag>
+        {review.reviewerName && <span style={{ fontSize: 11, color: palette.muted }}>{review.reviewerName} · {review.reviewedAt}</span>}
+        {status === 'ai_suggested' && (
+          <>
+            <Button size="small" type="primary" loading={reviewingRecordId === item.id} onClick={() => reviewGeneratedItem(field, item, 'support')}>支持并采用</Button>
+            <Button size="small" onClick={() => editAndSupportGeneratedItem(field, item)}>编辑后支持</Button>
+            <Popconfirm title="确认不采用这条 AI 建议？" onConfirm={() => reviewGeneratedItem(field, item, 'reject', '', 'not_suitable')}>
+              <Button size="small" danger>不采用</Button>
+            </Popconfirm>
+          </>
+        )}
+      </div>
+    );
+  };
+
   const renderAuditWorkspace = () => {
     if (!isMajorMeeting) {
       const todos = meetingGeneratedRecords?.todos || [];
@@ -5275,7 +5336,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       const summary = recordSummaryLines(meetingGeneratedRecords);
       const transcriptRows = liveTranscriptRows.slice(0, 20);
       const hasAudio = recordingPlaybackRows.length > 0;
-      const minutesItems = meetingGeneratedRecords?.minutes || [];
+      const minutesItems = (meetingGeneratedRecords?.minutes || []).filter(item => (
+        recordReviewFilter === 'all' || (item.supportStatus || 'ai_suggested') === recordReviewFilter
+      ));
 
       // 普通会议会后整理
       return (
@@ -5357,7 +5420,21 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
               {/* AI 会议纪要 */}
               <section className="minutes-document-panel" style={{ ...panelStyle, padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
-                <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />AI 会议纪要</Text>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />AI 提炼建议与人工支持</Text>
+                  <Select
+                    size="small"
+                    value={recordReviewFilter}
+                    onChange={setRecordReviewFilter}
+                    style={{ width: 126 }}
+                    options={[
+                      { value: 'all', label: '全部状态' },
+                      { value: 'ai_suggested', label: '待人工确认' },
+                      { value: 'human_supported', label: '人工支持' },
+                      { value: 'rejected', label: '已否决' },
+                    ]}
+                  />
+                </div>
                 {meetingRecordsLoading ? (
                   <div style={{ marginTop: 24, textAlign: 'center' }}>
                     <Spin size="large" />
@@ -5408,6 +5485,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                                           {d.speaker && <span style={{ color: palette.muted, fontSize: 11 }}>{d.speaker}</span>}
                                           {d.status && <Tag style={{ fontSize: 10 }}>{d.status}</Tag>}
                                         </div>
+                                        {renderReviewActions('decisions', d)}
                                       </div>
                                     </div>
                                   ))}
@@ -5444,6 +5522,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                               </div>
                               <div style={{ color: palette.muted, fontSize: 11 }}>{t.deadline || '—'}</div>
                               <div><Tag color={t.priority === '高' ? 'red' : t.priority === '中' ? 'orange' : 'default'} style={{ margin: 0, fontSize: 10 }}>{t.priority || '中'}</Tag></div>
+                              <div style={{ gridColumn: '1 / -1' }}>{renderReviewActions('todos', t)}</div>
                             </div>
                           ))}
                         </div>
@@ -5460,10 +5539,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                           {minutesItems.slice(0, 6).map((m, i) => (
                             <div key={i} style={{ padding: '8px 10px', borderRadius: 8, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
                               <div style={{ fontWeight: 600, color: palette.ink, fontSize: 13 }}>{m.agenda || `议题 ${i + 1}`}</div>
-                              <div style={{ color: palette.muted, fontSize: 12, marginTop: 4 }}>
-                                {(m.keyPoints || []).slice(0, 3).map((p, j) => <div key={j}>• {p}</div>)}
+                              <div style={{ color: palette.text, fontSize: 12, marginTop: 4, lineHeight: 1.7 }}>
+                                {(Array.isArray(m.formalSummary) ? m.formalSummary : [m.formalSummary]).filter(Boolean).map((p, j) => <div key={j}>{p}</div>)}
                               </div>
                               {m.status && <Tag style={{ marginTop: 4, fontSize: 10 }} color={m.status === '已讨论' ? 'green' : 'blue'}>{m.status}</Tag>}
+                              {renderReviewActions('minutes', m)}
                             </div>
                           ))}
                         </div>
@@ -6670,8 +6750,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           </div>
           <Space>
             <Button onClick={() => setDownloadTemplateOpen(false)}>取消</Button>
-            <Button type="primary" icon={<DownloadOutlined />} loading={minutesTemplateDownloading} onClick={() => downloadArchiveDocx(selectedDocumentKind, selectedMinutesTemplate)}>
-              下载 Word
+            <Button icon={<FileTextOutlined />} loading={minutesTemplateDownloading} onClick={() => downloadArchiveDocx(selectedDocumentKind, selectedMinutesTemplate, 'review')}>
+              下载内部审阅版
+            </Button>
+            <Button type="primary" icon={<DownloadOutlined />} loading={minutesTemplateDownloading} onClick={() => downloadArchiveDocx(selectedDocumentKind, selectedMinutesTemplate, 'formal')}>
+              下载正式发布版
             </Button>
           </Space>
         </div>

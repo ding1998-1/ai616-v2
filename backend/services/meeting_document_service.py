@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import re
+from copy import deepcopy
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -89,6 +90,12 @@ def _as_text(value: Any) -> str:
 def _compact_text(value: Any, *, limit: int = 0) -> str:
     text = _WHITESPACE_RE.sub(" ", _as_text(value)).strip()
     return text[:limit] if limit and len(text) > limit else text
+
+
+def _normalise_text(value: Any) -> str:
+    """Normalise formal item text for exact and near-duplicate comparison."""
+
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", _compact_text(value)).lower()
 
 
 def _business_value(value: Any) -> str:
@@ -269,7 +276,20 @@ def _basis(item: Mapping[str, Any]) -> tuple[str, list[str], list[str]]:
     return time_range, quotes, segment_ids
 
 
+def _support_status(item: Any) -> str:
+    if not isinstance(item, Mapping):
+        return ""
+    return _compact_text(item.get("supportStatus") or item.get("support_status") or "ai_suggested")
+
+
 def _summary_sections(records: Mapping[str, Any]) -> tuple[list[Any], list[Any], list[Any]]:
+    publication_mode = _compact_text(records.get("_publicationMode") or "formal").lower()
+
+    def supported(item: Any) -> bool:
+        status = _support_status(item)
+        return status == "human_supported" or (
+            publication_mode == "review" and status == "ai_suggested"
+        )
     summary = records.get("summary")
     if isinstance(summary, Mapping):
         conclusions = list(summary.get("conclusions") or [])
@@ -283,6 +303,47 @@ def _summary_sections(records: Mapping[str, Any]) -> tuple[list[Any], list[Any],
         conclusions, risks, todos = [], [], []
     decision_rows = list(records.get("decisions") or conclusions)
 
+    def has_verified_basis(item: Any, category: str) -> bool:
+        if not isinstance(item, Mapping):
+            return False
+        basis = item.get("basis") if isinstance(item.get("basis"), Mapping) else {}
+        _, quotes, segment_ids = _basis(item)
+        if not (basis.get("evidenceValid") and quotes and segment_ids):
+            return False
+        try:
+            from backend.services.meeting_record_generation_service import _evidence_supports_item
+        except Exception:  # pragma: no cover - stripped document-only deployment
+            return True
+        return bool(_evidence_supports_item(item, category))
+
+    def deduplicate(items: Sequence[Any], fields: Sequence[str]) -> list[Any]:
+        result: list[Any] = []
+        for item in items:
+            content = _normalise_text(_item_content(item, *fields))
+            if not content:
+                continue
+            if any(
+                (
+                    content == _normalise_text(_item_content(existing, *fields))
+                    or (
+                        re.findall(r"\d+(?:\.\d+)?", content)
+                        == re.findall(
+                            r"\d+(?:\.\d+)?",
+                            _normalise_text(_item_content(existing, *fields)),
+                        )
+                        and SequenceMatcher(
+                            None,
+                            content,
+                            _normalise_text(_item_content(existing, *fields)),
+                        ).ratio() >= 0.9
+                    )
+                )
+                for existing in result
+            ):
+                continue
+            result.append(item)
+        return result
+
     def is_formal_decision(item: Any) -> bool:
         if not isinstance(item, Mapping):
             return False
@@ -294,19 +355,41 @@ def _summary_sections(records: Mapping[str, Any]) -> tuple[list[Any], list[Any],
         legacy_type = _compact_text(item.get("type") or item.get("kind"))
         return any(keyword in legacy_type for keyword in ("决定", "决议", "原则", "同意", "否决", "授权"))
 
-    decision_rows = [item for item in decision_rows if is_formal_decision(item)]
+    decision_rows = deduplicate(
+        [
+            item for item in decision_rows
+            if supported(item)
+            and is_formal_decision(item) and has_verified_basis(item, "decisions")
+        ],
+        ("content", "decision", "description", "title", "summary"),
+    )
+    risk_rows = [
+        item for item in list(records.get("risks") or risks)
+        if supported(item) and has_verified_basis(item, "risks")
+    ]
+    disclosure_rows = [
+        item for item in list(records.get("disclosures") or [])
+        if supported(item) and has_verified_basis(item, "disclosures")
+    ]
+    attention_rows = deduplicate(
+        risk_rows + disclosure_rows,
+        ("content", "description", "title", "summary"),
+    )[:5]
     todo_rows = list(records.get("todos") or todos)
     todo_rows = [
         item for item in todo_rows
-        if not isinstance(item, Mapping)
-        or (
+        if isinstance(item, Mapping)
+        and supported(item)
+        and has_verified_basis(item, "todos")
+        and (
             _item_content(item, "task", "content", "title", "summary")
             and (_business_value(item.get("owner")) or _business_value(item.get("deadline")))
         )
     ]
+    todo_rows = deduplicate(todo_rows, ("task", "content", "title", "summary"))
     return (
         decision_rows,
-        list(records.get("risks") or risks) + list(records.get("disclosures") or []),
+        attention_rows,
         todo_rows,
     )
 
@@ -326,10 +409,12 @@ def _formal_basis(item: Any) -> str:
     time_range, quotes, _ = _basis(item)
     details: list[str] = []
     if time_range:
-        details.append(f"时间 {time_range}")
+        details.append(time_range.replace("-", "–"))
     if quotes:
-        details.append("引句：" + "；".join(f"“{quote}”" for quote in quotes[:2]))
-    return "；".join(details)
+        cleaned = [quote.strip().strip('“”\"') for quote in quotes[:2] if quote.strip().strip('“”\"')]
+        if cleaned:
+            details.append("原文摘录：" + "；".join(f"“{quote}”" for quote in cleaned))
+    return "\n　　".join(details)
 
 
 def render_formal_markdown(
@@ -1483,9 +1568,20 @@ def _fill_minutes_template(
         _set_template_run_font(run, bold=bold)
 
     _, _, todos = _summary_sections(records)
-    required_rows = max(5, len(todos))
+    required_rows = max(1, len(todos))
     while len(table.rows) < 7 + required_rows:
         table._tbl.append(deepcopy(table.rows[-1]._tr))
+    while len(table.rows) > 7 + required_rows:
+        table._tbl.remove(table.rows[-1]._tr)
+    if not todos:
+        empty_cell = table.rows[7].cells[0].merge(table.rows[7].cells[3])
+        _set_template_cell_text(
+            empty_cell,
+            "本次会议暂无已明确责任人或完成时间的正式工作安排。",
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+            placeholder="",
+        )
+        return
     for index in range(required_rows):
         row = table.rows[7 + index]
         item = todos[index] if index < len(todos) else {}
@@ -1810,14 +1906,39 @@ def generate_document_bundle(
     require_proofread: bool = True,
     timestamp: str | None = None,
     template_id: str = "standard",
+    publication_mode: str = "formal",
 ) -> dict[str, Any]:
     """Generate four Word artifacts from one immutable generation snapshot."""
 
     if require_proofread and not records_are_proofread(records):
         raise ProofreadRequiredError("正式文件必须在校对通过后生成")
+    publication_mode = "review" if publication_mode == "review" else "formal"
+    source_records = deepcopy(dict(records))
+    allowed_statuses = {"human_supported", "ai_suggested"} if publication_mode == "review" else {"human_supported"}
+    for field in ("minutes", "decisions", "risks", "disclosures", "todos"):
+        source_records[field] = [
+            deepcopy(item) for item in source_records.get(field) or []
+            if isinstance(item, Mapping) and _support_status(item) in allowed_statuses
+        ]
+        if publication_mode == "review":
+            for item in source_records[field]:
+                label = "【人工支持】" if _support_status(item) == "human_supported" else "【AI提炼建议】"
+                if field == "minutes":
+                    values = item.get("formalSummary") if isinstance(item.get("formalSummary"), list) else [item.get("formalSummary")]
+                    item["formalSummary"] = [f"{label}{value}" for value in values if _compact_text(value)]
+                else:
+                    key = "task" if field == "todos" else "content"
+                    if _compact_text(item.get(key)):
+                        item[key] = f"{label}{item[key]}"
+    source_records["summary"] = {
+        "conclusions": deepcopy(source_records.get("decisions") or []),
+        "risks": deepcopy(source_records.get("risks") or []),
+        "todos": deepcopy(source_records.get("todos") or []),
+    }
+    source_records["_publicationMode"] = publication_mode
     rows = _rows_from_source(chronicle)
-    snapshot = _snapshot(records, rows)
-    manifest = build_evidence_manifest(records, chronicle, file_offsets=file_offsets, markers=markers)
+    snapshot = _snapshot(source_records, rows)
+    manifest = build_evidence_manifest(source_records, chronicle, file_offsets=file_offsets, markers=markers)
     stamp = timestamp or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     safe_title = re.sub(
         r"[\\/:*?\"<>|]+",
@@ -1826,7 +1947,8 @@ def generate_document_bundle(
     ).strip(" ._")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    minutes_path = output_path / f"{safe_title}_会议纪要_{stamp}.docx"
+    review_suffix = "_内部审阅版" if publication_mode == "review" else ""
+    minutes_path = output_path / f"{safe_title}_会议纪要{review_suffix}_{stamp}.docx"
     record_path = output_path / f"{safe_title}_会议记录_{stamp}.docx"
     evidence_path = output_path / f"{safe_title}_证据核验附件_{stamp}.docx"
     complete_path = output_path / f"{safe_title}_完整会议材料_{stamp}.docx"
@@ -1843,10 +1965,10 @@ def generate_document_bundle(
     ]
     missing_formal_summaries = [
         _compact_text(item.get("agenda")) or f"议题{index}"
-        for index, item in enumerate(list(records.get("minutes") or []), 1)
-        if isinstance(item, Mapping) and not _minute_discussion_points(item, records)
+        for index, item in enumerate(list(source_records.get("minutes") or []), 1)
+        if isinstance(item, Mapping) and not _minute_discussion_points(item, source_records)
     ]
-    formal_minutes_missing = not list(records.get("minutes") or []) and any(
+    formal_minutes_missing = not list(source_records.get("minutes") or []) and any(
         list((item.get("output") or {}).get("topics") or [])
         for item in list(records.get("mapResults") or [])
         if isinstance(item, Mapping)
@@ -1865,7 +1987,7 @@ def generate_document_bundle(
         expected_types and not any(keyword in meeting_type for keyword in expected_types)
     )
     document_records = {
-        **dict(records),
+        **source_records,
         "generationSnapshot": snapshot,
         "_chronicleRows": rows,
     }

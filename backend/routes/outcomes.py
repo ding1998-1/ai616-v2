@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from backend.dependencies import require_meeting, require_user
 from backend.config import MEETING_FILES_DIR, RECORDS_PIPELINE
-from backend.models import FormalActionRequest, MeetingMarkerRequest, MeetingRecordsUpdateRequest
+from backend.models import FormalActionRequest, MeetingMarkerRequest, MeetingRecordReviewRequest, MeetingRecordsUpdateRequest
 from backend.services.outcome_service import (
     add_marker,
     confirm_records,
@@ -23,6 +23,7 @@ from backend.services.outcome_service import (
     list_todos,
     list_versions,
     update_records,
+    review_record_item,
     update_todo,
 )
 
@@ -85,6 +86,7 @@ async def generate_meeting_documents(
     request: Request,
     meeting_id: str,
     template_id: str = "standard",
+    mode: str = "formal",
     body: FormalActionRequest | None = None,
 ):
     user, _, _ = require_meeting(request, meeting_id)
@@ -94,6 +96,7 @@ async def generate_meeting_documents(
             template_id=template_id,
             user=user,
             override_reason=(body.overrideReason if body else ""),
+            publication_mode=mode,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -102,6 +105,35 @@ async def generate_meeting_documents(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"success": True, "meetingId": meeting_id, "documents": bundle}
+
+
+@router.post("/meetings/{meeting_id}/records/{field}/{item_id}/review")
+async def review_meeting_record(
+    request: Request,
+    meeting_id: str,
+    field: str,
+    item_id: str,
+    body: MeetingRecordReviewRequest,
+):
+    user, _, _ = require_meeting(request, meeting_id)
+    try:
+        records = review_record_item(
+            meeting_id,
+            field,
+            item_id,
+            body.action,
+            user,
+            content=body.content,
+            reason_code=body.reasonCode,
+            reason_text=body.reasonText,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"success": True, "meetingId": meeting_id, "records": records}
 
 
 @router.get("/meetings/{meeting_id}/records/documents/{kind}")

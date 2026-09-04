@@ -28,6 +28,25 @@ def test_formal_word_marks_authorized_human_override():
     assert "已核对录音原文并确认内容" in text
 
 
+def test_formal_publication_excludes_ai_suggestions(tmp_path):
+    records = _records()
+    records["minutes"][0]["supportStatus"] = "ai_suggested"
+    records["decisions"][0]["supportStatus"] = "ai_suggested"
+    bundle = generate_document_bundle(
+        "m-review",
+        {"title": "审核测试", "meetingType": "普通企业会议"},
+        records,
+        [{"segmentId": "s1", "start": 60, "end": 120, "text": "确认按程序补充材料"}],
+        tmp_path,
+        publication_mode="formal",
+        timestamp="20260904100000",
+    )
+    with ZipFile(bundle["minutes"]["path"]) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert "会议明确按程序补充预算材料" not in xml
+    assert "同意补充预算材料" not in xml
+
+
 def test_formal_minutes_never_fall_back_to_keypoints_or_map_evidence():
     records = {
         "minutes": [
@@ -84,46 +103,61 @@ def _records(proofread=True):
             "reduceCallCount": 1,
         },
         "minutes": [{
+            "supportStatus": "human_supported",
             "agenda": "预算调整",
             "status": "已记录",
             "keyPoints": ["确认按程序补充材料"],
             "formalSummary": ["会议明确按程序补充预算材料。"],
             "basis": {
                 "timeRange": "00:01:00-00:02:00",
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s1"],
                 "quotes": [{"text": "确认按程序补充材料", "segmentId": "s1"}],
             },
         }],
         "decisions": [{
+            "supportStatus": "human_supported",
             "content": "同意补充预算材料",
             "type": "决定",
             "status": "待确认",
             "basis": {
                 "timeRange": "00:01:00-00:02:00",
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s1"],
                 "quotes": [{"text": "确认按程序补充材料", "segmentId": "s1"}],
             },
         }],
         "risks": [{
+            "supportStatus": "human_supported",
             "content": "超过权限的支出需履行审批程序",
             "severity": "高",
             "basis": {
                 "timeRange": "00:04:00-00:04:10",
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s2"],
                 "quotes": [{"text": "需要重新履行审批程序", "segmentId": "s2"}],
             },
         }],
         "disclosures": [{
+            "supportStatus": "human_supported",
             "content": "向管理层披露预算变化",
             "audience": "管理层",
             "basis": {
                 "timeRange": "00:04:00-00:04:10",
-                "quotes": [{"text": "需要重新履行审批程序", "segmentId": "s2"}],
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s2"],
+                "quotes": [{"text": "向管理层披露预算变化", "segmentId": "s2"}],
             },
         }],
         "todos": [{
+            "supportStatus": "human_supported",
             "task": "补充预算材料",
             "owner": "张三",
             "deadline": "待定",
             "basis": {
                 "timeRange": "00:01:00-00:02:00",
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s1"],
                 "quotes": [{"text": "确认按程序补充材料", "segmentId": "s1"}],
             },
         }],
@@ -271,8 +305,26 @@ def test_formal_word_prefers_formal_summary_and_filters_non_decisions(tmp_path: 
     records["minutes"][0]["formalSummary"] = "经讨论，会议明确按节点推进预算材料复核。"
     records["minutes"][0]["keyPoints"] = ["嗯那个原始口语不应进入正式纪要"]
     records["decisions"] = [
-        {"content": "同意按节点推进。", "outcomeType": "decision"},
-        {"content": "建议后续关注。", "outcomeType": "suggestion"},
+            {
+                "content": "同意按节点推进。",
+                "supportStatus": "human_supported",
+            "outcomeType": "decision",
+            "basis": {
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s1"],
+                "quotes": [{"text": "同意按节点推进", "segmentId": "s1"}],
+            },
+        },
+            {
+                "content": "建议后续关注。",
+                "supportStatus": "human_supported",
+            "outcomeType": "suggestion",
+            "basis": {
+                "evidenceValid": True,
+                "sourceSegmentIds": ["s2"],
+                "quotes": [{"text": "建议后续关注", "segmentId": "s2"}],
+            },
+        },
     ]
     bundle = generate_document_bundle(
         "m-formal",
@@ -298,11 +350,63 @@ def test_formal_word_prefers_formal_summary_and_filters_non_decisions(tmp_path: 
 def test_todo_placeholders_are_not_treated_as_real_owner_or_deadline():
     records = _records()
     records["todos"] = [
-        {"task": "无效待办", "owner": "待确认", "deadline": "待定"},
-        {"task": "有效待办", "owner": "项目中心", "deadline": "待定"},
+            {
+                "task": "无效待办", "owner": "待确认", "deadline": "待定",
+                "supportStatus": "human_supported",
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s1"], "quotes": [{"text": "无效待办", "segmentId": "s1"}]},
+        },
+            {
+                "task": "有效待办", "owner": "项目中心", "deadline": "待定",
+                "supportStatus": "human_supported",
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s2"], "quotes": [{"text": "有效待办", "segmentId": "s2"}]},
+        },
     ]
     _, _, todos = meeting_document_service._summary_sections(records)
     assert [item["task"] for item in todos] == ["有效待办"]
+
+
+def test_word_sections_never_render_unsupported_items_even_after_global_override():
+    records = _records()
+    records["latestFormalOverride"] = {
+        "operator": "系统管理员",
+        "reason": "已人工核对原始材料并允许导出",
+    }
+    records["decisions"] = [{
+        "content": "未经支持的正式决议",
+        "outcomeType": "decision",
+        "basis": {"evidenceValid": False, "quotes": [], "sourceSegmentIds": []},
+    }]
+    decisions, _, _ = meeting_document_service._summary_sections(records)
+    assert decisions == []
+
+
+def test_risks_and_disclosures_are_deduplicated_and_limited_to_five():
+    records = _records()
+    duplicate = {
+        "content": "土地征收费用来源不明，缺乏审核依据",
+        "supportStatus": "human_supported",
+        "basis": {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["risk-1"],
+            "quotes": [{"text": "土地征收费用来源不明，缺乏审核依据", "segmentId": "risk-1"}],
+        },
+    }
+    records["risks"] = [duplicate, {**duplicate}]
+    records["disclosures"] = [{**duplicate}]
+    _, attention, _ = meeting_document_service._summary_sections(records)
+    assert len(attention) == 1
+
+
+def test_formal_basis_uses_clean_time_and_original_quote_layout():
+    value = meeting_document_service._formal_basis({
+        "basis": {
+            "evidenceValid": True,
+            "timeRange": "00:03:00-00:05:00",
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "“先把土地单独摘出来”", "segmentId": "s1"}],
+        },
+    })
+    assert value == "00:03:00–00:05:00\n　　原文摘录：“先把土地单独摘出来”"
 
 
 def test_chronicle_merges_same_speaker_agenda_within_five_seconds():
@@ -400,11 +504,14 @@ def test_combined_formal_word_expands_action_rows_without_truncation(tmp_path: P
     records["todos"] = [
         {
             "task": f"落实第{index}项工作并提交完整说明材料",
+            "supportStatus": "human_supported",
             "owner": f"责任人{index}",
             "deadline": f"2026-09-{index + 10:02d}",
             "basis": {
                 "timeRange": "00:01:00-00:02:00",
-                "quotes": [{"text": "确认按程序补充材料", "segmentId": "s1"}],
+                "evidenceValid": True,
+                "sourceSegmentIds": [f"todo-{index}"],
+                "quotes": [{"text": f"落实第{index}项工作并提交完整说明材料", "segmentId": f"todo-{index}"}],
             },
         }
         for index in range(1, 8)

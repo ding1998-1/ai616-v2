@@ -34,6 +34,76 @@ _record_generation_tasks: dict[str, asyncio.Task] = {}
 _record_generation_states: dict[str, dict] = {}
 
 
+def _record_text(item: dict, field: str) -> str:
+    keys = {
+        "minutes": ("agenda", "formalSummary"),
+        "decisions": ("content",),
+        "risks": ("content",),
+        "disclosures": ("content",),
+        "todos": ("task",),
+    }.get(field, ("content",))
+    parts: list[str] = []
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(part).strip() for part in value if str(part).strip())
+        elif str(value or "").strip():
+            parts.append(str(value).strip())
+    return " ".join(parts)
+
+
+def normalize_review_metadata(records: dict, previous: dict | None = None) -> dict:
+    """Attach stable review metadata and preserve human-locked records on regeneration."""
+
+    previous = previous if isinstance(previous, dict) else {}
+    for field in FORMAL_RECORD_FIELDS:
+        old_locked = {
+            str(item.get("id") or ""): deepcopy(item)
+            for item in previous.get(field) or []
+            if isinstance(item, dict) and item.get("locked") and item.get("id")
+        }
+        rows: list[dict] = []
+        for index, raw in enumerate(records.get(field) or []):
+            if not isinstance(raw, dict):
+                continue
+            item = deepcopy(raw)
+            identity = _record_text(item, field)
+            item_id = str(item.get("id") or "").strip() or (
+                f"{field[:3]}_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}"
+            )
+            item["id"] = item_id
+            item.setdefault("supportStatus", "ai_suggested")
+            item.setdefault("supportSource", "transcript")
+            item.setdefault("editedByHuman", False)
+            item.setdefault("locked", False)
+            rows.append(old_locked.pop(item_id, item))
+        rows.extend(old_locked.values())
+        records[field] = rows
+    summary = records.get("summary")
+    if isinstance(summary, dict):
+        summary["conclusions"] = deepcopy(records.get("decisions") or [])
+        summary["risks"] = deepcopy(records.get("risks") or [])
+        summary["todos"] = deepcopy(records.get("todos") or [])
+    return records
+
+
+def _check_review_permission(user: dict, meeting: dict) -> None:
+    _check_meeting_access(user, meeting)
+    role = str(user.get("role") or "").lower()
+    roles = {str(value).lower() for value in user.get("roles") or []}
+    if role in {"admin", "secretary", "recorder", "host", "reviewer"} or roles.intersection(
+        {"admin", "secretary", "recorder", "host", "reviewer", "minutes_reviewer"}
+    ):
+        return
+    name = str(user.get("name") or user.get("username") or "").strip()
+    candidates = " ".join(str(meeting.get(key) or "") for key in ("creator", "host", "moderator", "recorder", "secretary"))
+    if not candidates.strip():
+        return
+    if name and name in candidates:
+        return
+    raise PermissionError("当前账号没有正式会议成果核验或人工放行权限")
+
+
 def basis_gate_status(records: dict | None) -> dict:
     """Return the single evidence gate used by confirm, export, and archive."""
 
@@ -470,6 +540,7 @@ async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> d
         participants=participants,
         agenda_titles=agenda_titles,
     )
+    normalize_review_metadata(records, cached)
     records["generated"] = True
     records["generatedAt"] = _now_text()
     records["generationId"] = generation_id
@@ -515,6 +586,7 @@ def generate_record_documents(
     *,
     user: dict | None = None,
     override_reason: str = "",
+    publication_mode: str = "formal",
 ) -> dict:
     """Generate the formal minutes and independent evidence attachment."""
 
@@ -527,14 +599,29 @@ def generate_record_documents(
     records = meeting.get("generatedRecords")
     if not isinstance(records, dict) or not records.get("generated"):
         raise ValueError("请先生成会议纪要")
-    records = deepcopy(records)
-    gate, override = authorize_basis_override(
-        records,
-        meeting,
-        user or {},
-        action="生成正式文件",
-        reason=override_reason,
-    )
+    records = normalize_review_metadata(deepcopy(records))
+    publication_mode = "review" if publication_mode == "review" else "formal"
+    if publication_mode == "formal":
+        formal_records = deepcopy(records)
+        for field in FORMAL_RECORD_FIELDS:
+            formal_records[field] = [
+                item for item in formal_records.get(field) or []
+                if isinstance(item, dict) and item.get("supportStatus") == "human_supported"
+            ]
+        if not any(formal_records.get(field) for field in FORMAL_RECORD_FIELDS):
+            raise ValueError("尚无人工支持的内容，不能生成正式发布版")
+    else:
+        formal_records = records
+    if publication_mode == "formal":
+        gate, override = authorize_basis_override(
+            formal_records,
+            meeting,
+            user or {},
+            action="生成正式文件",
+            reason=override_reason,
+        )
+    else:
+        gate, override = basis_gate_status(formal_records), None
     records["basisGate"] = gate
     if override:
         records.update({
@@ -570,8 +657,9 @@ def generate_record_documents(
         output_dir,
         file_offsets=whisper_event.get("fileOffsets") or {},
         markers=markers,
-        require_proofread=True,
+        require_proofread=publication_mode == "formal",
         template_id=template_id,
+        publication_mode=publication_mode,
     )
 
     with MEETINGS_LOCK:
@@ -620,6 +708,8 @@ def get_records(meeting_id: str) -> dict:
     records = meeting.get("generatedRecords")
     if not isinstance(records, dict):
         records = {"generated": False, "summary": [], "minutes": [], "decisions": [], "todos": []}
+    elif records.get("generated"):
+        records = normalize_review_metadata(deepcopy(records))
     return {"meetingId": safe_id, "records": records}
 
 
@@ -654,6 +744,86 @@ def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
     return records
 
 
+def review_record_item(
+    meeting_id: str,
+    field: str,
+    item_id: str,
+    action: str,
+    user: dict,
+    *,
+    content: str = "",
+    reason_code: str = "verified",
+    reason_text: str = "",
+) -> dict:
+    """Review one generated item without losing the AI proposal or evidence chain."""
+
+    if field not in FORMAL_RECORD_FIELDS:
+        raise ValueError("不支持的成果类型")
+    if action not in {"support", "edit_and_support", "reject"}:
+        raise ValueError("不支持的核验动作")
+    safe_id = _safe_meeting_id(meeting_id)
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        meeting = meetings.get(safe_id)
+        if not meeting:
+            raise KeyError("会议不存在")
+        _check_review_permission(user, meeting)
+        records = normalize_review_metadata(deepcopy(meeting.get("generatedRecords") or {}))
+        rows = records.get(field) or []
+        index = next((idx for idx, row in enumerate(rows) if str(row.get("id") or "") == item_id), -1)
+        if index < 0:
+            raise KeyError("待核验内容不存在")
+        item = deepcopy(rows[index])
+        now = _now_text()
+        reviewer_id = str(user.get("id") or user.get("username") or "")
+        reviewer_name = str(user.get("name") or user.get("username") or "")
+        if action == "edit_and_support":
+            edited = str(content or "").strip()
+            if not edited:
+                raise ValueError("编辑后支持必须填写正式表述")
+            if field == "minutes":
+                original = "\n".join(str(value) for value in item.get("formalSummary") or [] if str(value).strip())
+                item["originalAiSummary"] = item.get("originalAiSummary") or original
+                item["formalSummary"] = [edited]
+            else:
+                key = "task" if field == "todos" else "content"
+                item["originalAiSummary"] = item.get("originalAiSummary") or str(item.get(key) or "")
+                item[key] = edited
+            item["editedByHuman"] = True
+        item["supportStatus"] = "rejected" if action == "reject" else "human_supported"
+        item["locked"] = True
+        item["humanReview"] = {
+            "supported": action != "reject",
+            "reviewerId": reviewer_id,
+            "reviewerName": reviewer_name,
+            "reviewedAt": now,
+            "reasonCode": reason_code,
+            "reasonText": reason_text,
+        }
+        rows[index] = item
+        records[field] = rows
+        normalize_review_metadata(records)
+        records["humanReviewed"] = any(
+            row.get("supportStatus") == "human_supported"
+            for name in FORMAL_RECORD_FIELDS for row in records.get(name) or []
+            if isinstance(row, dict)
+        )
+        records["updatedAt"] = now
+        meeting["generatedRecords"] = records
+        meeting["updatedAt"] = now
+        meetings[safe_id] = meeting
+        _save_meetings(meetings)
+        _invalidate_meetings_cache()
+        _save_version(
+            safe_id,
+            records,
+            user,
+            {"field": field, "itemId": item_id, "action": action},
+            edit_summary=f"人工核验{field}：{action}",
+        )
+    return records
+
+
 def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> dict:
     """Record an explicit human review before formal Word generation."""
 
@@ -662,6 +832,7 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
     if not initial_meeting:
         raise KeyError("会议不存在")
     _check_meeting_access(user, initial_meeting)
+    _check_review_permission(user, initial_meeting)
     initial_records = dict(initial_meeting.get("generatedRecords") or {})
     if not initial_records.get("generated"):
         raise ValueError("请先生成会议纪要")
@@ -671,7 +842,7 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
         if not meeting:
             raise KeyError("会议不存在")
         _check_meeting_access(user, meeting)
-        records = dict(meeting.get("generatedRecords") or {})
+        records = normalize_review_metadata(deepcopy(meeting.get("generatedRecords") or {}))
         if not records.get("generated"):
             raise ValueError("请先生成会议纪要")
         gate, override = authorize_basis_override(
@@ -683,6 +854,27 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
         )
         now = _now_text()
         reviewer = user.get("name") or user.get("username") or ""
+        reviewer_id = str(user.get("id") or user.get("username") or "")
+        for field in FORMAL_RECORD_FIELDS:
+            for item in records.get(field) or []:
+                if not isinstance(item, dict) or item.get("supportStatus") != "ai_suggested":
+                    continue
+                basis = item.get("basis") if isinstance(item.get("basis"), dict) else {}
+                if not basis.get("evidenceValid") and not override:
+                    continue
+                item.update({
+                    "supportStatus": "human_supported",
+                    "locked": True,
+                    "humanReview": {
+                        "supported": True,
+                        "reviewerId": reviewer_id,
+                        "reviewerName": reviewer,
+                        "reviewedAt": now,
+                        "reasonCode": "authorized_override" if override else "batch_verified",
+                        "reasonText": override_reason if override else "一键确认全部有依据的 AI 提炼建议",
+                    },
+                })
+        normalize_review_metadata(records)
         records.update({
             "proofreadPassed": True,
             "proofreadStatus": "human-authorized-exception" if override else "human-approved",

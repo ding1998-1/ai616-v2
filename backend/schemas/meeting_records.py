@@ -21,6 +21,25 @@ class RecordModel(BaseModel):
         extra = "ignore"
 
 
+class HumanReview(RecordModel):
+    supported: bool = False
+    reviewerId: str = ""
+    reviewerName: str = ""
+    reviewedAt: str = ""
+    reasonCode: str = ""
+    reasonText: str = ""
+
+
+class ReviewableRecord(RecordModel):
+    id: str = ""
+    supportStatus: str = "ai_suggested"
+    supportSource: str = "transcript"
+    humanReview: Optional[HumanReview] = None
+    originalAiSummary: str = ""
+    editedByHuman: bool = False
+    locked: bool = False
+
+
 class EvidenceQuote(RecordModel):
     """A verbatim quote anchored to one source segment."""
 
@@ -92,7 +111,7 @@ class MapOutput(RecordModel):
     corrections: List[Correction] = Field(default_factory=list)
 
 
-class MinuteRecord(RecordModel):
+class MinuteRecord(ReviewableRecord):
     agenda: str = ""
     status: str = "待整理"
     keyPoints: List[str] = Field(default_factory=list)
@@ -100,7 +119,7 @@ class MinuteRecord(RecordModel):
     basis: Basis = Field(default_factory=Basis)
 
 
-class DecisionRecord(RecordModel):
+class DecisionRecord(ReviewableRecord):
     content: str = ""
     type: str = "知悉"
     outcomeType: str = ""
@@ -109,20 +128,20 @@ class DecisionRecord(RecordModel):
     basis: Basis = Field(default_factory=Basis)
 
 
-class RiskRecord(RecordModel):
+class RiskRecord(ReviewableRecord):
     content: str = ""
     severity: str = "中"
     basis: Basis = Field(default_factory=Basis)
 
 
-class DisclosureRecord(RecordModel):
+class DisclosureRecord(ReviewableRecord):
     content: str = ""
     audience: str = ""
     deadline: str = "待定"
     basis: Basis = Field(default_factory=Basis)
 
 
-class TodoRecord(RecordModel):
+class TodoRecord(ReviewableRecord):
     task: str = ""
     owner: str = "待确认"
     deadline: str = "待定"
