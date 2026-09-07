@@ -4553,11 +4553,6 @@
   padding: 13px 16px 8px;
 }
 
-.meeting-compliance-page.is-stage-meeting .meeting-agenda-check-panel > div:nth-child(2) {
-  padding: 0 14px 8px;
-  margin: 0 !important;
-}
-
 .meeting-compliance-page.is-stage-meeting .meeting-agenda-timeline {
   flex: 0 1 auto;
   min-height: 0;
@@ -6040,4 +6035,86 @@
   .meeting-compliance-page.is-stage-meeting .meeting-live-record-tools {
     grid-template-columns: minmax(170px, 1fr) 112px 110px;
   }
+}
+
+/* Keep live agenda actions explicit and separate from discussion status. */
+.meeting-compliance-page.is-stage-meeting .meeting-agenda-heading {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px;
+}
+
+.meeting-agenda-heading-title,
+.meeting-agenda-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meeting-agenda-count {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--ui-bg-page, #f3f5f8);
+  color: var(--ui-text-3, #8993a3);
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.meeting-agenda-heading-actions { margin-left: auto; }
+
+.meeting-agenda-heading-actions .meeting-add-agenda {
+  height: 32px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  border-color: #d3e3fb;
+  color: var(--ui-primary, #1268dc);
+  background: #f3f8ff;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.meeting-compliance-page.is-stage-meeting .meeting-agenda-timeline {
+  padding: 12px;
+}
+
+.meeting-compliance-page.is-stage-meeting .agenda-timeline-row,
+.meeting-compliance-page.is-stage-meeting .agenda-timeline-row.is-active {
+  grid-template-columns: 26px minmax(0, 1fr) max-content;
+  min-height: 72px;
+  gap: 10px;
+  padding: 12px;
+}
+
+.meeting-compliance-page.is-stage-meeting .agenda-tl-status { grid-column: 3; }
+.meeting-compliance-page.is-stage-meeting .agenda-tl-title-row strong { white-space: normal; overflow-wrap: anywhere; }
+
+.agenda-tl-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 5px;
+  color: var(--ui-text-3, #8993a3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.meeting-compliance-page.is-stage-meeting .agenda-timeline-row:focus-visible {
+  outline: 2px solid var(--ui-primary, #1268dc);
+  outline-offset: 2px;
+}
+
+.meeting-compliance-page.is-stage-meeting .meeting-transcript-panel .meeting-runtime-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.meeting-compliance-page.is-stage-meeting .meeting-live-record-tools {
+  flex: 1 1 390px;
+  min-width: 0;
+  width: auto;
+  grid-template-columns: minmax(100px, 1fr) 100px 110px;
 }

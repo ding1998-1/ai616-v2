@@ -173,6 +173,9 @@ async def _run_review(meeting_id: str, force: bool) -> None:
         _append_status(meeting_id, "running")
         merged = MEETING_FILES_DIR / "recordings" / meeting_id / "_merged_whisper.wav"
         try:
+            from backend.services.recording_service import require_completed_recordings
+
+            require_completed_recordings(meeting_id)
             files = _valid_audio_files(_audio_files(meeting_id))
             if not files:
                 raise RuntimeError("没有可用于 Whisper 终审的完整录音")

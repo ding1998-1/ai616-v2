@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { resilientRecordingStore } from '../services/resilientRecordingStore';
+import { recordingRequest, withDeadline } from '../lib/recordingRequest.mjs';
 import { Alert, Avatar, Button, Input, Progress, Select, Space, Tag, Typography, message } from 'antd';
 import {
   AudioOutlined,
@@ -468,6 +469,13 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine);
   // 音频合并/上传状态
   const [isMerging, setIsMerging] = useState(false);
+  const [completionPending, setCompletionPending] = useState(false);
+  const stopInFlightRef = useRef(false);
+  const stoppedDurationRef = useRef(null);
+  const recoveryBusyRef = useRef(false);
+  const [recoveryRunning, setRecoveryRunning] = useState(false);
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
+  const completedSessionRef = useRef('');
   const [pendingChunks, setPendingChunks] = useState(0);
   const [recoveryStatus, setRecoveryStatus] = useState('');
   // P0-4: ACK 队列 — chunk 必须收到 ACK 才算成功
@@ -769,30 +777,36 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   }, [meetingId, recording, currentUser?.username]);
 
   useEffect(() => {
-    if (!meetingId || !currentUser?.username || recording) return undefined;
+    if (!meetingId || !currentUser?.username || recording || isMerging || completionPending || stopInFlightRef.current) return undefined;
     let cancelled = false;
     const recover = async () => {
+      if (recoveryBusyRef.current) return;
+      recoveryBusyRef.current = true;
+      setRecoveryRunning(true);
+      try {
       setRecoveryStatus('');
-      const sessions = await resilientRecordingStore.listSessions();
+      const sessions = await withDeadline(() => resilientRecordingStore.listSessions(), 5000, '本地录音读取超时，请重试恢复');
       const candidates = sessions.filter(item => (
-        !item.finalized && item.meetingId === meetingId && item.clientId === clientIdRef.current
+        !item.finalized && item.sessionId !== completedSessionRef.current && item.meetingId === meetingId && item.clientId === clientIdRef.current
       ));
       if (candidates.length) {
         setRecoveryStatus(`发现 ${candidates.length} 段中断录音，正在核对并补传`);
       }
       for (const session of candidates) {
         if (cancelled) return;
-        const token = getStoredToken() || session.token;
+        const token = getStoredToken();
         if (!token) continue;
         const query = new URLSearchParams({
           meeting_id: meetingId,
           client_id: session.clientId,
           session_id: session.sessionId,
         });
-        const statusResponse = await fetch(`/api/meeting/recorder/audio/status?${query}`, {
+        const statusResponse = await recordingRequest(`/api/meeting/recorder/audio/status?${query}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!statusResponse.ok) continue;
+        if (!statusResponse.ok) throw new Error(statusResponse.status === 403
+          ? '当前账号无权恢复这段录音，请使用录音时的账号重试；原录音已保留'
+          : `录音状态核对失败（HTTP ${statusResponse.status}），请稍后重试`);
         const status = await statusResponse.json();
         const received = new Set(status.receivedChunks || []);
         const chunks = await resilientRecordingStore.listChunks(session.sessionId);
@@ -810,7 +824,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           form.append('chunk_duration_ms', '3000');
           const extension = audioExtensionForMime(chunk.blob?.type || session.mimeType);
           form.append('file', chunk.blob, `chunk_${chunk.index}.${extension}`);
-          const response = await fetch('/api/meeting/recorder/audio/chunk', {
+          const response = await recordingRequest('/api/meeting/recorder/audio/chunk', {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}` },
             body: form,
@@ -829,7 +843,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         completeForm.append('total_chunks', String(finalChunkCount));
         completeForm.append('client_id', session.clientId);
         completeForm.append('session_id', session.sessionId);
-        const completeResponse = await fetch('/api/meeting/recorder/audio/complete', {
+        const completeResponse = await recordingRequest('/api/meeting/recorder/audio/complete', {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: completeForm,
@@ -841,15 +855,19 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           message.success('已恢复并补传上次中断的录音');
         }
       }
+      } finally {
+        recoveryBusyRef.current = false;
+        setRecoveryRunning(false);
+      }
     };
     recover().catch(error => {
       if (!cancelled) {
-        setRecoveryStatus('上次录音仍待补传，请保持网络连接并停留在本页');
+        setRecoveryStatus(error.message || '上次录音仍待补传，请保持网络连接并停留在本页');
         console.warn('[RECOVERY] 录音恢复尚未完成:', error);
       }
     });
     return () => { cancelled = true; };
-  }, [meetingId, currentUser?.username, recording, meetingTitle]);
+  }, [meetingId, currentUser?.username, recording, meetingTitle, isMerging, completionPending, recoveryAttempt]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -1130,7 +1148,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       form.append('chunk_duration_ms', '3000');
       const extension = audioExtensionForMime(blob?.type || recorderMimeTypeRef.current);
       form.append('file', blob, `chunk_${index}.${extension}`);
-      const resp = await fetch('/api/meeting/recorder/audio/chunk', {
+      const resp = await recordingRequest('/api/meeting/recorder/audio/chunk', {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form,
@@ -1140,7 +1158,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         if (data.ack === index || data.success) {
           // ACK 确认 — 从 pending 队列移除
           pendingAckRef.current.delete(index);
-          await resilientRecordingStore.deleteChunk(recordingSessionIdRef.current, index);
+          void resilientRecordingStore.deleteChunk(recordingSessionIdRef.current, index).catch(() => {});
           setPendingChunks(pendingAckRef.current.size);
         }
       } else {
@@ -1156,9 +1174,9 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     flushPendingChunksRef.current = flushPendingChunks;
     const pending = Array.from(pendingAckRef.current.entries()).sort((a, b) => a[0] - b[0]);
     for (const [index, item] of pending) {
-      if (item.attempts >= 5) continue; // 最多重试5次
       item.attempts++;
       await uploadAudioChunk(item.blob, index);
+      if (pendingAckRef.current.has(index)) break;
     }
   };
 
@@ -1178,7 +1196,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       if (recordingStartTimeRef.current) {
         form.append('recording_start_time', new Date(recordingStartTimeRef.current).toISOString());
       }
-      const resp = await fetch('/api/meeting/recorder/audio/complete', {
+      const resp = await recordingRequest('/api/meeting/recorder/audio/complete', {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form,
@@ -1577,7 +1595,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   };
 
   const startRecording = async () => {
-    if (starting) return;
+    if (starting || stopInFlightRef.current || completionPending || recoveryBusyRef.current) return;
     // P0-12: 防重复 MediaRecorder — 切后台回来可能触发重复 start
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       console.warn('[REC] MediaRecorder 已在运行，跳过重复创建');
@@ -1632,7 +1650,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         meetingId,
         meetingTitle,
         clientId: clientIdRef.current,
-        token: getStoredToken(),
+        ownerUsername: currentUser?.username,
         mimeType: recorderMimeTypeRef.current,
         finalChunkCount: null,
         durationSeconds: null,
@@ -1649,7 +1667,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
             // IndexedDB is only the offline safety copy. Safari may reject Blob writes
             // under storage pressure; that must never block the primary server upload.
             try {
-              await resilientRecordingStore.putChunk(recordingSessionIdRef.current, idx, event.data);
+              await withDeadline(() => resilientRecordingStore.putChunk(recordingSessionIdRef.current, idx, event.data), 5000, '本地缓存暂不可用');
             } catch (storeError) {
               console.warn(`[REC] Chunk ${idx} 本地缓存失败，继续直接上传:`, storeError);
             }
@@ -1665,6 +1683,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       recordingStartTimeRef.current = Date.now(); // 记录录音开始时间
       setAudioReady(true);
       setRecording(true);
+      recordingRef.current = true;
       setIsPaused(false);
       isPausedRef.current = false;
       setSeconds(0);
@@ -1681,6 +1700,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
       }
       setSpeechStatus('麦克风已接入，正在连接实时识别...');
       await postSession('start');
+      if (!recordingRef.current) return;
 
       try {
         await startFunAsrRecognition(stream);
@@ -1718,40 +1738,40 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
   };
 
   const stopRecording = async () => {
-    const finalSeconds = seconds;
+    if (stopInFlightRef.current) return;
+    stopInFlightRef.current = true;
+    setIsMerging(true);
+    setCompletionPending(true);
+    setSpeechStatus('正在停止录音并保存，请保持页面打开');
+    const finalSeconds = stoppedDurationRef.current ?? seconds;
+    stoppedDurationRef.current = finalSeconds;
+    try {
     const transcriptCount = liveLines.length;
     recognitionRef.current?.stop?.();
     stopFunAsrRecognition();
     const recorder = mediaRecorderRef.current;
-    await new Promise(resolve => {
+    await new Promise((resolve, reject) => {
       if (!recorder || recorder.state === 'inactive') {
         resolve();
         return;
       }
-      let resolved = false;
-      // 等待 stop 后的最后一次 ondataavailable（包含剩余音频数据）
-      const origOnData = recorder.ondataavailable;
-      recorder.ondataavailable = event => {
-        if (event.data?.size) origOnData?.(event);
-        if (!resolved) {
-          resolved = true;
-          window.setTimeout(resolve, 150); // 确保数据写入完成
-        }
+      const timer = window.setTimeout(() => reject(new Error('录音停止尚未确认，请重试保存')), 5000);
+      const originalOnStop = recorder.onstop;
+      recorder.onstop = event => {
+        clearTimeout(timer);
+        originalOnStop?.(event);
+        resolve();
       };
       try {
         recorder.stop();
-      } catch (_) {
-        if (!resolved) { resolved = true; resolve(); }
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
       }
-      // 兜底超时
-      window.setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 2000);
     });
     // Safari 常在 stop 时才吐出最后一块音频。必须等待该分片完成本地落库与上传，
     // 不能只依赖固定延时，否则 complete 会早于 chunk 到达而返回 404。
     await new Promise(r => setTimeout(r, 80));
-    if (chunkUploadPromisesRef.current.size > 0) {
-      await Promise.allSettled(Array.from(chunkUploadPromisesRef.current));
-    }
     mediaStreamRef.current?.getTracks?.().forEach(track => track.stop());
     const chunks = audioChunksRef.current;
     const audioSize = chunks.reduce((total, item) => total + item.size, 0);
@@ -1763,6 +1783,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     mediaRecorderRef.current = null;
     mediaStreamRef.current = null;
     setRecording(false);
+    recordingRef.current = false;
     setIsPaused(false);
     isPausedRef.current = false;
     setAudioReady(false);
@@ -1772,7 +1793,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
 
     // 进入合并状态：显示进度，阻止用户离开
     setIsMerging(true);
-    const retryCount = retryQueueRef.current.length;
+    const retryCount = pendingAckRef.current.size;
     setPendingChunks(retryCount);
     setSpeechStatus(`正在上传剩余 ${retryCount} 个音频片段，请勿关闭页面…`);
 
@@ -1785,10 +1806,15 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
     window.addEventListener('beforeunload', beforeUnloadHandler);
 
     try {
-      await resilientRecordingStore.updateSession(recordingSessionIdRef.current, {
+      await withDeadline(() => resilientRecordingStore.updateSession(recordingSessionIdRef.current, {
         finalChunkCount: chunkIndexRef.current,
         durationSeconds: finalSeconds,
+      }), 5000, '本地录音状态保存超时').catch(() => {
+        message.warning('本地缓存暂不可用，正在直接保存到服务器，请保持页面打开');
       });
+      if (chunkUploadPromisesRef.current.size > 0) {
+        await withDeadline(() => Promise.allSettled(Array.from(chunkUploadPromisesRef.current)), 35000);
+      }
       await flushPendingChunks();
       if (pendingAckRef.current.size > 0) {
         throw new Error(`仍有 ${pendingAckRef.current.size} 个录音分片未回传，请保持页面打开后重试`);
@@ -1798,22 +1824,20 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
 
       // 流式上传模式：chunk 已在录音过程中上传，此处通知后端合并
       const totalChunks = chunkIndexRef.current;
+      if (totalChunks === 0) throw new Error('尚未收到有效音频，无法确认保存完成');
       if (totalChunks > 0) {
         const completed = await completeAudioUpload(finalSeconds, totalChunks);
         if (!completed?.success) {
-          setSpeechStatus('分片合并未确认，正在上传完整录音兜底…');
-          const fallback = await uploadCompleteAudioFallback(audioBlob, finalSeconds);
-          if (!fallback?.success) {
-            throw new Error(completed?.detail || `服务端未确认录音合并完成${completed?.status ? `（HTTP ${completed.status}）` : ''}`);
-          }
-          message.warning('分片合并未确认，已改用完整录音安全回传');
+          throw new Error(completed?.detail || `服务端未确认录音保存完成${completed?.status ? `（HTTP ${completed.status}）` : ''}，请重试保存`);
         }
-        await resilientRecordingStore.deleteSession(recordingSessionIdRef.current);
+        completedSessionRef.current = recordingSessionIdRef.current;
+        void resilientRecordingStore.deleteSession(recordingSessionIdRef.current).catch(() => {});
       }
-      setSpeechStatus('音频合并完成，正在保存会议记录…');
-      await postSession('stop', { audio_size: audioSize, duration_seconds: finalSeconds });
-      await loadRecorderHistory({ silent: true });
-      await refreshWhisperDocxInfo({ silent: true });
+      setCompletionPending(false);
+      stoppedDurationRef.current = null;
+      void postSession('stop', { audio_size: audioSize, duration_seconds: finalSeconds }).catch(() => {});
+      void loadRecorderHistory({ silent: true }).catch(() => {});
+      void refreshWhisperDocxInfo({ silent: true }).catch(() => {});
 
       setRecordingSummary({
         durationSeconds: finalSeconds,
@@ -1824,18 +1848,25 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         endedAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       });
       if (transcriptCount > 0) {
-        setSpeechStatus('录音结束，正在生成 Whisper 终审纪实…');
+        setSpeechStatus('录音已结束，音频已保存');
         message.success('录音会话已结束，音频和转写记录已回传');
       } else {
-        setSpeechStatus('录音结束，正在生成可用纪实材料…');
+        setSpeechStatus('录音已结束，音频已保存');
         message.warning('录音已结束，音频已回传；本次没有自动转写文本，可用下方手动补录关键发言');
       }
     } catch (err) {
+      setSpeechStatus(`录音待保存：${err.message}。请点击重试保存`);
       message.error(`结束上传失败：${err.message}`);
     } finally {
       window.removeEventListener('beforeunload', beforeUnloadHandler);
+      setPendingChunks(pendingAckRef.current.size);
+    }
+    } catch (err) {
+      setSpeechStatus(`录音待保存：${err.message}。请点击重试保存`);
+      message.error('录音尚未保存完成，请重试保存');
+    } finally {
+      stopInFlightRef.current = false;
       setIsMerging(false);
-      setPendingChunks(0);
     }
   };
 
@@ -2081,14 +2112,16 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
               <i />{connectionStatus === 'connected' ? `${asrBackend === 'qwen' ? '本地' : '在线'}转写` : recording ? '转写重连' : '转写待机'}
             </span>
           </div>
-          {recoveryStatus && <div className="mobile-recorder-merging">{recoveryStatus}</div>}
+          {recoveryStatus && <div className="mobile-recorder-merging">{recoveryStatus}
+            {!recoveryRunning && !recording && !isMerging && !completionPending && <Button size="small" onClick={() => setRecoveryAttempt(value => value + 1)}>重新核对录音</Button>}
+          </div>}
           <div className="mobile-recorder-actions">
             <Button
               type="primary"
               size="large"
               icon={<AudioOutlined />}
               onClick={startRecording}
-              disabled={recording || starting || !meetingInfoLoaded || Boolean(meetingAccessError)}
+              disabled={recording || starting || isMerging || completionPending || recoveryRunning || !meetingInfoLoaded || Boolean(meetingAccessError)}
               loading={starting}
               className="mobile-recorder-start"
             >
@@ -2107,12 +2140,12 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
             <Button
               size="large"
               onClick={stopRecording}
-              disabled={!recording || isMerging}
+              disabled={(!recording && !completionPending) || isMerging}
               loading={isMerging}
               danger={recording}
               className="mobile-recorder-stop"
             >
-              {isMerging ? '正在上传…' : '结束录音'}
+              {isMerging ? '正在保存…' : completionPending ? '重试保存' : '结束录音'}
             </Button>
           </div>
           {isMerging && <div className="mobile-recorder-merging">{pendingChunks > 0 ? `正在上传剩余 ${pendingChunks} 个音频片段，请保持页面打开` : '正在合并录音，请勿关闭页面'}</div>}
@@ -2124,7 +2157,7 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
             实时转写
           </div>
           <Alert
-            type={meetingAccessError ? 'error' : isMerging ? 'warning' : qwenAsrAvailable || speechRecognitionCtor ? 'success' : 'warning'}
+            type={meetingAccessError ? 'error' : isMerging || completionPending ? 'warning' : qwenAsrAvailable || speechRecognitionCtor ? 'success' : 'warning'}
             showIcon
             className="mobile-recorder-asr-alert"
             message={meetingAccessError || speechStatus}

@@ -95,6 +95,10 @@ def update_stage(
 
         # 声纹属于会后说话人校准能力，不是开会门槛。现场只要求身份与录音
         # 客户端绑定可靠；缺少声纹时仍允许开会、终审和进入签字流程。
+        if stage in {"audit", "archive"}:
+            from backend.services.recording_service import require_completed_recordings
+
+            require_completed_recordings(safe_id)
         if stage == "archive":
             from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
             from backend.services.outcome_service import authorize_basis_override

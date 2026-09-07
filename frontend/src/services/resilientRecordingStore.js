@@ -12,6 +12,7 @@ function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const timer = setTimeout(() => reject(new Error('Local recording storage timed out')), 5000);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('sessions')) {
@@ -22,9 +23,9 @@ function openDb() {
         store.createIndex('bySession', 'sessionId');
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+    request.onsuccess = () => { clearTimeout(timer); resolve(request.result); };
+    request.onerror = () => { clearTimeout(timer); reject(request.error); };
+  }).catch(error => { dbPromise = null; throw error; });
   return dbPromise;
 }
 
@@ -33,8 +34,12 @@ async function request(storeName, mode, operation) {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(storeName, mode);
     const result = operation(transaction.objectStore(storeName));
-    result.onsuccess = () => resolve(result.result);
-    result.onerror = () => reject(result.error);
+    const timer = setTimeout(() => {
+      transaction.abort();
+      reject(new Error('Local recording storage timed out'));
+    }, 5000);
+    transaction.oncomplete = () => { clearTimeout(timer); resolve(result.result); };
+    transaction.onabort = transaction.onerror = () => { clearTimeout(timer); reject(transaction.error || new Error('Local recording storage failed')); };
   });
 }
 
@@ -67,10 +72,14 @@ export const resilientRecordingStore = {
     const db = await openDb();
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(['sessions', 'chunks'], 'readwrite');
+      const timer = setTimeout(() => {
+        transaction.abort();
+        reject(new Error('Local recording cleanup timed out'));
+      }, 5000);
       transaction.objectStore('sessions').delete(sessionId);
       rows.forEach(row => transaction.objectStore('chunks').delete([sessionId, row.index]));
-      transaction.oncomplete = resolve;
-      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => { clearTimeout(timer); resolve(); };
+      transaction.onabort = transaction.onerror = () => { clearTimeout(timer); reject(transaction.error || new Error('Local recording cleanup failed')); };
     });
   },
 };

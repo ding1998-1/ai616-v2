@@ -31,6 +31,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { authFetch, authFetchJson, getStoredToken } from '../lib/auth';
+import { loadTranscriptHistory, mergeTranscripts } from '../lib/transcriptHistory.mjs';
 import { Typography as ArcoTypography } from '@arco-design/web-react';
 import "./MeetingComplianceWorkflow.css";
 
@@ -722,6 +723,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [meetingActionType, setMeetingActionType] = useState('');
   const [remoteEvents, setRemoteEvents] = useState([]);
   const [remoteTranscripts, setRemoteTranscripts] = useState([]);
+  const [visibleTranscriptCount, setVisibleTranscriptCount] = useState(100);
+  useEffect(() => setVisibleTranscriptCount(100), [currentMeetingId, meetingTranscriptQuery]);
   const [transcriptUpdatedAt, setTranscriptUpdatedAt] = useState('');
   const [activeMeetingAgendaId, setActiveMeetingAgendaId] = useState('');
   // 正式议题实体（后端 meeting_agendas 持久化，active_agenda_id 为唯一事实来源）
@@ -773,11 +776,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const transcriptScrollRef = useRef(null);
   const transcriptBottomRef = useRef(null);
 
-  // 新转写到达时自动滚动到顶部（最新消息在最上面）
+  // Follow live speech only while the reader is already near the newest rows.
   useEffect(() => {
     const doScroll = () => {
       const el = transcriptScrollRef.current;
-      if (el) {
+      if (el && el.scrollTop < 48) {
         el.scrollTop = 0;
       }
     };
@@ -1023,7 +1026,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 source: 'desktop-mic',
                 speakerConfidence: voiceprintFields.speaker_confidence || 0,
                 identifiedBy: voiceprintFields.identified_by || 'manual',
-              }].slice(-500));
+              }]);
               authFetchJson('/api/meeting/transcripts/chunk', {
                 method: 'POST',
                 body: JSON.stringify({
@@ -1781,7 +1784,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   const openAgendaDrawer = (mode = 'list') => {
     setAgendaEditForm({
-      title: mode === 'temporary' ? '临时议题' : '',
+      title: '',
       type: '普通',
       durationMinutes: 15,
       insertPosition: 'after-current',
@@ -1824,7 +1827,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   const submitTemporaryAgenda = async () => {
     const title = agendaEditForm.title.trim();
-    if (!currentMeetingId || !title) return;
+    if (!currentMeetingId || !title || agendaSaving) return;
     setAgendaSaving(true);
     try {
       const data = await authFetchJson(`/api/meetings/${currentMeetingId}/agendas`, {
@@ -1961,7 +1964,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   const loadMeetingTranscripts = async () => {
     try {
-      const data = await authFetchJson(`/api/meeting/transcripts/${currentMeetingId}?limit=2000`);
+      const data = await loadTranscriptHistory(offset => authFetchJson(`/api/meeting/transcripts/${currentMeetingId}?limit=1000&offset=${offset}`));
       setRemoteEvents(data.events || []);
       setRemoteTranscripts(data.transcripts || []);
       setTranscriptUpdatedAt(data.updatedAt || '');
@@ -1985,10 +1988,19 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     let pollTimer = null;
     let sseReconnectTimer = null;
     let stopped = false;
+    let polling = false;
+    const knownTranscriptIds = new Set();
 
     const doPoll = async () => {
+      if (stopped || polling) return;
+      polling = true;
       try {
-        const data = await authFetchJson(`/api/meeting/transcripts/${currentMeetingId}?limit=2000`);
+        const data = await loadTranscriptHistory(
+          offset => authFetchJson(`/api/meeting/transcripts/${currentMeetingId}?limit=1000&offset=${offset}`),
+          knownTranscriptIds,
+        );
+        if (stopped) return;
+        for (const item of data.transcripts) knownTranscriptIds.add(item.id);
         // 合并而非替换——避免覆盖 SSE 增量推送的数据
         setRemoteEvents(prev => {
           const apiEvents = data.events || [];
@@ -1996,22 +2008,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           const kept = (prev || []).filter(e => !existingIds.has(e.id));
           return [...kept, ...apiEvents].slice(-200);
         });
-        setRemoteTranscripts(prev => {
-          const apiList = data.transcripts || [];
-          const apiMap = new Map(apiList.map(t => [t.id, t]));
-          // 用 API 数据更新已有条目，新增 API 中有但本地没有的
-          const merged = (prev || []).map(item =>
-            apiMap.has(item.id) ? { ...item, ...apiMap.get(item.id) } : item
-          );
-          // 追加 API 中有但本地没有的
-          const existingIds = new Set(merged.map(t => t.id));
-          for (const t of apiList) {
-            if (!existingIds.has(t.id)) merged.push(t);
-          }
-          // 按 clientTime 排序（多设备同步时 clientTime 更准确），serverTime 作为 fallback
-          merged.sort((a, b) => (a.clientTime || a.serverTime || '').localeCompare(b.clientTime || b.serverTime || ''));
-          return merged.slice(-300);
-        });
+        setRemoteTranscripts(prev => mergeTranscripts(prev, data.transcripts));
         setTranscriptUpdatedAt(data.updatedAt || '');
 
         // 首次轮询成功后再加载 markers（避免会议未就绪时 404）
@@ -2022,11 +2019,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
         // 会议已结束时停止高频轮询
         const phase = data.meetingPhase;
-        if (phase && !['问题收集中', '待创建会议', '会前确认', '进行中'].includes(phase)) {
+        if (phase && !['问题收集中', '待创建会议', '会前确认', '会中记录', '进行中'].includes(phase)) {
           if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
           if (eventSource) { eventSource.close(); eventSource = null; }
         }
       } catch (err) { console.warn("Parse error:", err); }
+      finally { polling = false; }
     };
 
     // 轮询作为主通道，1.5秒一次保证低延迟
@@ -2058,7 +2056,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 id: t.id, transcript: t.transcript, isFinal: t.isFinal,
                 speakerName: t.speakerName, speakerRole: t.speakerRole,
                 clientTime: t.time, serverTime: t.time, username: '',
-              }].slice(-500);
+              }];
             });
             setTranscriptUpdatedAt(new Date().toISOString());
           } else if (payload.type === 'session' && payload.data) {
@@ -2334,8 +2332,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     const speakerMap = new Map();
 
     remoteEvents.forEach(event => {
+      // Transcript events repeat records handled below and use a flat speaker schema.
+      if (event.type === 'transcript') return;
       const speaker = event.speaker || {};
-      const name = speaker.displayName || speaker.username || '未命名参会人';
+      const name = String(speaker.displayName || speaker.username || event.speakerName || '').trim();
+      if (!name) return;
       const current = speakerMap.get(name) || {
         name,
         role: speaker.meetingRole || '参会代表',
@@ -2360,7 +2361,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     });
 
     remoteTranscripts.forEach(item => {
-      const name = item.speakerName || item.username || '未命名参会人';
+      const name = String(item.speakerName || item.username || '').trim();
+      // Unattributed speech remains in the transcript, but is not a known attendee.
+      if (!name) return;
       const current = speakerMap.get(name) || {
         name,
         role: item.speakerRole || '参会代表',
@@ -2405,17 +2408,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   }, [remoteEvents, remoteTranscripts]);
 
   const liveTranscriptRows = useMemo(() => {
-    // suffix alignment 协议保证 newText 不重叠，ID + 精确文本去重即可
+    // Only transport duplicates share an ID; repeated speech must remain visible.
     const seenIds = new Set();
-    const seenTextKeys = new Set();
     const remoteRows = [];
     for (const item of remoteTranscripts.slice().reverse()) {
       if (!item.id) continue;
       if (seenIds.has(item.id)) continue;  // 轮询/SSE 双通道重复
       seenIds.add(item.id);
-      const textKey = `${item.speakerName || ''}|${(item.transcript || '').trim()}`;
-      if (textKey && seenTextKeys.has(textKey)) continue;  // 相同说话人相同文本
-      if (textKey) seenTextKeys.add(textKey);
       remoteRows.push({
         id: item.id,
         time: item.clientTime || item.serverTime?.slice(11, 16) || '--:--',
@@ -3352,8 +3351,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     if (activeStage === 'meeting') {
       await stopAndUploadDesktopAudio();
       setRecording(false);
+      const advanced = await persistStage('audit', '会后终审');
+      if (!advanced) return;
       setActiveStage('audit');
-      await persistStage('audit', '会后终审');
       const hideLoading = message.loading('AI 正在分析全部转写，提取待办事项和会议纪要…', 0);
       try {
         const records = await loadGeneratedMeetingRecords();
@@ -4707,7 +4707,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       ? meetingLiveRows.filter(line => `${line.speaker || ''} ${line.role || ''} ${line.text || ''}`.toLowerCase().includes(normalizedTranscriptQuery))
       : meetingLiveRows;
 
-    const agendaCheckRows = meetingAgendaItems.length ? meetingAgendaItems.slice(0, 6).map((item, index) => {
+    const agendaCheckRows = meetingAgendaItems.length ? meetingAgendaItems.map((item, index) => {
       const title = item.title || agendaDisplayTitle;
       const id = item.id || `agenda-${index}`;
       const realtimeCheck = agendaRealtimeChecks[id];
@@ -4763,7 +4763,6 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               <StatusPill color="blue">正在讨论</StatusPill>
             </div>
             <div className="meeting-share-mode-actions">
-              <span className={`meeting-live-state ${recording ? 'is-recording' : ''}`}><i />{recording ? '录制中' : '待录制'}</span>
               <span>{connectedCount} 人已接入</span>
               <ClockCircleOutlined />
               <span>已讨论 {hasMeetingSpeech || recording ? meetingElapsed : '00:00:00'}</span>
@@ -4833,7 +4832,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 {transcriptTab === 'chronicle' && (
                   filteredMeetingLiveRows.length > 0 ? (
                     <div ref={transcriptScrollRef} style={{ height: 520, overflowY: 'auto' }}>
-                      {filteredMeetingLiveRows.map((line) => {
+                      {filteredMeetingLiveRows.slice(0, visibleTranscriptCount).map((line) => {
                         const speakerName = line.speaker || '参会人';
                         const speakerInitial = speakerName.slice(0, 1);
                         const speakerColor = ['#1d5fd7','#12b3a8','#e87b35','#8b5cf6','#ec4899','#0891b2'][speakerName.charCodeAt(0) % 6];
@@ -4851,13 +4850,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                           </div>
                         );
                       })}
+                      {filteredMeetingLiveRows.length > visibleTranscriptCount && (
+                        <Button block onClick={() => setVisibleTranscriptCount(count => count + 100)}>
+                          查看更早发言（还剩 {filteredMeetingLiveRows.length - visibleTranscriptCount} 条）
+                        </Button>
+                      )}
                       <div ref={transcriptBottomRef} />
                     </div>
                   ) : (
                     <div className="meeting-runtime-empty">
                       <div className="meeting-runtime-empty-icon"><FileTextOutlined /><AudioOutlined /></div>
-                      <strong>等待手机端实时转写</strong>
-                      <span>点击"扫码邀请录音"，参会人登录手机录音页并开始说话后，文本会实时回传到 PC。</span>
+                      <strong>{meetingTranscriptQuery.trim() ? '暂无匹配的发言' : '等待实时转写'}</strong>
+                      <span>{meetingTranscriptQuery.trim() ? '试试其他关键词。' : '通过本机录音或手机接入开始记录。'}</span>
                     </div>
                   )
                 )}
@@ -4975,7 +4979,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <span>独立滚动，不影响右侧议题切换</span>
               </div>
               <div className="meeting-transcript-focus-list">
-                {filteredMeetingLiveRows.length > 0 ? filteredMeetingLiveRows.map((line) => {
+                {filteredMeetingLiveRows.length > 0 ? filteredMeetingLiveRows.slice(0, visibleTranscriptCount).map((line) => {
                   const speakerName = line.speaker || '参会人';
                   const speakerInitial = speakerName.slice(0, 1);
                   const speakerColor = ['#1d5fd7','#12b3a8','#e87b35','#8b5cf6','#ec4899','#0891b2'][speakerName.charCodeAt(0) % 6];
@@ -4989,70 +4993,55 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     </div>
                   );
                 }) : <Empty description="暂无匹配的会议记录" />}
+                {filteredMeetingLiveRows.length > visibleTranscriptCount && (
+                  <Button block onClick={() => setVisibleTranscriptCount(count => count + 100)}>
+                    查看更早发言（还剩 {filteredMeetingLiveRows.length - visibleTranscriptCount} 条）
+                  </Button>
+                )}
               </div>
             </Modal>
 
             <div className="meeting-side-stack">
               <section className="meeting-runtime-panel meeting-agenda-check-panel">
-                <div className="meeting-runtime-head">
-                  <div>
+                <div className="meeting-runtime-head meeting-agenda-heading">
+                  <div className="meeting-agenda-heading-title">
                     <Text strong style={{ color: palette.ink }}>本次会议议题</Text>
-                    {agendaRealtimeLoading && <div>AI 正在实时比对发言与议题…</div>}
-                    {!agendaRealtimeLoading && remoteTranscripts.length > 0 && (
-                      <div>{agendaRealtimeProvider === 'deepseek' ? 'DeepSeek 实时判断发言与议题关联。' : '本地规则实时提示发言与议题关联。'}</div>
-                    )}
-                    {!remoteTranscripts.length && <div>等待手机端录音接入，AI 将自动比对发言内容。</div>}
+                    <span className="meeting-agenda-count">{agendaCheckRows.length}</span>
                   </div>
-                  <StatusPill color="blue">{agendaCheckRows.length} 项</StatusPill>
-                </div>
-                {/* 会中议题编辑区 */}
-                <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <Button size="small" type="dashed" icon={<ThunderboltOutlined />} onClick={quickCreateTemporaryAgenda}>
-                    临时议题
-                  </Button>
-                  {formalAgendas.length ? (
-                    <span style={{ color: palette.muted, fontSize: 11 }}>会议进行中，正式议题已锁定；新增内容将作为临时议题留痕。</span>
-                  ) : (
-                    <>
-                      <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => openAgendaDrawer('add')}>添加议题</Button>
-                      <Button size="small" icon={<EditOutlined />} onClick={() => openAgendaDrawer('list')}>管理议题</Button>
-                    </>
-                  )}
+                  <div className="meeting-agenda-heading-actions">
+                    <Button type="text" size="small" onClick={() => openAgendaDrawer('list')}>管理</Button>
+                    <Button className="meeting-add-agenda" icon={<PlusOutlined />} onClick={quickCreateTemporaryAgenda}>
+                      新增临时议题
+                    </Button>
+                  </div>
                 </div>
                 <div className="meeting-agenda-timeline">
                   {agendaCheckRows.map((item, index) => {
                     const isActive = item.id === activeAgendaId;
-                    const rel = item.relation || 'waiting';
-                    const isMatched = rel === 'matched';
-                    const isIrrelevant = rel === 'irrelevant';
-                    const isResolved = rel === 'resolved';
-                    const isChecking = rel === 'checking';
-                    const statusText = isResolved ? '已讨论' : isMatched ? '已命中' : isIrrelevant ? '未命中' : isChecking ? '判断中' : '待讨论';
-                    const statusTone = isResolved ? 'is-green' : isMatched ? 'is-blue' : isIrrelevant ? 'is-orange' : isChecking ? 'is-orange' : 'is-gray';
-                    const rowClass = [
-                      isActive ? 'is-active' : '',
-                      isResolved ? 'is-completed' : '',
-                      isMatched ? 'is-matched' : '',
-                    ].filter(Boolean).join(' ');
+                    const agenda = meetingAgendaItems.find(entry => entry.id === item.id) || item;
+                    const rowClass = isActive ? 'is-active' : '';
                     return (
                       <button
                         key={item.id}
                         type="button"
                         className={`agenda-timeline-row ${rowClass}`}
                         disabled={Boolean(activatingAgendaId)}
+                        aria-current={isActive ? 'step' : undefined}
                         onClick={() => persistActivateAgenda(item.id)}
                       >
-                        <span className="agenda-tl-node">{isResolved ? '✓' : index + 1}</span>
+                        <span className="agenda-tl-node">{index + 1}</span>
                         <div className="agenda-tl-body">
                           <div className="agenda-tl-title-row">
-                            {isActive && <span className="agenda-tl-badge">正在讨论</span>}
-                            {activatingAgendaId === item.id && <span className="agenda-tl-badge">切换中…</span>}
                             <strong>{item.title}</strong>
                           </div>
-                          {item.hint && <em>✨ {item.hint}</em>}
+                          <div className="agenda-tl-meta">
+                            {agenda.agendaType === 'temporary' && <span>临时议题</span>}
+                            <span>预计 {agenda.durationMinutes || 15} 分钟</span>
+                          </div>
                         </div>
-                        <span style={{ fontSize: 10, color: '#94a3b8', marginRight: 4 }}>{(meetingAgendaItems.find(a => a.id === item.id) || item).durationMinutes || 15}分</span>
-                        <span className={`agenda-tl-status ${statusTone}`}>{statusText}</span>
+                        <span className={`agenda-tl-status ${isActive ? 'is-blue' : 'is-gray'}`}>
+                          {activatingAgendaId === item.id ? '切换中…' : isActive ? '正在讨论' : '切换议题'}
+                        </span>
                         <div className="agenda-tl-actions" aria-label="议题快捷标记">
                           <b onClick={(e) => { e.stopPropagation(); triggerAgendaMarker('标决议', item); }}><CheckCircleOutlined />决议</b>
                           <b onClick={(e) => { e.stopPropagation(); triggerAgendaMarker('记待办', item); }}><ClockCircleOutlined />待办</b>
@@ -5102,8 +5091,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   {['add', 'temporary'].includes(agendaEditModal.mode) ? (
                     <div className="agenda-drawer-form">
                       <div className={`agenda-drawer-context ${agendaEditModal.mode === 'temporary' ? 'is-temporary' : ''}`}>
-                        <strong>{agendaEditModal.mode === 'temporary' ? '不会打断会议' : '在当前工作区完成'}</strong>
-                        <span>{agendaEditModal.mode === 'temporary' ? '保存后自动切换到该议题，后续发言立即归入新议题。' : '保存后直接插入议题列表，无需离开会中页面。'}</span>
+                        <strong>{agendaEditModal.mode === 'temporary' ? '添加后切换到新议题' : '添加议题'}</strong>
+                        <span>{agendaEditModal.mode === 'temporary' ? '新议题将添加至列表末尾，不影响正在进行的录音。' : '保存后将切换到新议题。'}</span>
                       </div>
                       <label className="agenda-drawer-field">
                         <span>议题名称</span>
@@ -5115,44 +5104,46 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                           autoFocus
                         />
                       </label>
-                      <div className="agenda-drawer-grid">
-                        {agendaEditModal.mode !== 'temporary' && (
+                      {agendaEditModal.mode !== 'temporary' && (
+                        <>
+                          <div className="agenda-drawer-grid">
+                            <label className="agenda-drawer-field">
+                              <span>议题类型</span>
+                              <Select value={agendaEditForm.type} onChange={value => setAgendaEditForm(form => ({ ...form, type: value }))}>
+                                <Select.Option value="普通">普通</Select.Option>
+                                <Select.Option value="重大决策">重大决策</Select.Option>
+                                <Select.Option value="重大项目">重大项目</Select.Option>
+                                <Select.Option value="人事任免">人事任免</Select.Option>
+                                <Select.Option value="资金运作">资金运作</Select.Option>
+                              </Select>
+                            </label>
+                            <label className="agenda-drawer-field">
+                              <span>预计时长</span>
+                              <Input
+                                type="number"
+                                suffix="分钟"
+                                value={agendaEditForm.durationMinutes}
+                                min={5}
+                                max={120}
+                                onChange={e => setAgendaEditForm(form => ({ ...form, durationMinutes: parseInt(e.target.value, 10) || 15 }))}
+                              />
+                            </label>
+                          </div>
                           <label className="agenda-drawer-field">
-                            <span>议题类型</span>
-                            <Select value={agendaEditForm.type} onChange={value => setAgendaEditForm(form => ({ ...form, type: value }))}>
-                              <Select.Option value="普通">普通</Select.Option>
-                              <Select.Option value="重大决策">重大决策</Select.Option>
-                              <Select.Option value="重大项目">重大项目</Select.Option>
-                              <Select.Option value="人事任免">人事任免</Select.Option>
-                              <Select.Option value="资金运作">资金运作</Select.Option>
+                            <span>插入位置</span>
+                            <Select value={agendaEditForm.insertPosition} onChange={value => setAgendaEditForm(form => ({ ...form, insertPosition: value }))}>
+                              <Select.Option value="after-current">当前议题之后</Select.Option>
+                              <Select.Option value="end">议题列表末尾</Select.Option>
                             </Select>
                           </label>
-                        )}
-                        <label className="agenda-drawer-field">
-                          <span>预计时长</span>
-                          <Input
-                            type="number"
-                            suffix="分钟"
-                            value={agendaEditForm.durationMinutes}
-                            min={5}
-                            max={120}
-                            onChange={e => setAgendaEditForm(form => ({ ...form, durationMinutes: parseInt(e.target.value, 10) || 15 }))}
-                          />
-                        </label>
-                      </div>
-                      <label className="agenda-drawer-field">
-                        <span>插入位置</span>
-                        <Select value={agendaEditForm.insertPosition} onChange={value => setAgendaEditForm(form => ({ ...form, insertPosition: value }))}>
-                          <Select.Option value="after-current">当前议题之后</Select.Option>
-                          <Select.Option value="end">议题列表末尾</Select.Option>
-                        </Select>
-                      </label>
-                      <div className="agenda-insert-preview">
-                        <span>位置预览</span>
-                        <strong>{currentAgendaTitle}</strong>
-                        <em>↓</em>
-                        <b>{agendaEditForm.title.trim() || '新议题将显示在这里'}</b>
-                      </div>
+                          <div className="agenda-insert-preview">
+                            <span>位置预览</span>
+                            <strong>{agendaEditForm.insertPosition === 'end' ? (meetingAgendaItems.at(-1)?.title || currentAgendaTitle) : currentAgendaTitle}</strong>
+                            <em>↓</em>
+                            <b>{agendaEditForm.title.trim() || '新议题将显示在这里'}</b>
+                          </div>
+                        </>
+                      )}
                       <div className="agenda-drawer-actions">
                         <Button onClick={closeAgendaDrawer}>取消</Button>
                         <Button
@@ -5262,7 +5253,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
           <div className="meeting-bottom-bar" style={{ background: isDarkMode ? '#111827' : '#f8fafc', borderTop: `1px solid ${palette.line}` }}>
             {[
-              [recording ? '录音中' : '开始录音', <AudioOutlined />, recording ? 'is-on' : '', 'record'],
+              [recording ? '本机录音中' : '本机录音', <AudioOutlined />, recording ? 'is-on' : '', 'record'],
               ['手机接入', <MobileOutlined />, '', 'mobile'],
               [`参会人 ${connectedCount}`, <UserOutlined />, '', 'participants'],
               ['会中备注', <MessageOutlined />, '', 'chat'],

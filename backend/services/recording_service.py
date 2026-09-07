@@ -30,6 +30,26 @@ def recording_dir(meeting_id: str) -> Path:
     return path
 
 
+def require_completed_recordings(meeting_id: str) -> None:
+    """Do not start formal processing with an unfinished recording session."""
+    directory = MEETING_FILES_DIR / "recordings" / meeting_id
+    pending = 0
+    for path in directory.glob("recording_*.manifest.json"):
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise ValueError("录音状态无法读取，请先检查并恢复录音")
+        if not manifest.get("chunks"):
+            continue
+        output = str(manifest.get("outputFile") or "")
+        if not manifest.get("finalized") or not output or not (directory / output).is_file():
+            pending += 1
+    if pending:
+        raise ValueError(
+            f"还有 {pending} 段手机录音尚未保存完成。请在对应手机点击结束录音或重试保存，完成后再结束会议。"
+        )
+
+
 def recording_completion_lock(meeting_id: str, session_id: str) -> asyncio.Lock:
     """Serialize concurrent completion retries for one recording session."""
     key = f"{meeting_id}:{sanitize_client_id(session_id) or 'legacy'}"

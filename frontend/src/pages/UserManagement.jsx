@@ -377,9 +377,11 @@ export default function UserManagement({ currentUser }) {
       <style>{`
         .user-management-page {
           height: 100%;
+          min-height: 0;
           padding: 18px;
           box-sizing: border-box;
-          overflow: hidden;
+          overflow-y: auto;
+          overflow-x: hidden;
           display: flex;
           flex-direction: column;
           gap: 12px;
@@ -507,8 +509,8 @@ export default function UserManagement({ currentUser }) {
         }
 
         .user-management-card {
-          flex: 1;
-          min-height: 0;
+          flex: 0 0 auto;
+          min-width: 0;
           border: 1px solid var(--ui-border-2);
           border-radius: 16px;
           overflow: hidden;
@@ -520,8 +522,7 @@ export default function UserManagement({ currentUser }) {
         }
 
         .user-management-table {
-          flex: 1;
-          min-height: 0;
+          min-width: 0;
         }
 
         .user-management-table .ant-table {
