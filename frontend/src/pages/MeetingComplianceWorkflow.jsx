@@ -5463,9 +5463,6 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       重新整理记录（不重跑 AI）
                     </Button>
                   )}
-                  {meetingGeneratedRecords?.generated && (
-                    <div className="minutes-regenerate-help">重跑分析会重新调用 AI，结果可能变化；重新整理只调整现有转写的阅读结构，结果内容不变。</div>
-                  )}
                 </div>
                 {recordGenerationStatus.status === 'running' && (
                   <div style={{ marginTop: 8, color: palette.muted, fontSize: 12, lineHeight: 1.6 }}>
