@@ -6186,6 +6186,20 @@
 .record-review-field-grid span { display: block; color: #778396; font-size: 11px; }
 .record-review-field-grid strong { display: block; margin-top: 5px; color: #192a41; font-size: 15px; }
 
+.record-review-detail-list { max-height: 360px; margin: 0 0 16px; overflow: auto; border: 1px solid #e0e8f1; border-radius: 12px; background: #fff; }
+.record-review-detail-head { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #e7edf4; background: #f8fafc; }
+.record-review-detail-head strong { color: #24364f; font-size: 13px; }
+.record-review-detail-head span { color: #7b8797; font-size: 11px; }
+.record-review-detail-item { padding: 12px 14px; border-bottom: 1px solid #edf1f5; }
+.record-review-detail-item:last-child { border-bottom: 0; }
+.record-review-detail-item.is-confirmed { background: #fbfefc; }
+.record-review-detail-item.is-rejected { background: #fcfcfd; opacity: .72; }
+.record-review-detail-meta { display: flex; align-items: center; gap: 7px; color: #8793a3; font-size: 11px; }
+.record-review-detail-meta .ant-tag { margin: 0; color: #3569a8; border-color: #cfe0f7; background: #f4f8ff; }
+.record-review-detail-meta em { margin-left: auto; color: #c26a10; font-style: normal; }
+.record-review-detail-item.is-confirmed .record-review-detail-meta em { color: #198754; }
+.record-review-detail-item p { margin: 7px 0 0; color: #25364d; font-size: 13px; line-height: 1.7; }
+
 .record-review-summary-lines { display: grid; gap: 9px; padding: 14px; border-radius: 12px; background: #f6f8fb; }
 .record-review-summary-lines > div { display: flex; align-items: center; gap: 9px; color: #526174; font-size: 13px; }
 .record-review-summary-lines .is-pass > .anticon { color: #168556; }

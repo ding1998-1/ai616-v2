@@ -6657,6 +6657,27 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <div key={field}><span>{label}</span><strong>{recordReviewSummary?.byField?.[field]?.total || 0} 项</strong></div>
               ))}
             </div>
+            <div className="record-review-detail-list">
+              <div className="record-review-detail-head">
+                <strong>本次审核内容</strong>
+                <span>可直接查看正文，再决定批量确认或进入重点核验</span>
+              </div>
+              {[
+                ['minutes', '会议纪要'], ['decisions', '议定事项'], ['risks', '风险事项'],
+                ['disclosures', '披露事项'], ['todos', '待办事项'],
+              ].flatMap(([field, label]) => (meetingGeneratedRecords?.[field] || []).map((item, index) => ({ field, label, item, index }))).map(({ field, label, item, index }) => {
+                const status = item?.supportStatus || 'ai_suggested';
+                const content = field === 'minutes'
+                  ? (Array.isArray(item?.formalSummary) ? item.formalSummary.join('；') : item?.formalSummary || item?.keyPoints?.join('；'))
+                  : field === 'todos' ? item?.task : item?.content;
+                return (
+                  <div className={`record-review-detail-item ${status === 'human_supported' ? 'is-confirmed' : status === 'rejected' ? 'is-rejected' : ''}`} key={`${field}-${item?.id || index}`}>
+                    <div className="record-review-detail-meta"><Tag>{label}</Tag><span>#{index + 1}</span><em>{status === 'human_supported' ? '已人工确认' : status === 'rejected' ? '不采用' : '待确认'}</em></div>
+                    <p>{content || '暂无可展示内容'}</p>
+                  </div>
+                );
+              })}
+            </div>
             <div className="record-review-summary-lines">
               <div className="is-pass"><CheckCircleOutlined /><span><strong>{recordReviewSummary?.batchEligible || 0} 项</strong>证据校验通过，可统一确认</span></div>
               <div className={recordReviewSummary?.manualRequired ? 'is-warning' : 'is-pass'}><SafetyCertificateOutlined /><span><strong>{recordReviewSummary?.manualRequired || 0} 项</strong>需要重点核验</span></div>
