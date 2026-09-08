@@ -6667,13 +6667,19 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 ['disclosures', '披露事项'], ['todos', '待办事项'],
               ].flatMap(([field, label]) => (meetingGeneratedRecords?.[field] || []).map((item, index) => ({ field, label, item, index }))).map(({ field, label, item, index }) => {
                 const status = item?.supportStatus || 'ai_suggested';
+                const formalSummary = item?.formalSummary ?? item?.formal_summary;
+                const keyPoints = item?.keyPoints ?? item?.key_points ?? item?.points;
+                const pointText = Array.isArray(keyPoints)
+                  ? keyPoints.map(point => typeof point === 'string' ? point : point?.content || point?.text || point?.summary || '').filter(Boolean).join('；')
+                  : '';
                 const content = field === 'minutes'
-                  ? (Array.isArray(item?.formalSummary) ? item.formalSummary.join('；') : item?.formalSummary || item?.keyPoints?.join('；'))
-                  : field === 'todos' ? item?.task : item?.content;
+                  ? (Array.isArray(formalSummary) ? formalSummary.join('；') : formalSummary || pointText || item?.content || item?.summary || item?.title || item?.agenda)
+                  : field === 'todos' ? item?.task || item?.content || item?.description : item?.content || item?.decision || item?.description || item?.summary || item?.title;
+                const displayContent = String(content || '').trim() || `议题：${item?.agenda || item?.title || '未命名'}（当前记录未生成可展示正文）`;
                 return (
                   <div className={`record-review-detail-item ${status === 'human_supported' ? 'is-confirmed' : status === 'rejected' ? 'is-rejected' : ''}`} key={`${field}-${item?.id || index}`}>
                     <div className="record-review-detail-meta"><Tag>{label}</Tag><span>#{index + 1}</span><em>{status === 'human_supported' ? '已人工确认' : status === 'rejected' ? '不采用' : '待确认'}</em></div>
-                    <p>{content || '暂无可展示内容'}</p>
+                    <p>{displayContent}</p>
                   </div>
                 );
               })}
