@@ -6646,9 +6646,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ) : null;
         })() : (
           <div className="record-review-overview">
-            <div className="record-review-kicker">会议级人工审核</div>
-            <Title level={3}>确认本次会议纪要</Title>
-            <Paragraph>本次共提炼 {recordReviewSummary?.total || 0} 项。证据正常内容可统一确认，异常内容需逐条判断。</Paragraph>
+            <Paragraph className="record-review-overview-intro">AI 已提炼本次会议内容，请核对后确认。系统将自动确认证据完整的内容，异常内容需要重点核验。</Paragraph>
             <div className="record-review-field-grid">
               {[
                 ['minutes', '会议纪要'], ['decisions', '议定事项'], ['risks', '风险事项'],

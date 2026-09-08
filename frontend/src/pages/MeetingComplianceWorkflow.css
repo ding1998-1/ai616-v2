@@ -6174,6 +6174,7 @@
 .record-review-complete h3 { margin: 0 0 6px; color: #15253c; }
 .record-review-overview > .ant-typography,
 .record-review-complete > .ant-typography { color: #657386; }
+.record-review-overview-intro { margin: 0 0 18px; }
 
 .record-review-field-grid {
   display: grid;
