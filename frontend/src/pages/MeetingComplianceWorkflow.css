@@ -4642,7 +4642,7 @@
 /* 2026-08-26 纪要确认页：概览 + 双栏纪要 + Whisper 时间轴 */
 .minutes-confirmation-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 390px;
+  grid-template-columns: minmax(0, 1.35fr) 320px;
   gap: 12px;
   overflow: hidden;
 }
@@ -4722,10 +4722,18 @@
 
 .minutes-confirmation-content > div {
   min-width: 0;
-  padding: 12px;
+  padding: 16px;
   border: 1px solid #e7edf4;
   border-radius: 10px;
   background: #fbfdff;
+}
+
+.minutes-confirmation-content .record-review-actions-inline {
+  margin-top: 14px !important;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 163, 184, .22);
+  align-items: center;
+  gap: 8px !important;
 }
 
 .minutes-confirmation-content > div:nth-child(1) {
@@ -4755,7 +4763,7 @@
 }
 
 @media (max-width: 1280px) {
-  .minutes-confirmation-layout { grid-template-columns: minmax(0, 1fr) 340px; }
+  .minutes-confirmation-layout { grid-template-columns: minmax(0, 1fr) 300px; }
   .minutes-overview-panel > div:nth-child(2) { padding-right: 145px; }
   .minutes-overview-panel .minutes-regenerate-action { width: 132px; }
 }

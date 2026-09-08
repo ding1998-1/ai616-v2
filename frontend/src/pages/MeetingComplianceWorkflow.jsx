@@ -5383,7 +5383,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     const status = item.supportStatus || 'ai_suggested';
     const review = item.humanReview || {};
     return (
-      <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="record-review-actions-inline" style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <Tag color={status === 'human_supported' ? 'green' : status === 'rejected' ? 'default' : 'blue'}>
           {status === 'human_supported' ? '✓ 已人工确认' : status === 'rejected' ? '不采用' : '昇晟会议 AI 提炼建议'}
         </Tag>
