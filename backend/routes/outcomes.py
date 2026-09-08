@@ -49,11 +49,14 @@ async def meeting_records(request: Request, meeting_id: str, force: bool = False
 
 
 @router.post("/meetings/{meeting_id}/records/generate")
-async def generate_meeting_records(request: Request, meeting_id: str):
+async def generate_meeting_records(request: Request, meeting_id: str, force: bool = False):
     require_meeting(request, meeting_id)
     if RECORDS_PIPELINE != "v2":
         raise HTTPException(status_code=409, detail="Records Pipeline v2 尚未启用")
     try:
+        current = get_records(meeting_id).get("records") or {}
+        if current.get("generated") and not force:
+            return {"success": True, "meetingId": meeting_id, "records": current, "reused": True}
         records = await generate_records_v2(meeting_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

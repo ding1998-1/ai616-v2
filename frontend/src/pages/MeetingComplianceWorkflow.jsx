@@ -2140,7 +2140,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       });
       setMeetingGeneratedRecords(data.records || null);
       await loadRecordGenerationVersions();
-      return data.records || null;
+      return data.records ? { ...data.records, reused: Boolean(data.reused) } : null;
     } catch (err) {
       message.error(`会议记录生成失败：${err.message}`);
       return null;
@@ -5905,7 +5905,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       if (!result || !result.generated) {
         message.warning('转写数据不足，AI 无法生成。请确认已有机录音转写后再试。');
       } else {
-        message.success('AI 会议纪要生成完成！');
+        message.success(result.reused ? '已使用当前会议纪要结果，未重复生成' : 'AI 会议纪要生成完成！');
       }
     } catch (err) {
       message.error(`生成失败：${err.message}`);
