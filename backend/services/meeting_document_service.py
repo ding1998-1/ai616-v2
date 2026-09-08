@@ -1233,7 +1233,7 @@ def _enterprise_minutes_blocks(
     minutes = _formal_minute_groups(records)
     if minutes:
         for item in minutes:
-            points = item["points"] or ["待生成正式纪要表述。"]
+            points = item["points"] or ["本议题尚未生成可用的正式纪要表述。"]
             title = item["title"] or "未命名议题"
             blocks.append(("heading", f"{_chinese_section_number(section_index)}、{title}"))
             section_index += 1
@@ -1480,7 +1480,7 @@ def _template_minutes_lines(records: Mapping[str, Any]) -> list[tuple[str, bool]
     minutes = _formal_minute_groups(records)
     for index, item in enumerate(minutes, 1):
         title = item["title"]
-        points = item["points"] or ["待生成正式纪要表述。"]
+        points = item["points"] or ["本议题尚未生成可用的正式纪要表述。"]
         lines.append((f"议题{index}：{title or '未命名议题'}", True))
         for point_index, point in enumerate(points, 1):
             content = _compact_text(point, limit=1200)
@@ -1908,7 +1908,7 @@ def generate_document_bundle(
         ]
         if publication_mode == "review":
             for item in source_records[field]:
-                label = "【人工支持】" if _support_status(item) == "human_supported" else "【昇晟会议 AI 提炼】"
+                label = "【已人工确认】" if _support_status(item) == "human_supported" else "【AI提炼建议，尚未完成人工确认】"
                 if field == "minutes":
                     values = item.get("formalSummary") if isinstance(item.get("formalSummary"), list) else [item.get("formalSummary")]
                     item["formalSummary"] = [f"{label}{value}" for value in values if _compact_text(value)]

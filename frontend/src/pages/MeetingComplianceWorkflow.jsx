@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Drawer, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Timeline, Tooltip, Typography, message } from 'antd';
+import { Button, Checkbox, Drawer, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Timeline, Tooltip, Typography, message } from 'antd';
 import {
   AppstoreOutlined,
   AudioOutlined,
@@ -19,6 +19,7 @@ import {
   MessageOutlined,
   MobileOutlined,
   PlusOutlined,
+  PlayCircleOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
@@ -32,6 +33,7 @@ import {
 } from '@ant-design/icons';
 import { authFetch, authFetchJson, getStoredToken } from '../lib/auth';
 import { loadTranscriptHistory, mergeTranscripts } from '../lib/transcriptHistory.mjs';
+import { deriveReviewSummary, matchesReviewFilter } from '../lib/recordReview.mjs';
 import { Typography as ArcoTypography } from '@arco-design/web-react';
 import "./MeetingComplianceWorkflow.css";
 
@@ -95,10 +97,16 @@ function exportPreflightWarnings(meeting, templateId, generatedRecords = {}) {
   }).map(item => item?.agenda || '未命名议题');
   const formalMinutesMissing = !(generatedRecords?.minutes || []).length
     && (generatedRecords?.mapResults || []).some(item => (item?.output?.topics || []).length > 0);
+  const unconfirmedItems = ['minutes', 'decisions', 'risks', 'disclosures', 'todos'].flatMap(field =>
+    (generatedRecords?.[field] || [])
+      .filter(item => item?.supportStatus === 'ai_suggested')
+      .map(item => ({ field, id: item?.id }))
+  );
   return {
     missingFields,
     missingFormalSummaries,
     formalMinutesMissing,
+    unconfirmedItems,
     meetingType,
     templateMismatch: expected.length > 0 && !expected.some(keyword => meetingType.includes(keyword)),
   };
@@ -744,6 +752,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const agendaTimerRef = useRef(null);
   const [meetingGeneratedRecords, setMeetingGeneratedRecords] = useState(null);
   const [recordReviewFilter, setRecordReviewFilter] = useState('all');
+  const [recordReviewOpen, setRecordReviewOpen] = useState(false);
+  const [recordReviewSummary, setRecordReviewSummary] = useState(null);
+  const [recordReviewStep, setRecordReviewStep] = useState('overview');
+  const [recordReviewConsent, setRecordReviewConsent] = useState(false);
+  const [recordReviewLoading, setRecordReviewLoading] = useState(false);
+  const [recordReviewSubmitting, setRecordReviewSubmitting] = useState(false);
+  const [recordReviewResult, setRecordReviewResult] = useState(null);
   const [reviewingRecordId, setReviewingRecordId] = useState('');
   const [meetingRecordsLoading, setMeetingRecordsLoading] = useState(false);
   const [recordGenerationStatus, setRecordGenerationStatus] = useState({ status: 'idle' });
@@ -3099,13 +3114,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       const meetingDetail = await authFetchJson(`/api/meetings/${currentMeetingId}`);
       const exportMeeting = meetingDetail?.meeting || {};
       const preflight = exportPreflightWarnings(exportMeeting, templateId, meetingGeneratedRecords);
-      if (publicationMode === 'formal' && (preflight.missingFields.length || preflight.missingFormalSummaries.length || preflight.formalMinutesMissing || preflight.templateMismatch)) {
+      if (publicationMode === 'formal' && (preflight.missingFields.length || preflight.missingFormalSummaries.length || preflight.formalMinutesMissing || preflight.templateMismatch || preflight.unconfirmedItems.length)) {
         const shouldContinue = await new Promise(resolve => {
           Modal.confirm({
             title: '正式文件导出前检查',
             width: 520,
-            okText: '确认继续导出',
-            cancelText: '返回补充',
+            okText: preflight.unconfirmedItems.length ? '人工确认并继续' : '确认继续导出',
+            cancelText: preflight.unconfirmedItems.length ? '返回审核' : '返回补充',
             content: (
               <div style={{ display: 'grid', gap: 10, lineHeight: 1.7 }}>
                 {preflight.missingFields.length > 0 && (
@@ -3126,6 +3141,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 {preflight.formalMinutesMissing && (
                   <div><strong>正式议题为空</strong>，但分段提取结果中存在议题。请先重新生成纪要，禁止直接导出空壳文件。</div>
                 )}
+                {preflight.unconfirmedItems.length > 0 && (
+                  <div>
+                    仍有 <strong>{preflight.unconfirmedItems.length}</strong> 项 AI 提炼内容未完成人工确认。
+                    继续生成正式 Word 后，这些内容不会作为正式纪要正文。
+                  </div>
+                )}
                 <div style={{ color: '#64748b' }}>继续导出会保留缺失项提示；建议返回会议信息页补充后再生成正式文件。</div>
               </div>
             ),
@@ -3136,7 +3157,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         if (!shouldContinue) return;
       }
       let overrideReason = '';
-      if (publicationMode === 'formal' && !recordsBasisGate.ready) {
+      if (publicationMode === 'formal' && (!recordsBasisGate.ready || preflight.unconfirmedItems.length > 0)) {
         overrideReason = await requestEvidenceOverrideReason('生成正式 Word');
         if (!overrideReason) return;
       }
@@ -3414,32 +3435,70 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
+  const loadRecordReviewSummary = async () => {
+    const data = await authFetchJson(`/api/meetings/${currentMeetingId}/records/review/summary`);
+    const summary = data.summary || deriveReviewSummary(meetingGeneratedRecords);
+    setRecordReviewSummary(summary);
+    return summary;
+  };
+
   const confirmMeetingMinutes = async () => {
     if (effectiveMissingMaterialCount > 0) {
       message.warning(`还有 ${effectiveMissingMaterialCount} 项材料未上传，不能确认纪要`);
       return;
     }
+    setRecordReviewOpen(true);
+    setRecordReviewStep('overview');
+    setRecordReviewConsent(false);
+    setRecordReviewResult(null);
+    setRecordReviewLoading(true);
     try {
-      let overrideReason = '';
-      if (!recordsBasisGate.ready) {
-        overrideReason = await requestEvidenceOverrideReason('确认纪要');
-        if (!overrideReason) return;
+      await loadRecordReviewSummary();
+    } catch (error) {
+      setRecordReviewOpen(false);
+      message.error(`审核状态加载失败：${error.message}`);
+    } finally {
+      setRecordReviewLoading(false);
+    }
+  };
+
+  const completeMeetingReview = async () => {
+    if (recordReviewSubmitting) return;
+    setRecordReviewSubmitting(true);
+    try {
+      const batch = await authFetchJson(`/api/meetings/${currentMeetingId}/records/review/batch`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'support_all_eligible' }),
+      });
+      if (batch.records) setMeetingGeneratedRecords(batch.records);
+      setRecordReviewSummary(batch.summary);
+      if (batch.summary?.manualRequired > 0) {
+        setRecordReviewStep('exceptions');
+        message.warning(`${batch.summary.manualRequired} 项内容需要重点核验`);
+        return;
       }
       const confirmation = await authFetchJson(`/api/meetings/${currentMeetingId}/records/confirm`, {
         method: 'POST',
-        body: JSON.stringify({ overrideReason }),
+        body: JSON.stringify({ overrideReason: '' }),
       });
       if (confirmation.records) setMeetingGeneratedRecords(confirmation.records);
-      const data = await authFetchJson(`/api/meetings/${currentMeetingId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ reviewDone: true, phase: '纪要已确认' }),
-      });
-      hydrateMeetingDetail(data.meeting);
+      const detail = await authFetchJson(`/api/meetings/${currentMeetingId}`);
+      hydrateMeetingDetail(detail.meeting);
       setReviewDone(true);
       await loadMeetings();
-      message.success('纪要已确认；全员签字完成后可进入归档');
+      setRecordReviewResult({
+        batchSupported: batch.supported || 0,
+        individuallyHandled: batch.alreadySupported || 0,
+      });
+      setRecordReviewStep('complete');
+      message.success('本次纪要已确认');
     } catch (error) {
-      message.error(`纪要确认失败：${error.message}`);
+      message.error(`确认结果未能完整同步：${error.message}`);
+      try {
+        await loadRecordReviewSummary();
+      } catch (_) {}
+    } finally {
+      setRecordReviewSubmitting(false);
     }
   };
 
@@ -5289,9 +5348,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         },
       );
       setMeetingGeneratedRecords(data.records);
-      message.success(action === 'reject' ? '已标记为不采用' : '已完成人工支持');
+      if (recordReviewOpen) {
+        const summary = await loadRecordReviewSummary();
+        setRecordReviewStep(summary.manualRequired > 0 ? 'exceptions' : 'overview');
+      }
+      message.success(action === 'reject' ? '已标记为不采用' : '已人工确认');
+      return data;
     } catch (error) {
       message.error(`核验失败：${error.message}`);
+      return null;
     } finally {
       setReviewingRecordId('');
     }
@@ -5302,9 +5367,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       ? (Array.isArray(item.formalSummary) ? item.formalSummary.join('\n') : item.formalSummary || '')
       : (field === 'todos' ? item.task : item.content) || '';
     Modal.confirm({
-      title: '编辑后支持',
+      title: '编辑后采用',
       width: 620,
-      okText: '保存并支持',
+      okText: '保存并采用',
       cancelText: '取消',
       content: <Input.TextArea defaultValue={edited} rows={6} onChange={event => { edited = event.target.value; }} />,
       onOk: async () => {
@@ -5320,13 +5385,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     return (
       <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <Tag color={status === 'human_supported' ? 'green' : status === 'rejected' ? 'default' : 'blue'}>
-          {status === 'human_supported' ? '✓ 人工支持' : status === 'rejected' ? '已否决' : '昇晟会议 AI 提炼'}
+          {status === 'human_supported' ? '✓ 已人工确认' : status === 'rejected' ? '不采用' : '昇晟会议 AI 提炼建议'}
         </Tag>
         {review.reviewerName && <span style={{ fontSize: 11, color: palette.muted }}>{review.reviewerName} · {review.reviewedAt}</span>}
         {status === 'ai_suggested' && (
           <>
-            <Button size="small" type="primary" loading={reviewingRecordId === item.id} onClick={() => reviewGeneratedItem(field, item, 'support')}>支持并采用</Button>
-            <Button size="small" onClick={() => editAndSupportGeneratedItem(field, item)}>编辑后支持</Button>
+            <Button size="small" type="primary" loading={reviewingRecordId === item.id} onClick={() => reviewGeneratedItem(field, item, 'support')}>确认采用</Button>
+            <Button size="small" onClick={() => editAndSupportGeneratedItem(field, item)}>编辑后采用</Button>
             <Popconfirm title="确认不采用这条 AI 建议？" onConfirm={() => reviewGeneratedItem(field, item, 'reject', '', 'not_suitable')}>
               <Button size="small" danger>不采用</Button>
             </Popconfirm>
@@ -5338,13 +5403,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   const renderAuditWorkspace = () => {
     if (!isMajorMeeting) {
-      const todos = meetingGeneratedRecords?.todos || [];
-      const decisions = meetingGeneratedRecords?.decisions || [];
+      const effectiveReviewSummary = recordReviewSummary || deriveReviewSummary(meetingGeneratedRecords);
+      const todos = (meetingGeneratedRecords?.todos || []).filter(item => matchesReviewFilter(item, 'todos', recordReviewFilter, effectiveReviewSummary));
+      const decisions = (meetingGeneratedRecords?.decisions || []).filter(item => matchesReviewFilter(item, 'decisions', recordReviewFilter, effectiveReviewSummary));
       const summary = recordSummaryLines(meetingGeneratedRecords);
       const transcriptRows = liveTranscriptRows.slice(0, 20);
       const hasAudio = recordingPlaybackRows.length > 0;
       const minutesItems = (meetingGeneratedRecords?.minutes || []).filter(item => (
-        recordReviewFilter === 'all' || (item.supportStatus || 'ai_suggested') === recordReviewFilter
+        matchesReviewFilter(item, 'minutes', recordReviewFilter, effectiveReviewSummary)
       ));
 
       // 普通会议会后整理
@@ -5439,19 +5505,40 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               {/* AI 会议纪要 */}
               <section className="minutes-document-panel" style={{ ...panelStyle, padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                  <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />昇晟会议 AI 提炼与人工支持</Text>
+                  <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />纪要审核</Text>
                   <Select
                     size="small"
                     value={recordReviewFilter}
                     onChange={setRecordReviewFilter}
-                    style={{ width: 126 }}
+                    style={{ width: 132 }}
                     options={[
-                      { value: 'all', label: '全部状态' },
-                      { value: 'ai_suggested', label: '待人工确认' },
-                      { value: 'human_supported', label: '人工支持' },
-                      { value: 'rejected', label: '已否决' },
+                      { value: 'all', label: '全部' },
+                      { value: 'needs_action', label: '需要我处理' },
+                      { value: 'pending', label: '待确认' },
+                      { value: 'confirmed', label: '已确认' },
+                      { value: 'rejected', label: '不采用' },
                     ]}
                   />
+                </div>
+                <div className="record-review-progress">
+                  <div className="record-review-progress-head">
+                    <span>AI 已提炼 {effectiveReviewSummary.total} 项</span>
+                    <strong>{effectiveReviewSummary.total ? Math.round(((effectiveReviewSummary.confirmed + effectiveReviewSummary.rejected) / effectiveReviewSummary.total) * 100) : 0}%</strong>
+                  </div>
+                  <Progress
+                    percent={effectiveReviewSummary.total ? Math.round(((effectiveReviewSummary.confirmed + effectiveReviewSummary.rejected) / effectiveReviewSummary.total) * 100) : 0}
+                    showInfo={false}
+                    strokeColor="#1268d6"
+                    trailColor="#e8eef6"
+                    size="small"
+                  />
+                  <div className="record-review-metrics">
+                    <span><strong>{effectiveReviewSummary.confirmed}</strong> 已人工确认</span>
+                    <span><strong>{effectiveReviewSummary.batchEligible}</strong> 普通待确认</span>
+                    <span className={effectiveReviewSummary.manualRequired ? 'is-warning' : ''}><strong>{effectiveReviewSummary.manualRequired}</strong> 重点核验</span>
+                    <span><strong>{effectiveReviewSummary.rejected}</strong> 不采用</span>
+                  </div>
+                  {!reviewDone && <Button type="link" onClick={confirmMeetingMinutes}>继续审核</Button>}
                 </div>
                 {meetingRecordsLoading ? (
                   <div style={{ marginTop: 24, textAlign: 'center' }}>
@@ -6440,7 +6527,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   disabled={reviewDone || meetingRecordsLoading}
                   style={{ fontWeight: 600 }}
                 >
-                  {reviewDone ? '纪要已确认' : '确认纪要'}
+                  {reviewDone ? '本次纪要已确认' : '确认本次纪要'}
                 </Button>
               )}
               <Button
@@ -6456,6 +6543,118 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           </section>
         )}
       </div>
+
+      <Modal
+        title={null}
+        open={recordReviewOpen}
+        onCancel={() => setRecordReviewOpen(false)}
+        footer={null}
+        width={680}
+        centered
+        destroyOnClose
+        className="record-review-modal"
+      >
+        {recordReviewLoading ? (
+          <div className="record-review-loading"><Spin /><span>正在核对最新审核状态…</span></div>
+        ) : recordReviewStep === 'complete' ? (
+          <div className="record-review-complete">
+            <div className="record-review-complete-icon"><CheckCircleOutlined /></div>
+            <Title level={3}>本次纪要已确认</Title>
+            <Paragraph>证据正常内容已统一确认，需要重点核验的内容均已处理。</Paragraph>
+            <div className="record-review-complete-stats">
+              <span><strong>{recordReviewResult?.batchSupported || 0}</strong> 项本批确认</span>
+              <span><strong>{recordReviewResult?.individuallyHandled || 0}</strong> 项此前已确认</span>
+              <span><strong>0</strong> 项待核验</span>
+            </div>
+            <div className="record-review-footer">
+              <Button onClick={() => setRecordReviewOpen(false)}>返回查看</Button>
+              <Button type="primary" onClick={() => { setRecordReviewOpen(false); runStageAction(); }}>进入归档</Button>
+            </div>
+          </div>
+        ) : recordReviewStep === 'exceptions' ? (() => {
+          const pending = recordReviewSummary?.manualItems || [];
+          const current = pending[0];
+          const item = current?.item || {};
+          const basis = current?.basis || item.basis || {};
+          const quote = (basis.quotes || []).find(entry => String(entry?.text || '').trim()) || {};
+          return current ? (
+            <div className="record-review-exception">
+              <div className="record-review-kicker">需要重点核验 · 还剩 {pending.length} 项</div>
+              <div className="record-review-exception-head">
+                <Tag color="orange">{current.fieldLabel || '待核验内容'}</Tag>
+                <span>{current.reasonText || '需要人工单独核验'}</span>
+              </div>
+              <div className="record-review-content-block">
+                <label>昇晟会议 AI 提炼建议</label>
+                <p>{current.content || '该项暂无可展示的正式表述'}</p>
+              </div>
+              <div className="record-review-evidence-block">
+                <label>原始证据</label>
+                <p>{quote.text || '当前没有可直接核验的原始引句，请返回转写记录核对。'}</p>
+                {(quote.speaker || quote.time || quote.start != null) && (
+                  <span>{quote.time || (quote.start != null ? formatDuration(Number(quote.start)) : '')}{quote.speaker ? ` · ${quote.speaker}` : ''}</span>
+                )}
+                <Button
+                  size="small"
+                  icon={<PlayCircleOutlined />}
+                  onClick={() => {
+                    const start = Number(quote.start ?? quote.startSeconds ?? 0);
+                    if (audioPlayerRef.current?.seekTo) audioPlayerRef.current.seekTo(start);
+                    else message.info('请在右侧录音回放中核对原音');
+                  }}
+                >
+                  播放原音
+                </Button>
+              </div>
+              <div className="record-review-footer">
+                <Button onClick={() => setRecordReviewStep('overview')}>返回汇总</Button>
+                <div className="record-review-exception-actions">
+                  <Popconfirm title="确认不采用这条 AI 建议？" onConfirm={() => reviewGeneratedItem(current.field, item, 'reject', '', 'not_suitable')}>
+                    <Button danger>不采用</Button>
+                  </Popconfirm>
+                  <Button onClick={() => editAndSupportGeneratedItem(current.field, item)}>编辑后采用</Button>
+                  <Button type="primary" loading={reviewingRecordId === item.id} onClick={() => reviewGeneratedItem(current.field, item, 'support')}>确认采用</Button>
+                </div>
+              </div>
+            </div>
+          ) : null;
+        })() : (
+          <div className="record-review-overview">
+            <div className="record-review-kicker">会议级人工审核</div>
+            <Title level={3}>确认本次会议纪要</Title>
+            <Paragraph>本次共提炼 {recordReviewSummary?.total || 0} 项。证据正常内容可统一确认，异常内容需逐条判断。</Paragraph>
+            <div className="record-review-field-grid">
+              {[
+                ['minutes', '会议纪要'], ['decisions', '议定事项'], ['risks', '风险事项'],
+                ['disclosures', '披露事项'], ['todos', '待办事项'],
+              ].map(([field, label]) => (
+                <div key={field}><span>{label}</span><strong>{recordReviewSummary?.byField?.[field]?.total || 0} 项</strong></div>
+              ))}
+            </div>
+            <div className="record-review-summary-lines">
+              <div className="is-pass"><CheckCircleOutlined /><span><strong>{recordReviewSummary?.batchEligible || 0} 项</strong>证据校验通过，可统一确认</span></div>
+              <div className={recordReviewSummary?.manualRequired ? 'is-warning' : 'is-pass'}><SafetyCertificateOutlined /><span><strong>{recordReviewSummary?.manualRequired || 0} 项</strong>需要重点核验</span></div>
+              <div><span><strong>{recordReviewSummary?.confirmed || 0} 项</strong>已人工确认，<strong>{recordReviewSummary?.rejected || 0} 项</strong>不采用</span></div>
+            </div>
+            {(recordReviewSummary?.manualRequired || 0) > 0 && (
+              <Button type="link" className="record-review-exception-link" onClick={() => setRecordReviewStep('exceptions')}>
+                查看 {recordReviewSummary.manualRequired} 项需要核验的内容
+              </Button>
+            )}
+            <Checkbox checked={recordReviewConsent} onChange={event => setRecordReviewConsent(event.target.checked)}>
+              我已核对本次会议内容，确认证据校验通过的内容可纳入正式会议材料。
+            </Checkbox>
+            <div className="record-review-footer">
+              <Button onClick={() => setRecordReviewOpen(false)}>取消</Button>
+              <Button type="primary" disabled={!recordReviewConsent} loading={recordReviewSubmitting} onClick={completeMeetingReview}>
+                {(recordReviewSummary?.manualRequired || 0) > 0
+                  ? `确认 ${recordReviewSummary?.batchEligible || 0} 项并处理异常`
+                  : `确认 ${recordReviewSummary?.batchEligible || 0} 项可采用内容`}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         title="邀请参会人手机录音"

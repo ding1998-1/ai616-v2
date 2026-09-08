@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from backend.services import meeting_service, outcome_service, signature_service
 
 
@@ -115,15 +117,92 @@ def test_records_confirmation_enables_formal_documents(monkeypatch):
         lambda meeting_id, records, user, override, **kwargs: saved_versions.append((meeting_id, records, override)),
     )
 
+    batch = outcome_service.batch_support_eligible_records("m1", {"name": "主持人"})
     records = outcome_service.confirm_records("m1", {"name": "主持人"})
 
+    assert batch["supported"] == 1
     assert records["proofreadPassed"] is True
     assert records["proofreadStatus"] == "human-approved"
     assert records["proofreadBy"] == "主持人"
     assert records["humanReviewed"] is True
-    assert saved_versions[0][2] == {"humanReviewed": True, "formalOverride": {}}
+    assert saved_versions[-1][2] == {"humanReviewed": True, "formalOverride": {}}
     assert records["minutes"][0]["supportStatus"] == "human_supported"
     assert records["minutes"][0]["locked"] is True
+
+
+def test_batch_review_supports_only_eligible_items_and_writes_one_audit(monkeypatch):
+    meetings = {"m1": {"id": "m1", "events": [], "generatedRecords": {
+        "generated": True,
+        "minutes": [{
+            "id": "good", "agenda": "预算调整", "formalSummary": ["同意按程序调整预算。"],
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s1"], "quotes": [{"text": "同意按程序调整预算"}]},
+        }],
+        "risks": [{
+            "id": "bad", "content": "两周内完成招标", "reason": "unsupported_ai_claim",
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s2"], "quotes": [{"text": "最好这两周发出去"}]},
+        }],
+        "todos": [{"id": "missing", "task": "提交方案", "basis": {"evidenceValid": False}}],
+    }}}
+    saved = []
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(outcome_service, "_save_meetings", lambda value: None)
+    monkeypatch.setattr(outcome_service, "_invalidate_meetings_cache", lambda: None)
+    monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
+    monkeypatch.setattr(outcome_service, "_save_version", lambda *args, **kwargs: saved.append((args, kwargs)))
+
+    result = outcome_service.batch_support_eligible_records("m1", {"id": "u1", "name": "审核人"})
+
+    assert result["supported"] == 1
+    assert result["skipped"] == 2
+    assert {item["reason"] for item in result["skippedItems"]} == {"unsupported_ai_claim", "evidence_insufficient"}
+    good = result["records"]["minutes"][0]
+    assert good["supportStatus"] == "human_supported"
+    assert good["humanReview"]["action"] == "batch_support"
+    assert good["humanReview"]["batchId"] == result["batchId"]
+    assert result["records"]["risks"][0]["supportStatus"] == "ai_suggested"
+    assert meetings["m1"]["events"][-1]["type"] == "record-review-batch"
+    assert meetings["m1"]["events"][-1]["supported"] == 1
+    assert len(saved) == 1
+
+
+def test_batch_review_is_idempotent_and_preserves_original_reviewer(monkeypatch):
+    meetings = {"m1": {"id": "m1", "events": [], "generatedRecords": {
+        "generated": True,
+        "minutes": [{
+            "id": "good", "agenda": "预算调整", "formalSummary": ["同意按程序调整预算。"],
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s1"], "quotes": [{"text": "同意按程序调整预算"}]},
+        }],
+    }}}
+    saved = []
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(outcome_service, "_save_meetings", lambda value: None)
+    monkeypatch.setattr(outcome_service, "_invalidate_meetings_cache", lambda: None)
+    monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
+    monkeypatch.setattr(outcome_service, "_save_version", lambda *args, **kwargs: saved.append((args, kwargs)))
+
+    first = outcome_service.batch_support_eligible_records("m1", {"id": "u1", "name": "审核人甲"})
+    second = outcome_service.batch_support_eligible_records("m1", {"id": "u2", "name": "审核人乙"})
+
+    assert first["supported"] == 1
+    assert second["supported"] == 0
+    assert second["alreadySupported"] == 1
+    assert meetings["m1"]["generatedRecords"]["minutes"][0]["humanReview"]["reviewerName"] == "审核人甲"
+    assert len(meetings["m1"]["events"]) == 1
+    assert len(saved) == 1
+
+
+def test_confirmation_requires_batch_and_manual_review_to_be_complete(monkeypatch):
+    meetings = {"m1": {"id": "m1", "generatedRecords": {
+        "generated": True,
+        "minutes": [{
+            "id": "good", "agenda": "预算调整", "formalSummary": ["同意按程序调整预算。"],
+            "basis": {"evidenceValid": True, "sourceSegmentIds": ["s1"], "quotes": [{"text": "同意按程序调整预算"}]},
+        }],
+    }}}
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
+    with pytest.raises(ValueError, match="统一确认"):
+        outcome_service.confirm_records("m1", {"name": "主持人"})
 
 
 def test_single_item_review_preserves_ai_original_and_audit(monkeypatch):
@@ -216,7 +295,7 @@ def test_records_confirmation_requires_reason_and_manager_for_invalid_gate(monke
     try:
         outcome_service.confirm_records("m1", {"name": "主持人"})
     except ValueError as exc:
-        assert "不可核验内容" in str(exc)
+        assert "需要重点核验" in str(exc)
     else:
         raise AssertionError("expected evidence gate to block without a reason")
 

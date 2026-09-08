@@ -215,6 +215,10 @@ class MeetingRecordReviewRequest(BaseModel):
     reasonText: str = ""
 
 
+class MeetingRecordBatchReviewRequest(BaseModel):
+    action: str = "support_all_eligible"
+
+
 class ChatRequest(BaseModel):
     """流式审核请求"""
     matter_type: str

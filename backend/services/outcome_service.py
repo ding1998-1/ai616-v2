@@ -26,6 +26,13 @@ from backend.db import (
 
 
 FORMAL_RECORD_FIELDS = ("minutes", "decisions", "risks", "disclosures", "todos")
+REVIEW_FIELD_LABELS = {
+    "minutes": "会议纪要",
+    "decisions": "议定事项",
+    "risks": "风险事项",
+    "disclosures": "披露事项",
+    "todos": "待办事项",
+}
 logger = logging.getLogger(__name__)
 
 # Keep exactly one shared generation task per meeting. Refreshes, duplicate
@@ -157,6 +164,187 @@ def basis_gate_status(records: dict | None) -> dict:
     }
 
 
+def _manual_review_reason(item: dict, field: str) -> tuple[str, str] | None:
+    """Return the business reason that prevents ordinary batch confirmation."""
+
+    reason = str(item.get("reviewReason") or item.get("reason") or "").strip()
+    basis = item.get("basis") if isinstance(item.get("basis"), dict) else {}
+    if reason == "unsupported_ai_claim" or item.get("unsupportedAiClaim"):
+        return "unsupported_ai_claim", "AI 表述与原始证据匹配不足，请核对原始发言"
+    if (
+        item.get("evidenceConflict")
+        or item.get("unresolvedEvidenceConflict")
+        or basis.get("conflict")
+        or basis.get("evidenceConflict")
+    ):
+        return "evidence_conflict", "原始证据之间存在冲突，需要人工判断"
+    if item.get("requiresHumanReview") or item.get("manualReviewRequired") or item.get("needsReview"):
+        return "manual_review_required", "关键内容需要人工单独核验"
+    gate = basis_gate_status({"generated": True, "minutes": [item] if field == "minutes" else [], field: [item]})
+    field_invalid = int((gate.get("missingByField") or {}).get(field) or 0)
+    if field_invalid:
+        return "evidence_insufficient", "缺少可核验的原始发言依据"
+    return None
+
+
+def is_batch_support_eligible(item: dict, field: str) -> bool:
+    """The server-side eligibility boundary for one AI-generated record."""
+
+    return bool(
+        isinstance(item, dict)
+        and item.get("supportStatus", "ai_suggested") == "ai_suggested"
+        and _manual_review_reason(item, field) is None
+    )
+
+
+def derive_review_summary(records: dict | None) -> dict:
+    """Build one review summary shared by API responses and confirmation gates."""
+
+    normalized = normalize_review_metadata(deepcopy(records or {}))
+    totals = {"total": 0, "confirmed": 0, "batchEligible": 0, "manualRequired": 0, "rejected": 0}
+    by_field: dict[str, dict] = {}
+    manual_items: list[dict] = []
+    for field in FORMAL_RECORD_FIELDS:
+        counts = {"total": 0, "confirmed": 0, "batchEligible": 0, "manualRequired": 0, "rejected": 0}
+        for item in normalized.get(field) or []:
+            if not isinstance(item, dict):
+                continue
+            counts["total"] += 1
+            totals["total"] += 1
+            status = item.get("supportStatus", "ai_suggested")
+            if status == "human_supported":
+                key = "confirmed"
+            elif status == "rejected":
+                key = "rejected"
+            elif is_batch_support_eligible(item, field):
+                key = "batchEligible"
+            else:
+                key = "manualRequired"
+                reason_code, reason_text = _manual_review_reason(item, field) or (
+                    "manual_review_required", "需要人工单独核验",
+                )
+                basis = item.get("basis") if isinstance(item.get("basis"), dict) else {}
+                manual_items.append({
+                    "id": str(item.get("id") or ""),
+                    "field": field,
+                    "fieldLabel": REVIEW_FIELD_LABELS[field],
+                    "reason": reason_code,
+                    "reasonText": reason_text,
+                    "content": _record_text(item, field),
+                    "basis": deepcopy(basis),
+                    "item": deepcopy(item),
+                })
+            counts[key] += 1
+            totals[key] += 1
+        by_field[field] = counts
+    return {**totals, "byField": by_field, "manualItems": manual_items}
+
+
+def get_review_summary(meeting_id: str, user: dict) -> dict:
+    safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise KeyError("会议不存在")
+    _check_review_permission(user, meeting)
+    records = normalize_review_metadata(deepcopy(meeting.get("generatedRecords") or {}))
+    return derive_review_summary(records)
+
+
+def batch_support_eligible_records(meeting_id: str, user: dict) -> dict:
+    """Confirm every currently eligible item as one audited, idempotent action."""
+
+    safe_id = _safe_meeting_id(meeting_id)
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        meeting = meetings.get(safe_id)
+        if not meeting:
+            raise KeyError("会议不存在")
+        _check_review_permission(user, meeting)
+        records = normalize_review_metadata(deepcopy(meeting.get("generatedRecords") or {}))
+        if not records.get("generated"):
+            raise ValueError("请先生成会议纪要")
+        before = derive_review_summary(records)
+        already_supported = before["confirmed"]
+        skipped_items = [
+            {key: item[key] for key in ("id", "field", "fieldLabel", "reason", "reasonText", "content")}
+            for item in before["manualItems"]
+        ]
+        eligible = [
+            (field, item)
+            for field in FORMAL_RECORD_FIELDS
+            for item in records.get(field) or []
+            if is_batch_support_eligible(item, field)
+        ]
+        if not eligible:
+            return {
+                "batchId": "",
+                "supported": 0,
+                "alreadySupported": already_supported,
+                "skipped": len(skipped_items),
+                "skippedItems": skipped_items,
+                "summary": before,
+                "records": records,
+            }
+        now = _now_text()
+        batch_id = f"review-batch-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
+        reviewer_id = str(user.get("id") or user.get("username") or "")
+        reviewer_name = str(user.get("name") or user.get("username") or "")
+        for _, item in eligible:
+            item.update({
+                "supportStatus": "human_supported",
+                "locked": True,
+                "humanReview": {
+                    "supported": True,
+                    "reviewerId": reviewer_id,
+                    "reviewerName": reviewer_name,
+                    "reviewedAt": now,
+                    "action": "batch_support",
+                    "batchId": batch_id,
+                    "reasonCode": "batch_verified",
+                    "reasonText": "人工统一确认证据校验通过的内容",
+                },
+            })
+        records["humanReviewed"] = True
+        records["updatedAt"] = now
+        summary = derive_review_summary(records)
+        audit_event = {
+            "id": f"review_batch_{uuid.uuid4().hex[:12]}",
+            "type": "record-review-batch",
+            "action": "批量确认AI提炼内容",
+            "meetingId": safe_id,
+            "operator": reviewer_name,
+            "operatorId": reviewer_id,
+            "serverTime": now,
+            "batchId": batch_id,
+            "supported": len(eligible),
+            "skipped": len(skipped_items),
+            "skippedItems": deepcopy(skipped_items),
+        }
+        meeting.setdefault("events", []).append(audit_event)
+        meeting["events"] = meeting["events"][-200:]
+        meeting["generatedRecords"] = records
+        meeting["updatedAt"] = now
+        meetings[safe_id] = meeting
+        _save_meetings(meetings)
+        _invalidate_meetings_cache()
+        _save_version(
+            safe_id,
+            records,
+            user,
+            {"action": "batch_support", "batchId": batch_id, "supported": len(eligible)},
+            edit_summary=f"批量确认 AI 提炼内容 {len(eligible)} 项，跳过 {len(skipped_items)} 项",
+        )
+        return {
+            "batchId": batch_id,
+            "supported": len(eligible),
+            "alreadySupported": already_supported,
+            "skipped": len(skipped_items),
+            "skippedItems": skipped_items,
+            "summary": summary,
+            "records": records,
+        }
+
+
 def require_basis_gate(records: dict | None, *, action: str) -> dict:
     gate = basis_gate_status(records)
     if gate["ready"]:
@@ -246,6 +434,58 @@ def authorize_basis_override(
     })
     meeting["events"] = meeting["events"][-200:]
     return gate, override
+
+
+def authorize_review_export_override(
+    records: dict,
+    meeting: dict,
+    user: dict,
+    *,
+    reason: str = "",
+) -> dict | None:
+    """Record an explicit exception when formal export omits unconfirmed AI content."""
+
+    summary = derive_review_summary(records)
+    unresolved = summary["batchEligible"] + summary["manualRequired"]
+    if not unresolved:
+        return None
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValueError(
+            f"仍有 {unresolved} 项内容未完成人工确认；请返回审核，或填写理由后生成缺项正式 Word"
+        )
+    if len(reason) < 8:
+        raise ValueError("人工确认理由至少填写 8 个字")
+
+    from backend.dependencies import can_manage_meeting
+
+    if not can_manage_meeting(user, meeting):
+        raise PermissionError("只有管理员、会议创建人、主持人或会议秘书可以生成缺项正式文件")
+    now = _now_text()
+    actor = user.get("name") or user.get("username") or user.get("id") or ""
+    override = {
+        "id": f"review_export_override_{uuid.uuid4().hex[:12]}",
+        "action": "生成缺项正式文件",
+        "reason": reason,
+        "operator": actor,
+        "operatorId": user.get("id") or user.get("username") or "",
+        "operatorRole": user.get("meetingRole") or user.get("role") or "",
+        "time": now,
+        "unresolvedCount": unresolved,
+        "batchEligible": summary["batchEligible"],
+        "manualRequired": summary["manualRequired"],
+        "unresolvedItems": deepcopy(summary.get("manualItems") or []),
+    }
+    records["reviewExportOverrides"] = [
+        *list(records.get("reviewExportOverrides") or []), override,
+    ][-50:]
+    records["latestReviewExportOverride"] = override
+    meeting.setdefault("events", []).append({
+        "id": override["id"],
+        "type": "review-export-override",
+        **override,
+    })
+    return override
 
 
 def _whisper_source_from_meeting(meeting: dict) -> list[dict]:
@@ -676,6 +916,12 @@ def generate_record_documents(
     records = normalize_review_metadata(deepcopy(records))
     publication_mode = "review" if publication_mode == "review" else "formal"
     if publication_mode == "formal":
+        review_override = authorize_review_export_override(
+            records,
+            meeting,
+            user or {},
+            reason=override_reason,
+        )
         formal_records = deepcopy(records)
         for field in FORMAL_RECORD_FIELDS:
             formal_records[field] = [
@@ -685,6 +931,7 @@ def generate_record_documents(
         if not any(formal_records.get(field) for field in FORMAL_RECORD_FIELDS):
             raise ValueError("尚无人工支持的内容，不能生成正式发布版")
     else:
+        review_override = None
         formal_records = records
     if publication_mode == "formal":
         gate, override = authorize_basis_override(
@@ -742,9 +989,13 @@ def generate_record_documents(
         if not current:
             raise KeyError("会议不存在")
         current_records = dict(current.get("generatedRecords") or {})
-        if override:
+        if override or review_override:
             current_records["formalOverrides"] = records.get("formalOverrides") or []
-            current_records["latestFormalOverride"] = override
+            if override:
+                current_records["latestFormalOverride"] = override
+            current_records["reviewExportOverrides"] = records.get("reviewExportOverrides") or []
+            if review_override:
+                current_records["latestReviewExportOverride"] = review_override
             current["events"] = meeting.get("events") or current.get("events") or []
         current_records["documents"] = bundle
         current["generatedRecords"] = current_records
@@ -871,6 +1122,8 @@ def review_record_item(
             "reviewerId": reviewer_id,
             "reviewerName": reviewer_name,
             "reviewedAt": now,
+            "action": action,
+            "batchId": "",
             "reasonCode": reason_code,
             "reasonText": reason_text,
         }
@@ -899,7 +1152,7 @@ def review_record_item(
 
 
 def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> dict:
-    """Record an explicit human review before formal Word generation."""
+    """Finish meeting-level review after item review has reached a stable state."""
 
     safe_id = _safe_meeting_id(meeting_id)
     initial_meeting = _load_meetings().get(safe_id)
@@ -919,6 +1172,11 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
         records = normalize_review_metadata(deepcopy(meeting.get("generatedRecords") or {}))
         if not records.get("generated"):
             raise ValueError("请先生成会议纪要")
+        summary = derive_review_summary(records)
+        if not override_reason and summary["batchEligible"]:
+            raise ValueError(f"还有 {summary['batchEligible']} 项证据正常内容待统一确认")
+        if not override_reason and summary["manualRequired"]:
+            raise ValueError(f"还有 {summary['manualRequired']} 项内容需要重点核验")
         gate, override = authorize_basis_override(
             records,
             meeting,
@@ -928,26 +1186,6 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
         )
         now = _now_text()
         reviewer = user.get("name") or user.get("username") or ""
-        reviewer_id = str(user.get("id") or user.get("username") or "")
-        for field in FORMAL_RECORD_FIELDS:
-            for item in records.get(field) or []:
-                if not isinstance(item, dict) or item.get("supportStatus") != "ai_suggested":
-                    continue
-                basis = item.get("basis") if isinstance(item.get("basis"), dict) else {}
-                if not basis.get("evidenceValid") and not override:
-                    continue
-                item.update({
-                    "supportStatus": "human_supported",
-                    "locked": True,
-                    "humanReview": {
-                        "supported": True,
-                        "reviewerId": reviewer_id,
-                        "reviewerName": reviewer,
-                        "reviewedAt": now,
-                        "reasonCode": "authorized_override" if override else "batch_verified",
-                        "reasonText": override_reason if override else "一键确认全部有依据的昇晟会议 AI 提炼",
-                    },
-                })
         normalize_review_metadata(records)
         records.update({
             "proofreadPassed": True,
@@ -957,6 +1195,8 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
             "humanReviewed": True,
             "basisGate": gate,
         })
+        meeting["reviewDone"] = True
+        meeting["phase"] = "纪要已确认"
         meeting["generatedRecords"] = records
         meeting["updatedAt"] = now
         meetings[safe_id] = meeting

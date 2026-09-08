@@ -7,14 +7,16 @@ from fastapi.responses import FileResponse
 
 from backend.dependencies import require_meeting, require_user
 from backend.config import MEETING_FILES_DIR, RECORDS_PIPELINE
-from backend.models import FormalActionRequest, MeetingMarkerRequest, MeetingRecordReviewRequest, MeetingRecordsUpdateRequest
+from backend.models import FormalActionRequest, MeetingMarkerRequest, MeetingRecordBatchReviewRequest, MeetingRecordReviewRequest, MeetingRecordsUpdateRequest
 from backend.services.outcome_service import (
     add_marker,
+    batch_support_eligible_records,
     confirm_records,
     create_todo,
     delete_marker,
     delete_todo,
     get_records,
+    get_review_summary,
     generate_records_v2,
     generate_record_documents,
     get_version,
@@ -94,6 +96,38 @@ async def confirm_meeting_records(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"success": True, "meetingId": meeting_id, "records": records}
+
+
+@router.get("/meetings/{meeting_id}/records/review/summary")
+async def meeting_record_review_summary(request: Request, meeting_id: str):
+    user, _, _ = require_meeting(request, meeting_id)
+    try:
+        summary = get_review_summary(meeting_id, user)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"success": True, "meetingId": meeting_id, "summary": summary}
+
+
+@router.post("/meetings/{meeting_id}/records/review/batch")
+async def batch_review_meeting_records(
+    request: Request,
+    meeting_id: str,
+    body: MeetingRecordBatchReviewRequest,
+):
+    if body.action != "support_all_eligible":
+        raise HTTPException(status_code=400, detail="不支持的批量审核动作")
+    user, _, _ = require_meeting(request, meeting_id)
+    try:
+        result = batch_support_eligible_records(meeting_id, user)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"success": True, "meetingId": meeting_id, **result}
 
 
 @router.post("/meetings/{meeting_id}/records/documents")

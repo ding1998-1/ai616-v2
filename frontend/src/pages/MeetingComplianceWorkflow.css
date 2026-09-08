@@ -6118,3 +6118,91 @@
   width: auto;
   grid-template-columns: minmax(100px, 1fr) 100px 110px;
 }
+
+.record-review-progress {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #dbe5f2;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fbff 0%, #f3f7fc 100%);
+}
+
+.record-review-progress-head,
+.record-review-footer,
+.record-review-exception-head,
+.record-review-exception-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.record-review-progress-head { margin-bottom: 6px; color: #526174; font-size: 12px; }
+.record-review-progress-head strong { color: #14243a; font-variant-numeric: tabular-nums; }
+
+.record-review-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.record-review-metrics span { color: #69778a; font-size: 11px; }
+.record-review-metrics strong { display: block; color: #17273d; font-size: 18px; line-height: 1.2; }
+.record-review-metrics .is-warning strong { color: #c05a0a; }
+.record-review-progress > .ant-btn { height: auto; margin-top: 8px; padding: 0; }
+
+.record-review-modal .ant-modal-content { overflow: hidden; border: 1px solid #dbe4ef; border-radius: 18px; box-shadow: 0 24px 70px rgba(24, 45, 76, 0.2); }
+.record-review-modal .ant-modal-body { padding: 28px; }
+.record-review-loading { min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #6b7788; }
+.record-review-kicker { margin-bottom: 7px; color: #1268d6; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.record-review-overview h3,
+.record-review-complete h3 { margin: 0 0 6px; color: #15253c; }
+.record-review-overview > .ant-typography,
+.record-review-complete > .ant-typography { color: #657386; }
+
+.record-review-field-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 22px 0 16px;
+}
+
+.record-review-field-grid div { padding: 12px 10px; border: 1px solid #e0e8f1; border-radius: 10px; background: #f8fafc; }
+.record-review-field-grid span { display: block; color: #778396; font-size: 11px; }
+.record-review-field-grid strong { display: block; margin-top: 5px; color: #192a41; font-size: 15px; }
+
+.record-review-summary-lines { display: grid; gap: 9px; padding: 14px; border-radius: 12px; background: #f6f8fb; }
+.record-review-summary-lines > div { display: flex; align-items: center; gap: 9px; color: #526174; font-size: 13px; }
+.record-review-summary-lines .is-pass > .anticon { color: #168556; }
+.record-review-summary-lines .is-warning { color: #a64b0a; }
+.record-review-summary-lines .is-warning > .anticon { color: #df750c; }
+.record-review-summary-lines strong { margin-right: 3px; color: inherit; }
+.record-review-exception-link { height: auto; margin: 12px 0; padding: 0; }
+.record-review-overview > .ant-checkbox-wrapper { align-items: flex-start; margin-top: 8px; color: #34445a; line-height: 1.65; }
+.record-review-footer { margin-top: 24px; }
+
+.record-review-exception-head { justify-content: flex-start; margin-bottom: 18px; color: #9b4a0a; font-size: 13px; }
+.record-review-content-block,
+.record-review-evidence-block { margin-top: 12px; padding: 16px; border-radius: 12px; }
+.record-review-content-block { border: 1px solid #dce6f2; background: #f7faff; }
+.record-review-evidence-block { border: 1px solid #f0dfc9; background: #fffaf2; }
+.record-review-content-block label,
+.record-review-evidence-block label { color: #7b8797; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.record-review-content-block p,
+.record-review-evidence-block p { margin: 8px 0; color: #1c2c43; font-size: 14px; line-height: 1.75; }
+.record-review-evidence-block > span { display: block; margin-bottom: 10px; color: #8d7354; font-size: 11px; }
+
+.record-review-complete { text-align: center; }
+.record-review-complete-icon { width: 60px; height: 60px; margin: 0 auto 16px; border-radius: 50%; display: grid; place-items: center; color: #138354; background: #e9f8f1; font-size: 30px; }
+.record-review-complete-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
+.record-review-complete-stats span { padding: 14px; border-radius: 11px; color: #6a7789; background: #f6f8fb; font-size: 12px; }
+.record-review-complete-stats strong { display: block; color: #17283e; font-size: 22px; }
+
+@media (max-width: 760px) {
+  .record-review-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .record-review-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .record-review-footer { align-items: stretch; flex-direction: column; }
+  .record-review-footer .ant-btn { width: 100%; }
+  .record-review-exception-actions { display: grid; grid-template-columns: 1fr; width: 100%; }
+}
