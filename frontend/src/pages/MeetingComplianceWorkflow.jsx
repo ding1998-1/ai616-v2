@@ -6657,6 +6657,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <div key={field}><span>{label}</span><strong>{recordReviewSummary?.byField?.[field]?.total || 0} 项</strong></div>
               ))}
             </div>
+            <div className="record-review-overview-grid">
+            <div className="record-review-overview-main">
             <div className="record-review-detail-list">
               <div className="record-review-detail-head">
                 <strong>本次审核内容</strong>
@@ -6697,6 +6699,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             <Checkbox checked={recordReviewConsent} onChange={event => setRecordReviewConsent(event.target.checked)}>
               我已核对本次会议内容，确认证据校验通过的内容可纳入正式会议材料。
             </Checkbox>
+            </div>
+            <aside className="record-review-overview-side">
+              <div className="record-review-side-card is-green"><h4>可批量确认 {recordReviewSummary?.batchEligible || 0} 项</h4><p>证据校验通过，建议统一确认。</p><Button type="primary" onClick={completeMeetingReview}>预览并确认内容 →</Button></div>
+              <div className="record-review-side-card is-orange"><h4>需要重点核验 {recordReviewSummary?.manualRequired || 0} 项</h4><p>异常内容需要逐条判断。</p><Button onClick={() => setRecordReviewStep('exceptions')}>查看待核验内容</Button></div>
+              <div className="record-review-side-card"><h4>确认后将完成</h4><ol><li>纳入正式会议材料</li><li>记录人工确认日志</li><li>完成会议审核</li><li>进入归档流程</li></ol></div>
+            </aside>
+            </div>
             <div className="record-review-footer">
               <Button onClick={() => setRecordReviewOpen(false)}>取消</Button>
               <Button type="primary" disabled={!recordReviewConsent} loading={recordReviewSubmitting} onClick={completeMeetingReview}>
