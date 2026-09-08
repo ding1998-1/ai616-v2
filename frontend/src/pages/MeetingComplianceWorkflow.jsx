@@ -759,6 +759,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [recordReviewLoading, setRecordReviewLoading] = useState(false);
   const [recordReviewSubmitting, setRecordReviewSubmitting] = useState(false);
   const [recordReviewResult, setRecordReviewResult] = useState(null);
+  const [recordReviewExpanded, setRecordReviewExpanded] = useState(false);
   const [reviewingRecordId, setReviewingRecordId] = useState('');
   const [meetingRecordsLoading, setMeetingRecordsLoading] = useState(false);
   const [recordGenerationStatus, setRecordGenerationStatus] = useState({ status: 'idle' });
@@ -6545,11 +6546,26 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       </div>
 
       <Modal
-        title={null}
+        title={(
+          <div className="record-review-modal-titlebar">
+            <div>
+              <span className="record-review-modal-eyebrow">会议级人工审核</span>
+              <strong>确认本次会议纪要</strong>
+            </div>
+            <Button
+              type="text"
+              size="small"
+              icon={<FullscreenOutlined />}
+              onClick={() => setRecordReviewExpanded(value => !value)}
+            >
+              {recordReviewExpanded ? '恢复窗口' : '放大查看'}
+            </Button>
+          </div>
+        )}
         open={recordReviewOpen}
         onCancel={() => setRecordReviewOpen(false)}
         footer={null}
-        width={680}
+        width={recordReviewExpanded ? 'calc(100vw - 96px)' : 760}
         centered
         destroyOnClose
         className="record-review-modal"
