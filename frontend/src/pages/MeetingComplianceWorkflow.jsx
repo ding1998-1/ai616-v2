@@ -6524,10 +6524,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <Button
                   icon={<CheckCircleOutlined />}
                   onClick={confirmMeetingMinutes}
-                  disabled={reviewDone || meetingRecordsLoading}
+                  disabled={meetingRecordsLoading}
                   style={{ fontWeight: 600 }}
                 >
-                  {reviewDone ? '本次纪要已确认' : '确认本次纪要'}
+                  {reviewDone ? '继续审核' : '确认本次纪要'}
                 </Button>
               )}
               <Button
