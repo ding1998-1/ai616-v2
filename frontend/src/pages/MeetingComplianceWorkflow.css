@@ -4703,6 +4703,7 @@
   height: 38px !important;
   border-radius: 8px;
 }
+.minutes-regenerate-help { margin-top: 7px; color: #7b8797; font-size: 11px; line-height: 1.5; }
 
 .minutes-document-panel {
   border: 1px solid #e4eaf2 !important;

@@ -5449,8 +5449,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     style={{ height: 40, fontWeight: 600 }}
                   >
                     {recordGenerationStatus.status === 'running'
-                      ? '正在生成纪要'
-                      : meetingGeneratedRecords?.generated ? '重新生成纪要' : 'AI 生成纪要'}
+                      ? '正在重新分析…'
+                      : meetingGeneratedRecords?.generated ? '重新生成 AI 纪要（重跑分析）' : '生成 AI 纪要'}
                   </Button>
                   {meetingGeneratedRecords?.generated && (
                     <Button
@@ -5460,8 +5460,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       block
                       style={{ height: 36, marginTop: 8 }}
                     >
-                      重新整理会议记录
+                      重新整理记录（不重跑 AI）
                     </Button>
+                  )}
+                  {meetingGeneratedRecords?.generated && (
+                    <div className="minutes-regenerate-help">重跑分析会重新调用 AI，结果可能变化；重新整理只调整现有转写的阅读结构，结果内容不变。</div>
                   )}
                 </div>
                 {recordGenerationStatus.status === 'running' && (
