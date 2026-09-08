@@ -4669,7 +4669,8 @@
 
 .minutes-overview-panel {
   position: relative;
-  min-height: 128px;
+  min-height: 166px;
+  overflow: visible;
   border: 1px solid #e4eaf2 !important;
   box-shadow: 0 7px 22px rgba(28, 50, 79, .045);
 }
