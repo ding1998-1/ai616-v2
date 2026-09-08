@@ -1,6 +1,7 @@
 export const REVIEW_FIELDS = ['minutes', 'decisions', 'risks', 'disclosures', 'todos'];
 
 export function deriveReviewSummary(records = {}) {
+  records = records || {};
   const totals = { total: 0, confirmed: 0, batchEligible: 0, manualRequired: 0, rejected: 0 };
   const byField = {};
   const manualItems = [];

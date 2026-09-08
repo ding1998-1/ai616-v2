@@ -19,3 +19,9 @@ test('review summary separates ordinary confirmation from manual exceptions', ()
   assert.equal(matchesReviewFilter(records.risks[0], 'risks', 'needs_action', summary), true);
   assert.equal(matchesReviewFilter(records.minutes[0], 'minutes', 'needs_action', summary), false);
 });
+
+test('review summary tolerates records that have not loaded yet', () => {
+  const summary = deriveReviewSummary(null);
+  assert.equal(summary.total, 0);
+  assert.equal(summary.manualItems.length, 0);
+});
