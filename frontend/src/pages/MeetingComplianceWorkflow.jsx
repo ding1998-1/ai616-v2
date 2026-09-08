@@ -5507,19 +5507,29 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               <section className="minutes-document-panel" style={{ ...panelStyle, padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                   <Text strong style={{ color: palette.ink, fontSize: 16 }}><RobotOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />纪要审核</Text>
-                  <Select
-                    size="small"
-                    value={recordReviewFilter}
-                    onChange={setRecordReviewFilter}
-                    style={{ width: 132 }}
-                    options={[
-                      { value: 'all', label: '全部' },
-                      { value: 'needs_action', label: '需要我处理' },
-                      { value: 'pending', label: '待确认' },
-                      { value: 'confirmed', label: '已确认' },
-                      { value: 'rejected', label: '不采用' },
-                    ]}
-                  />
+                  <Space size={8}>
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<FullscreenOutlined />}
+                      onClick={() => { setRecordReviewExpanded(true); confirmMeetingMinutes(); }}
+                    >
+                      放大审核
+                    </Button>
+                    <Select
+                      size="small"
+                      value={recordReviewFilter}
+                      onChange={setRecordReviewFilter}
+                      style={{ width: 132 }}
+                      options={[
+                        { value: 'all', label: '全部' },
+                        { value: 'needs_action', label: '需要我处理' },
+                        { value: 'pending', label: '待确认' },
+                        { value: 'confirmed', label: '已确认' },
+                        { value: 'rejected', label: '不采用' },
+                      ]}
+                    />
+                  </Space>
                 </div>
                 <div className="record-review-progress">
                   <div className="record-review-progress-head">
