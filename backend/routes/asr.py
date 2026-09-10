@@ -917,7 +917,6 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
     from backend.qwen_asr_client import ASRError
     from backend.services.offline_asr_client import OfflineASRClient
     from backend.services.asr_2pass_service import (
-        ContinuationFinalBuffer,
         OrderedFinalBuffer,
         review_with_fallback,
     )
@@ -982,7 +981,6 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
     result_lock = asyncio.Lock()
     review_tasks: set[asyncio.Task] = set()
     final_buffer = OrderedFinalBuffer()
-    continuation_buffer = ContinuationFinalBuffer()
     committed_sentences: list[str] = []
     pre_roll = deque(maxlen=3)
     current_pcm = bytearray()
@@ -1004,8 +1002,10 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
         async with result_lock:
             ready = final_buffer.add(result_payload)
             for ordered_payload in ready:
-                for payload in continuation_buffer.add(ordered_payload):
-                    await emit_committed(payload)
+                # Forced VAD splits are user-visible realtime subtitle boundaries.
+                # Do not hold them until a later natural pause: continuous audio
+                # could otherwise arrive on the PC as one multi-minute paragraph.
+                await emit_committed(ordered_payload)
 
     async def review_sentence(
         sentence_id: str,
@@ -1167,9 +1167,6 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
                 )
             except asyncio.TimeoutError:
                 logger.warning("2pass review drain timed out meeting=%s", meeting_id)
-        async with result_lock:
-            for payload in continuation_buffer.flush():
-                await emit_committed(payload)
         await offline_client.close()
         try:
             await send({"type": "finished", "taskId": task_id})

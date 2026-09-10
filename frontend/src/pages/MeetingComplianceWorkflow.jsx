@@ -1992,7 +1992,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   useEffect(() => {
-    if (!currentMeetingId || !currentMeetingPersisted) return;
+    if (!meetingWorkspaceOpen || !currentMeetingId) return undefined;
     setRemoteEvents([]);
     setRemoteTranscripts([]);
     setTranscriptUpdatedAt('');
@@ -2033,12 +2033,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           loadMeetingMarkers();
         }
 
-        // 会议已结束时停止高频轮询
-        const phase = data.meetingPhase;
-        if (phase && !['问题收集中', '待创建会议', '会前确认', '会中记录', '进行中'].includes(phase)) {
-          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-          if (eventSource) { eventSource.close(); eventSource = null; }
-        }
+        // 手机端可能在 PC 推进到会后阶段后继续完成上传。
+        // 只要当前会议页面仍打开，就保持同步，避免数据库已有字幕但 PC 停止更新。
       } catch (err) { console.warn("Parse error:", err); }
       finally { polling = false; }
     };
@@ -2046,6 +2042,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     // 轮询作为主通道，1.5秒一次保证低延迟
     doPoll();
     pollTimer = window.setInterval(doPoll, 1500);
+
+    // 浏览器从后台恢复、网络重连时立即补拉，避免定时器被浏览器节流后字幕停住。
+    const syncWhenVisible = () => {
+      if (document.visibilityState === 'visible') doPoll();
+    };
+    window.addEventListener('focus', doPoll);
+    window.addEventListener('online', doPoll);
+    document.addEventListener('visibilitychange', syncWhenVisible);
 
     // SSE 作为加速通道，连接成功则推送更快
     const connectSSE = () => {
@@ -2102,8 +2106,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       eventSource?.close();
       if (pollTimer) window.clearInterval(pollTimer);
       if (sseReconnectTimer) window.clearTimeout(sseReconnectTimer);
+      window.removeEventListener('focus', doPoll);
+      window.removeEventListener('online', doPoll);
+      document.removeEventListener('visibilitychange', syncWhenVisible);
     };
-  }, [currentMeetingId, currentMeetingPersisted]);
+  }, [currentMeetingId, meetingWorkspaceOpen]);
 
   const loadGeneratedMeetingRecords = async (force = false) => {
     if (!currentMeetingId) return null;
