@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Checkbox, Drawer, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Timeline, Tooltip, Typography, message } from 'antd';
+import { Button, Checkbox, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Timeline, Tooltip, Typography, message } from 'antd';
 import {
   AppstoreOutlined,
   AudioOutlined,
@@ -340,6 +340,25 @@ function meetingTimeLabel(value) {
   return /(?:T|\s)\d{2}:\d{2}/.test(text) ? normalizeMeetingDateTime(text).slice(11, 16) : '';
 }
 
+function WorkbenchIcon({ name, size = 18 }) {
+  const paths = {
+    active: <><path d="M7.5 6.5V5.2A2.2 2.2 0 0 1 9.7 3h4.6a2.2 2.2 0 0 1 2.2 2.2v1.3"/><rect x="4" y="6.5" width="16" height="14" rx="3"/><path d="M8 10.5h8M8 14h5M16.5 15.5l1.2 1.2 2.1-2.4"/></>,
+    pending: <><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5l3.2 2"/></>,
+    archived: <><path d="M5 7.5h14v11.3A2.2 2.2 0 0 1 16.8 21H7.2A2.2 2.2 0 0 1 5 18.8z"/><path d="M8 7.5V4h8v3.5M9 11.5h6M9 15h6"/></>,
+    monthly: <><rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M8 3.5v4M16 3.5v4M4 9.5h16M8 13h2M14 13h2M8 16.5h2M14 16.5h2"/></>,
+    add: <><circle cx="12" cy="12" r="9"/><path d="M12 7.5v9M7.5 12h9"/></>,
+    calendar: <><rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M8 3.5v4M16 3.5v4M4 9.5h16M8 13h3M8 16.5h6"/></>,
+    organize: <><path d="M7 3.5h10v4H7zM5 7.5h14v13H5z"/><path d="M8 11h8M8 14.5h8M8 18h5"/></>,
+    archive: <><path d="M4.5 7h15v12.5h-15zM3.5 3.5h17v4h-17zM9 11h6"/></>,
+    recent: <><rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M8 3.5v4M16 3.5v4M4 9.5h16M8 13h3M8 16.5h6"/></>,
+    data: <><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M7.5 16.5v-4M12 16.5V8M16.5 16.5v-6"/></>,
+    topic: <><path d="M5 4.5h11l3 3v12H5zM16 4.5v3h3M8 11h8M8 14.5h8"/></>,
+    user: <><circle cx="12" cy="8.5" r="3.5"/><path d="M5.5 20c.6-4 2.8-6 6.5-6s5.9 2 6.5 6"/></>,
+    more: <><circle cx="6" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1" fill="currentColor" stroke="none"/></>,
+  };
+  return <svg className={`workbench-svg-icon icon-${name}`} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+}
+
 function inferMeetingMode(record) {
   const rawMode = record.meetingMode || record.meeting_mode || '';
   if (rawMode === 'normal') return 'normal';
@@ -370,6 +389,7 @@ function normalizeMeetingRecord(record) {
     phase: record.phase || '问题收集中',
     statusColor: record.statusColor || 'default',
     issueCount: record.issueCount || record.issue_count || Math.max(1, record.agendaDrafts?.length || record.issueSources?.length || 0),
+    participantCount: record.participantCount || record.participant_count || record.participants?.length || 0,
     projectBound: Boolean(record.projectBound),
     agendaFrozen: Boolean(record.agendaFrozen),
     reviewDone: Boolean(record.reviewDone),
@@ -3511,161 +3531,143 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   if (!meetingWorkspaceOpen) {
+    const stagePriority = { '会后终审': 0, '待签署': 1, '待归档': 1, '会中记录': 2, '进行中': 2, '会前确认': 3, '已归档': 4 };
+    const sortedMeetingRecords = [...filteredMeetingRecords].sort((a, b) => {
+      const phaseDiff = (stagePriority[a.phase] ?? 3) - (stagePriority[b.phase] ?? 3);
+      if (phaseDiff) return phaseDiff;
+      return String(b.updatedAt || b.date || '').localeCompare(String(a.updatedAt || a.date || ''));
+    });
     const activeMeetingCount = meetingRecords.filter(item => ['会前确认', '会中记录', '进行中'].includes(item.phase)).length;
+    const liveMeetingCount = meetingRecords.filter(item => ['会中记录', '进行中'].includes(item.phase)).length;
+    const preMeetingCount = meetingRecords.filter(item => item.phase === '会前确认').length;
     const pendingMeetingCount = meetingRecords.filter(item => ['会后终审', '待签署', '待归档'].includes(item.phase)).length;
     const archiveMeetingCount = meetingRecords.filter(item => item.archived || item.phase === '已归档').length;
+    const currentMonth = createLocalDate().slice(0, 7);
+    const monthlyMeetingCount = meetingRecords.filter(item => normalizeMeetingDateTime(item.date).startsWith(currentMonth)).length;
     const stageFilters = [
-      { key: '', label: '全部' },
-      { key: '会前确认', label: '待召开' },
-      { key: '会中记录', label: '进行中' },
-      { key: 'post_meeting', label: '待整理' },
-      { key: '已归档', label: '已归档' },
+      { key: '', label: '全部', count: meetingRecords.length },
+      { key: '会前确认', label: '待召开', count: preMeetingCount },
+      { key: '会中记录', label: '进行中', count: liveMeetingCount },
+      { key: 'post_meeting', label: '待整理', count: pendingMeetingCount },
+      { key: '已归档', label: '已归档', count: archiveMeetingCount },
     ];
+    const nextActionLabel = phase => phase === '会中记录' || phase === '进行中'
+      ? '继续当前议题与实时记录'
+      : phase === '会后终审'
+        ? '整理议题成果并发起确认'
+        : ['待签署', '待归档'].includes(phase)
+          ? '核对签字与材料并完成归档'
+          : phase === '已归档'
+            ? '查看归档成果'
+            : '确认议题与参会人员';
+    const phaseClassName = phase => {
+      if (phase === '会前确认') return 'is-pre';
+      if (['会中记录', '进行中'].includes(phase)) return 'is-live';
+      if (phase === '会后终审') return 'is-review';
+      if (['待签署', '待归档'].includes(phase)) return 'is-archive';
+      if (phase === '已归档') return 'is-done';
+      return 'is-default';
+    };
+    const weekdayLabel = value => {
+      const date = new Date(normalizeMeetingDateTime(value));
+      return Number.isNaN(date.getTime()) ? '时间待定' : `周${'日一二三四五六'[date.getDay()]}`;
+    };
+    const greeting = new Date().getHours() < 12 ? '上午好' : new Date().getHours() < 18 ? '下午好' : '晚上好';
+    const recentMeetings = [...meetingRecords]
+      .sort((a, b) => String(b.updatedAt || b.date || '').localeCompare(String(a.updatedAt || a.date || '')))
+      .slice(0, 5);
     const remoteSearchActive = meetingFilterSearch.trim().length >= 2;
     const meetingSearchMatches = meetingSearchResults.filter(item => item.type === 'meeting');
     const agendaSearchMatches = meetingSearchResults.filter(item => item.type === 'agenda');
+    const meetingMenuItems = record => [
+      { key: 'edit', label: '编辑会议' },
+      { key: 'detail', label: '查看详情' },
+      ...(record.phase === '已归档' ? [] : [{ type: 'divider' }, { key: 'archive', label: '归档会议', danger: true }]),
+    ];
     return (
-      <div className="meeting-compliance-page meeting-home" style={{ height: '100%', padding: 24, boxSizing: 'border-box', overflow: 'hidden', background: '#fbfbfc', color: palette.text }}>
-        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 20, minHeight: 0, maxWidth: 1380, margin: '0 auto' }}>
-          <section className="meeting-home-hero">
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 24, alignItems: 'end' }}>
+      <div className="meeting-compliance-page meeting-home">
+        <div className="meeting-workbench-shell">
+          <section className="meeting-workbench-hero">
+            <div className="meeting-workbench-heading">
               <div>
-                <div className="meeting-home-eyebrow">MEETINGS</div>
-                <Title level={2} style={{ margin: '8px 0 0', color: palette.ink, fontSize: 34, lineHeight: 1.15, letterSpacing: '-0.045em', fontWeight: 680 }}>今天，从哪场会议继续？</Title>
-                <div style={{ marginTop: 10, color: palette.muted, fontSize: 14, lineHeight: 1.7 }}>
-                  每场会议都按议题推进。进入后，系统会直接带你回到上次停留的步骤。
-                </div>
+                <Title level={2}>{greeting}，{currentUserName} <span aria-hidden="true">👋</span></Title>
+                <p>从议题准备、多方录音、实时转写到会议纪要与归档，AI 全程协助。</p>
               </div>
-              <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} className="meeting-home-create">
-                新建会议
-              </Button>
+              <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} className="meeting-home-create">新建会议</Button>
             </div>
-            <div className="meeting-home-metrics" aria-label="会议概览">
-              <div className="meeting-home-metric metric-active">
-                <strong>{activeMeetingCount}</strong><span>正在推进</span><small>需要你继续处理</small>
-              </div>
-              <div className="meeting-home-metric metric-pending">
-                <strong>{pendingMeetingCount}</strong><span>等待整理</span><small>生成纪要与确认</small>
-              </div>
-              <div className="meeting-home-metric metric-archived">
-                <strong>{archiveMeetingCount}</strong><span>已经归档</span><small>可随时回溯</small>
-              </div>
-              <div className={`meeting-home-sync ${meetingDataReady ? 'is-online' : 'is-offline'}`}>
-                <i /> <span>{meetingsLoading ? '正在同步会议数据' : meetingDataReady ? '会议数据已连接' : '数据连接异常'}</span>
+            <div className="meeting-home-metrics" aria-label="会议工作概览">
+              <button type="button" className="meeting-home-metric metric-active" onClick={() => setMeetingFilterStage('会中记录')}>
+                <span className="meeting-metric-icon"><WorkbenchIcon name="active" size={20} /></span><strong>{activeMeetingCount}</strong><span>正在推进</span><small>进入当前会议工作</small>
+              </button>
+              <button type="button" className="meeting-home-metric metric-pending" onClick={() => setMeetingFilterStage('post_meeting')}>
+                <span className="meeting-metric-icon"><WorkbenchIcon name="pending" size={20} /></span><strong>{pendingMeetingCount}</strong><span>等待整理</span><small>需要生成纪要或确认</small>
+              </button>
+              <button type="button" className="meeting-home-metric metric-archived" onClick={() => setMeetingFilterStage('已归档')}>
+                <span className="meeting-metric-icon"><WorkbenchIcon name="archived" size={20} /></span><strong>{archiveMeetingCount}</strong><span>已归档</span><small>可随时查看成果</small>
+              </button>
+              <div className="meeting-home-metric metric-monthly">
+                <span className="meeting-metric-icon"><WorkbenchIcon name="monthly" size={20} /></span><strong>{monthlyMeetingCount}</strong><span>本月会议</span><small>{meetingRecords.length} 场会议总数</small>
               </div>
             </div>
           </section>
 
-          <div className="meeting-home-toolbar">
-            <div className="meeting-home-filters">
-              {stageFilters.map(filter => (
-                <button key={filter.key || 'all'} type="button" className={meetingFilterStage === filter.key ? 'is-active' : ''} onClick={() => setMeetingFilterStage(filter.key)}>{filter.label}</button>
-              ))}
-            </div>
-            <Input allowClear value={meetingFilterSearch} onChange={event => setMeetingFilterSearch(event.target.value)} prefix={<SearchOutlined />} suffix={meetingSearchLoading ? <Spin size="small" /> : null} placeholder="搜索会议或议题" className="meeting-home-search" />
-          </div>
-
-          <main style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '2px 4px 16px' }}>
-            {meetingsLoading || (remoteSearchActive && meetingSearchLoading && !meetingSearchResults.length) ? (
-              <div style={{ display: 'grid', gap: 12 }}>
-                {[1, 2, 3].map(n => (
-                  <Skeleton key={n} active paragraph={{ rows: 2 }} />
-                ))}
-              </div>
-            ) : remoteSearchActive ? (
-              <div className="meeting-search-results" aria-live="polite">
-                {meetingSearchMatches.length > 0 && (
-                  <section className="meeting-search-group">
-                    <div className="meeting-search-group-head"><strong>会议</strong><span>{meetingSearchMatches.length} 条</span></div>
-                    {meetingSearchMatches.map(result => (
-                      <button key={`meeting-${result.meetingId}`} type="button" className="meeting-search-result" onClick={() => openMeetingSearchResult(result)}>
-                        <span className="meeting-search-type">会议</span>
-                        <div>
-                          <strong>{result.meetingTitle}</strong>
-                          <p>{result.matchText || '会议名称命中'}</p>
-                        </div>
-                        <aside>{result.meetingDate ? meetingDateLabel(result.meetingDate) : '时间待定'}<b>{result.meetingPhase || '查看会议'}</b></aside>
-                      </button>
-                    ))}
-                  </section>
-                )}
-                {agendaSearchMatches.length > 0 && (
-                  <section className="meeting-search-group">
-                    <div className="meeting-search-group-head"><strong>议题</strong><span>{agendaSearchMatches.length} 条</span></div>
-                    {agendaSearchMatches.map(result => (
-                      <button key={`agenda-${result.agendaId}`} type="button" className="meeting-search-result is-agenda" onClick={() => openMeetingSearchResult(result)}>
-                        <span className="meeting-search-type">议题</span>
-                        <div>
-                          <strong>{result.agendaTitle}</strong>
-                          <p>{result.matchText || '议题名称命中'}</p>
-                          <em>属于：{result.meetingTitle}</em>
-                        </div>
-                        <aside>{result.meetingDate ? meetingDateLabel(result.meetingDate) : '时间待定'}<b>{result.agendaStatus || '查看议题'}</b></aside>
-                      </button>
-                    ))}
-                  </section>
-                )}
-                {!meetingSearchResults.length && (
-                  <div className="meeting-search-empty">
-                    <Empty description={`没有找到与“${meetingFilterSearch.trim()}”相关的会议或议题`} />
-                  </div>
-                )}
-              </div>
-            ) : (
-            <div className="meeting-home-list">
-              {filteredMeetingRecords.map(record => (
-                <article
-                  key={record.id}
-                  className="meeting-home-row"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openMeetingRecord(record)}
-                  onKeyDown={event => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      openMeetingRecord(record);
-                    }
-                  }}
-                >
-                  <div className="meeting-home-date">
-                    <strong>{record.date ? meetingDateLabel(record.date) : '待定'}</strong>
-                    <span>{meetingTimeLabel(record.date) ? `${meetingTimeLabel(record.date)} · ` : ''}{record.meetingType || '会议'}</span>
-                  </div>
-                  <div className="meeting-home-main">
-                    <div className="meeting-home-title-line">
-                      <Text strong>{record.title}</Text>
-                      <Tag color={record.statusColor}>{record.phase}</Tag>
-                      {record.meetingMode === 'major' && <Tag color="gold">重大事项治理</Tag>}
-                    </div>
-                    <p>{record.meetingNo ? `${record.meetingNo} · ` : ''}{record.project || '未关联项目'}</p>
-                    <div className="meeting-home-next"><span>下一步</span>{record.phase === '会中记录' ? '继续当前议题与实时记录' : record.phase === '会后终审' ? '整理议题成果并发起确认' : ['待签署', '待归档'].includes(record.phase) ? '核对签字与材料并完成归档' : record.phase === '已归档' ? '查看归档成果' : '确认议题与参会人员'}</div>
-                  </div>
-                  <div className="meeting-home-facts">
-                    <span><strong>{record.issueCount || 0}</strong> 个议题</span>
-                    <span><strong>{record.participantCount || 0}</strong> 位参会人</span>
-                  </div>
-                  <div className="meeting-home-actions" onClick={event => event.stopPropagation()}>
-                    <Button type="primary" onClick={() => openMeetingRecord(record)}>{record.phase === '已归档' ? '查看' : '继续'}</Button>
-                    <Tooltip title="编辑会议">
-                      <Button type="text" icon={<EditOutlined />} aria-label="编辑会议" onClick={() => openMeetingRecord(record)} />
-                    </Tooltip>
-                    <Tooltip title="归档会议">
-                      <Button type="text" icon={<FolderOpenOutlined />} aria-label="归档会议" onClick={() => confirmDeleteMeetingRecord(record)} />
-                    </Tooltip>
-                  </div>
-                </article>
-              ))}
-              {!filteredMeetingRecords.length && (
-                <div style={{ padding: 48, textAlign: 'center' }}>
-                  <Empty description={meetingRecords.length ? '没有符合当前条件的会议' : '还没有会议'} />
-                  <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft} style={{ marginTop: 16 }}>
-                    新建第一场会议
-                  </Button>
+          <div className="meeting-workbench-columns">
+            <section className="meeting-workbench-main">
+              <div className="meeting-home-toolbar">
+                <div className="meeting-home-filters" role="tablist" aria-label="会议状态筛选">
+                  {stageFilters.map(filter => (
+                    <button key={filter.key || 'all'} type="button" role="tab" aria-selected={meetingFilterStage === filter.key} className={meetingFilterStage === filter.key ? 'is-active' : ''} onClick={() => setMeetingFilterStage(filter.key)}>{filter.label} <b>{filter.count}</b></button>
+                  ))}
                 </div>
-              )}
-            </div>
-            )}
-          </main>
+                <div className="meeting-toolbar-actions">
+                  <Select allowClear value={meetingFilterMode || undefined} onChange={value => setMeetingFilterMode(value || '')} placeholder="会议类型" options={[{ value: 'normal', label: '普通会议' }, { value: 'major', label: '重大事项会议' }]} />
+                  <Input allowClear value={meetingFilterSearch} onChange={event => setMeetingFilterSearch(event.target.value)} prefix={<SearchOutlined />} suffix={meetingSearchLoading ? <Spin size="small" /> : null} placeholder="搜索会议、议题或参与人..." className="meeting-home-search" />
+                </div>
+              </div>
+
+              <main className="meeting-home-list-area">
+                {meetingsLoading || (remoteSearchActive && meetingSearchLoading && !meetingSearchResults.length) ? (
+                  <div className="meeting-home-loading">{[1, 2, 3].map(n => <Skeleton key={n} active paragraph={{ rows: 2 }} />)}</div>
+                ) : remoteSearchActive ? (
+                  <div className="meeting-search-results" aria-live="polite">
+                    {meetingSearchMatches.length > 0 && <section className="meeting-search-group">
+                      <div className="meeting-search-group-head"><strong>会议</strong><span>{meetingSearchMatches.length} 条</span></div>
+                      {meetingSearchMatches.map(result => <button key={`meeting-${result.meetingId}`} type="button" className="meeting-search-result" onClick={() => openMeetingSearchResult(result)}><span className="meeting-search-type">会议</span><div><strong>{result.meetingTitle}</strong><p>{result.matchText || '会议名称命中'}</p></div><aside>{result.meetingDate ? meetingDateLabel(result.meetingDate) : '时间待定'}<b>{result.meetingPhase || '查看会议'}</b></aside></button>)}
+                    </section>}
+                    {agendaSearchMatches.length > 0 && <section className="meeting-search-group">
+                      <div className="meeting-search-group-head"><strong>议题</strong><span>{agendaSearchMatches.length} 条</span></div>
+                      {agendaSearchMatches.map(result => <button key={`agenda-${result.agendaId}`} type="button" className="meeting-search-result is-agenda" onClick={() => openMeetingSearchResult(result)}><span className="meeting-search-type">议题</span><div><strong>{result.agendaTitle}</strong><p>{result.matchText || '议题名称命中'}</p><em>属于：{result.meetingTitle}</em></div><aside>{result.meetingDate ? meetingDateLabel(result.meetingDate) : '时间待定'}<b>{result.agendaStatus || '查看议题'}</b></aside></button>)}
+                    </section>}
+                    {!meetingSearchResults.length && <div className="meeting-search-empty"><Empty description={`没有找到与“${meetingFilterSearch.trim()}”相关的会议或议题`} /></div>}
+                  </div>
+                ) : (
+                  <div className="meeting-home-table-wrap">
+                    <div className="meeting-home-table-head" aria-hidden="true"><span>日期</span><span>会议信息与下一步</span><span>状态</span><span>议题 / 参与人</span><span>更新时间</span><span>操作</span></div>
+                    <div className="meeting-home-list">
+                      {sortedMeetingRecords.map(record => (
+                        <article key={record.id} className="meeting-home-row" role="button" tabIndex={0} onClick={() => openMeetingRecord(record)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openMeetingRecord(record); } }}>
+                          <div className="meeting-home-date"><strong>{record.date ? meetingDateLabel(record.date) : '待定'}</strong><span>{weekdayLabel(record.date)} {meetingTimeLabel(record.date)}</span></div>
+                          <div className="meeting-home-main"><div className="meeting-home-title-line"><Text strong>{record.title}</Text>{record.meetingMode === 'major' && <Tag color="gold">重大事项</Tag>}</div><p>{record.project || record.meetingNo || '未关联项目'}</p><div className="meeting-home-next"><span>下一步：</span>{nextActionLabel(record.phase)}</div></div>
+                          <div><span className={`meeting-status-pill ${phaseClassName(record.phase)}`}><i />{record.phase}</span></div>
+                          <div className="meeting-home-facts"><span><WorkbenchIcon name="topic" size={15} /> {record.issueCount || 0} 个议题</span><span><WorkbenchIcon name="user" size={15} /> {record.participantCount || 0} 位参会人</span></div>
+                          <div className="meeting-home-updated"><strong>{record.updatedAt ? String(record.updatedAt).replace('T', ' ').slice(0, 16) : String(record.createdAt || '').replace('T', ' ').slice(0, 16)}</strong><span>更新人：{record.creator || '系统管理员'}</span></div>
+                          <div className="meeting-home-actions" onClick={event => event.stopPropagation()}><Button type="primary" onClick={() => openMeetingRecord(record)}>继续</Button><Dropdown trigger={['click']} menu={{ items: meetingMenuItems(record), onClick: ({ key, domEvent }) => { domEvent?.stopPropagation(); if (key === 'archive') confirmDeleteMeetingRecord(record); else openMeetingRecord(record); } }}><Button aria-label="更多会议操作" icon={<WorkbenchIcon name="more" size={18} />} /></Dropdown></div>
+                        </article>
+                      ))}
+                      {!sortedMeetingRecords.length && <div className="meeting-home-empty"><Empty description={meetingRecords.length ? '没有符合当前条件的会议' : '还没有会议'}>{!meetingRecords.length && <p>从第一次会议开始，让 AI 帮你完成议题准备、录音、转写、纪要和归档。</p>}</Empty><Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft}>新建第一场会议</Button></div>}
+                    </div>
+                  </div>
+                )}
+              </main>
+            </section>
+
+            <aside className="meeting-workbench-aside">
+              <section className="meeting-aside-card"><div className="meeting-aside-title"><WorkbenchIcon name="data" size={18} /><strong>快速操作</strong></div><div className="meeting-quick-grid"><button type="button" onClick={openNewMeetingDraft}><WorkbenchIcon name="add" size={20} /><span>新建会议</span></button><button type="button" onClick={() => setMeetingFilterStage('会前确认')}><WorkbenchIcon name="calendar" size={20} /><span>待召开</span></button><button type="button" onClick={() => setMeetingFilterStage('post_meeting')}><WorkbenchIcon name="organize" size={20} /><span>待整理</span></button><button type="button" onClick={() => setMeetingFilterStage('已归档')}><WorkbenchIcon name="archive" size={20} /><span>会议归档</span></button></div></section>
+              <section className="meeting-aside-card"><div className="meeting-aside-title"><WorkbenchIcon name="recent" size={18} /><strong>近期会议</strong><button type="button" onClick={() => setMeetingFilterStage('')}>查看全部</button></div><div className="meeting-recent-list">{recentMeetings.map(record => <button key={record.id} type="button" onClick={() => openMeetingRecord(record)}><i className={phaseClassName(record.phase)} /><span><strong>{record.title}</strong><small>{meetingDateLabel(record.date)} {meetingTimeLabel(record.date)}</small></span><em>{record.phase}</em></button>)}</div></section>
+              <section className="meeting-aside-card meeting-data-card"><div className="meeting-aside-title"><WorkbenchIcon name="data" size={18} /><strong>会议数据</strong><span>本月</span></div><div className="meeting-data-bars" aria-hidden="true">{[activeMeetingCount, pendingMeetingCount, archiveMeetingCount, monthlyMeetingCount, meetingRecords.length, preMeetingCount, liveMeetingCount].map((value, index) => <i key={index} style={{ height: `${Math.max(18, Math.min(100, (value / Math.max(1, meetingRecords.length)) * 100))}%` }} />)}</div><div className="meeting-data-totals"><span><strong>{meetingRecords.length}</strong>会议总数</span><span><strong>{activeMeetingCount}</strong>推进中</span><span><strong>{pendingMeetingCount}</strong>待整理</span><span><strong>{archiveMeetingCount}</strong>已归档</span></div></section>
+              <div className={`meeting-home-sync ${meetingDataReady ? 'is-online' : 'is-offline'}`}><i /><span>{meetingsLoading ? '正在同步会议数据' : meetingDataReady ? '后端服务正常' : '数据连接异常'}</span></div>
+            </aside>
+          </div>
         </div>
       </div>
     );
