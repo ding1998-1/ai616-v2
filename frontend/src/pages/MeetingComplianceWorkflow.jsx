@@ -743,6 +743,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [projectBound, setProjectBound] = useState(false);
   const [agendaFrozen, setAgendaFrozen] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [desktopRecorderState, setDesktopRecorderState] = useState('idle'); // idle | requesting | recording | uploading | error
   const [reviewDone, setReviewDone] = useState(false);
   const [archiveDone, setArchiveDone] = useState(false);
   const [minuteView, setMinuteView] = useState('summary');
@@ -870,25 +871,40 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const micMediaRecorderRef = useRef(null);
   const micAudioChunksRef = useRef([]);
   const micChunkIndexRef = useRef(0); // 流式上传 chunk 序号
+  const micPendingUploadsRef = useRef(new Set());
+  const micUploadFailedRef = useRef(false);
+  const micFailedChunksRef = useRef(new Map());
   const micFinalizedSentenceIdsRef = useRef(new Set());
 
   // 流式上传单个录音 chunk（每 3 秒调用一次，避免浏览器内存溢出）
   const uploadMicAudioChunk = async (blob, index) => {
-    try {
-      const token = getStoredToken();
-      const form = new FormData();
-      form.append('meeting_id', currentMeetingId);
-      form.append('chunk_index', String(index));
-      form.append('file', blob, `chunk_${index}.webm`);
-      const resp = await fetch('/api/meeting/recorder/audio/chunk', {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: form,
-      });
-      if (!resp.ok) console.warn(`Chunk ${index} 上传失败: HTTP ${resp.status}`);
-    } catch (e) {
-      console.warn(`Chunk ${index} 上传异常:`, e);
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const token = getStoredToken();
+        const form = new FormData();
+        form.append('meeting_id', currentMeetingId);
+        form.append('chunk_index', String(index));
+        form.append('file', blob, `chunk_${index}.webm`);
+        const resp = await fetch('/api/meeting/recorder/audio/chunk', {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: form,
+        });
+        if (resp.ok) {
+          micFailedChunksRef.current.delete(index);
+          return true;
+        }
+        lastError = new Error(`HTTP ${resp.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt < 3) await new Promise(resolve => window.setTimeout(resolve, attempt * 500));
     }
+    micUploadFailedRef.current = true;
+    micFailedChunksRef.current.set(index, blob);
+    console.warn(`Chunk ${index} 上传失败:`, lastError);
+    throw lastError || new Error('录音分片上传失败');
   };
 
   // 录音完成后通知后端合并所有 chunk
@@ -965,20 +981,63 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const stopAndUploadDesktopAudio = async () => {
+    if (desktopRecorderState === 'uploading') return false;
+    setDesktopRecorderState('uploading');
     const recorder = micMediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
-      try { recorder.stop(); } catch (_) {}
+      await new Promise(resolve => {
+        const timeoutId = window.setTimeout(resolve, 3000);
+        recorder.addEventListener('stop', () => {
+          window.clearTimeout(timeoutId);
+          resolve();
+        }, { once: true });
+        try { recorder.stop(); } catch (_) { window.clearTimeout(timeoutId); resolve(); }
+      });
     }
     micMediaRecorderRef.current = null;
-    // 等一小段时间让 ondataavailable 触发
-    await new Promise(r => setTimeout(r, 500));
-    // 流式上传模式：chunk 已在录音过程中上传，此处通知后端合并
+    const pendingUploads = Array.from(micPendingUploadsRef.current);
+    if (pendingUploads.length) await Promise.allSettled(pendingUploads);
+    if (micFailedChunksRef.current.size) {
+      micUploadFailedRef.current = false;
+      const retries = Array.from(micFailedChunksRef.current.entries()).map(([index, blob]) => uploadMicAudioChunk(blob, index));
+      await Promise.allSettled(retries);
+    }
     const totalChunks = micChunkIndexRef.current;
+    if (micUploadFailedRef.current) {
+      setDesktopRecorderState('error');
+      message.error('部分电脑录音尚未上传，请保持网络连接后重试停止录音');
+      return false;
+    }
     if (totalChunks > 0) {
-      await completeMicAudioUpload(0, totalChunks);
+      const durationSeconds = recordingStartedAtRef.current
+        ? Math.max(1, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000))
+        : 0;
+      const result = await completeMicAudioUpload(durationSeconds, totalChunks);
+      if (!result) {
+        setDesktopRecorderState('error');
+        message.error('电脑录音合并未完成，请重试停止录音');
+        return false;
+      }
     }
     micAudioChunksRef.current = [];
+    micChunkIndexRef.current = 0;
+    micFailedChunksRef.current.clear();
     await postDesktopSession('stop');
+    setDesktopRecorderState('idle');
+    return true;
+  };
+
+  const toggleDesktopRecording = async () => {
+    if (desktopRecorderState === 'requesting' || desktopRecorderState === 'uploading') return;
+    if (recording) {
+      const saved = await stopAndUploadDesktopAudio();
+      if (!saved) return;
+      setRecording(false);
+      message.success('电脑录音已完整上传并保存');
+      return;
+    }
+    setDesktopRecorderState('requesting');
+    setRecording(true);
   };
 
   useEffect(() => {
@@ -995,6 +1054,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
     const startMic = async () => {
       try {
+        setDesktopRecorderState('requesting');
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error('浏览器只允许在 HTTPS 安全地址使用麦克风，请打开 https://aimeeting.xingsnb.cn/');
+        }
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
         if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
         micStreamRef.current = stream;
@@ -1004,11 +1067,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           const recorder = new MediaRecorder(stream);
           micAudioChunksRef.current = [];
           micChunkIndexRef.current = 0;
-          recorder.ondataavailable = async e => {
+          micPendingUploadsRef.current.clear();
+          micUploadFailedRef.current = false;
+          micFailedChunksRef.current.clear();
+          recorder.ondataavailable = e => {
             if (e.data?.size) {
-              micAudioChunksRef.current.push(e.data);
               const idx = micChunkIndexRef.current++;
-              uploadMicAudioChunk(e.data, idx);
+              const upload = uploadMicAudioChunk(e.data, idx);
+              micPendingUploadsRef.current.add(upload);
+              upload.finally(() => micPendingUploadsRef.current.delete(upload)).catch(() => {});
             }
           };
           recorder.start(3000); // 每 3 秒分段，立即上传释放内存
@@ -1151,9 +1218,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         source.connect(gainNode);
         gainNode.connect(processor);
         processor.connect(audioCtx.destination);
+        await postDesktopSession('start');
+        setDesktopRecorderState('recording');
 
       } catch (err) {
         if (!stopped) message.error(`麦克风启动失败: ${err.message}`);
+        setDesktopRecorderState('error');
         setRecording(false);
       }
     };
@@ -1171,34 +1241,20 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       micMediaRecorderRef.current = null;
       if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null; }
       if (micWsRef.current) { micWsRef.current.close(); micWsRef.current = null; }
-      // 异步上传录音文件（不阻塞 cleanup）
-      const chunks = micAudioChunksRef.current;
-      if (chunks && chunks.length) {
-        const audioBlob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
-        if (audioBlob.size > 0) {
-          const token = getStoredToken();
-          const form = new FormData();
-          form.append('meeting_id', currentMeetingId);
-          form.append('meeting_title', currentMeetingTitle || '');
-          form.append('agenda', '');
-          form.append('duration_seconds', '0');
-          form.append('file', audioBlob, `${currentMeetingId}-${Date.now()}.webm`);
-          fetch('/api/meeting/recorder/audio', {
-            method: 'POST',
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            body: form,
-          }).then(() => {
-            return fetch('/api/meeting/recorder/session', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-              body: JSON.stringify({ meeting_id: currentMeetingId, meeting_title: currentMeetingTitle || '', agenda: '', action: 'stop' }),
-            });
-          }).catch(() => {});
-        }
-      }
       micAudioChunksRef.current = [];
     };
   }, [recording, currentMeetingId, currentUserName, currentUserMeetingRole]);
+
+  useEffect(() => {
+    if (!['recording', 'uploading'].includes(desktopRecorderState)) return undefined;
+    const warnBeforeLeave = event => {
+      event.preventDefault();
+      event.returnValue = '电脑录音正在采集或保存，请先停止录音。';
+      return event.returnValue;
+    };
+    window.addEventListener('beforeunload', warnBeforeLeave);
+    return () => window.removeEventListener('beforeunload', warnBeforeLeave);
+  }, [desktopRecorderState]);
   const currentUserSeat = currentUser?.meetingSeat || (currentUser?.role === 'admin' ? '主控席' : '参会席位');
   const currentUserLabel = `${currentUserDept} ${currentUserName}`.trim();
   const issueImportRunning = issueImportStatus.running;
@@ -3398,7 +3454,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       return;
     }
     if (activeStage === 'meeting') {
-      await stopAndUploadDesktopAudio();
+      const desktopAudioSaved = await stopAndUploadDesktopAudio();
+      if (!desktopAudioSaved) return;
       setRecording(false);
       const advanced = await persistStage('audit', '会后终审');
       if (!advanced) return;
@@ -5322,7 +5379,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
           <div className="meeting-bottom-bar" style={{ background: isDarkMode ? '#111827' : '#f8fafc', borderTop: `1px solid ${palette.line}` }}>
             {[
-              [recording ? '本机录音中' : '本机录音', <AudioOutlined />, recording ? 'is-on' : '', 'record'],
+              [desktopRecorderState === 'requesting' ? '正在连接' : desktopRecorderState === 'uploading' ? '正在保存' : recording ? '电脑录音中' : desktopRecorderState === 'error' ? '录音需重试' : '电脑录音', <AudioOutlined />, recording ? 'is-on' : desktopRecorderState === 'error' ? 'is-error' : '', 'record'],
               ['手机接入', <MobileOutlined />, '', 'mobile'],
               [`参会人 ${connectedCount}`, <UserOutlined />, '', 'participants'],
               ['会中备注', <MessageOutlined />, '', 'chat'],
@@ -5332,7 +5389,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 key={label}
                 type="button"
                 className={`meeting-control-button ${mode}`}
-                onClick={action === 'mobile' ? () => setRecorderInviteOpen(true) : () => setMeetingActionType(action)}
+                disabled={action === 'record' && ['requesting', 'uploading'].includes(desktopRecorderState)}
+                onClick={action === 'mobile' ? () => setRecorderInviteOpen(true) : action === 'record' ? toggleDesktopRecording : () => setMeetingActionType(action)}
               >
                 {icon}
                 <span>{label}</span>
@@ -6235,7 +6293,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ),
           footer: [
             <Button key="cancel" onClick={closeMeetingActionModal}>继续共享</Button>,
-            <Button key="stop" danger type="primary" onClick={async () => { await stopAndUploadDesktopAudio(); setRecording(false); closeMeetingActionModal(); message.success('已停止共享，录音已保存'); }}>停止共享</Button>,
+            <Button key="stop" danger type="primary" onClick={async () => { const saved = await stopAndUploadDesktopAudio(); if (!saved) return; setRecording(false); closeMeetingActionModal(); message.success('已停止共享，电脑录音已保存'); }}>停止共享</Button>,
           ],
         };
       case 'mic':
@@ -6249,7 +6307,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ),
           footer: [
             <Button key="close" onClick={closeMeetingActionModal}>知道了</Button>,
-            <Button key="toggle" type="primary" onClick={async () => { if (recording) { await stopAndUploadDesktopAudio(); } setRecording(prev => !prev); closeMeetingActionModal(); }}>{recording ? '暂停麦克风' : '开启麦克风'}</Button>,
+            <Button key="toggle" type="primary" loading={['requesting', 'uploading'].includes(desktopRecorderState)} onClick={async () => { await toggleDesktopRecording(); closeMeetingActionModal(); }}>{recording ? '停止并保存电脑录音' : '开始电脑录音'}</Button>,
           ],
         };
       case 'chat':
@@ -6315,7 +6373,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 10 }}>
               {[
                 ['会议 ID', currentMeetingId],
-                ['录音状态', recording ? '录音中' : '已暂停'],
+                ['电脑录音', desktopRecorderState === 'requesting' ? '正在请求麦克风' : desktopRecorderState === 'uploading' ? '正在上传并合并' : recording ? '录音与转写中' : desktopRecorderState === 'error' ? '保存未完成' : '未开始'],
                 ['手机接入', `${remoteSpeakerRows.filter(item => item.fromRemote).length} 人`],
                 ['底稿回传', `${remoteTranscripts.length} 条`],
               ].map(([label, value]) => (
@@ -6326,6 +6384,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               ))}
             </div>
           ),
+          footer: [
+            <Button key="close" onClick={closeMeetingActionModal}>关闭</Button>,
+            <Button key="toggle" type="primary" danger={recording} loading={['requesting', 'uploading'].includes(desktopRecorderState)} onClick={toggleDesktopRecording}>{recording ? '停止并保存' : '开始电脑录音'}</Button>,
+          ],
         };
       case 'evidence':
         return {

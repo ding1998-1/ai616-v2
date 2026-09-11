@@ -4882,6 +4882,17 @@
   background: #eef5fe;
 }
 
+.meeting-compliance-page .meeting-control-button.is-error {
+  color: #b42318;
+  border-color: #fecaca;
+  background: #fff1f0;
+}
+
+.meeting-compliance-page .meeting-control-button:disabled {
+  cursor: wait;
+  opacity: .72;
+}
+
 .meeting-compliance-page .meeting-leave-button {
   min-width: 108px;
   margin-left: auto;
