@@ -18,6 +18,12 @@ from backend.deps import _build_meeting_from_request
 PHASE_BY_STAGE = {"collect": "会前确认", "meeting": "会中记录", "audit": "会后终审", "archive": "已归档"}
 
 
+def _check_quick_type_change(existing: dict, next_type: str) -> None:
+    previous = existing.get("type")
+    if previous != next_type and "快速会议" in {previous, next_type}:
+        raise PermissionError("已有会议不能转换为或转出快速会议，请新建会议")
+
+
 def list_meetings(include_archived: bool = False, limit: int = 50, offset: int = 0) -> dict:
     rows = [_public_meeting(item, include_detail=False) for item in _load_meetings().values()]
     if not include_archived:
@@ -39,10 +45,17 @@ def upsert_meeting(body, user: dict) -> tuple[dict, bool]:
     with MEETINGS_LOCK:
         meetings = _load_meetings()
         existing = meetings.get(safe_id)
+        if existing:
+            _check_quick_type_change(existing, body.type or existing.get("type"))
         explicit_fields = {**body.model_dump(exclude_unset=True), "id": safe_id}
         normalized_body = body.model_copy(update={"id": safe_id})
         meeting = _build_meeting_from_request(normalized_body, user, existing, explicit_fields)
-        meeting["agendaDrafts"] = _derive_agenda_drafts(meeting)
+        if meeting.get("type") == "快速会议":
+            meeting["meetingMode"] = "normal"
+            meeting["agendaDrafts"] = list(body.agendaDrafts if body.agendaDrafts is not None else (existing or {}).get("agendaDrafts", []))
+            meeting["agenda"] = body.agenda or (existing or {}).get("agenda", "")
+        else:
+            meeting["agendaDrafts"] = _derive_agenda_drafts(meeting)
         meetings[meeting["id"]] = meeting
         _save_meetings(meetings)
     return meeting, existing is not None
@@ -56,6 +69,11 @@ def patch_meeting(meeting_id: str, patch: dict, user: dict) -> dict:
         if not meeting:
             raise KeyError("会议不存在")
         _check_meeting_access(user, meeting)
+        if patch.get("type"):
+            _check_quick_type_change(meeting, patch["type"])
+        if meeting.get("type") == "快速会议":
+            patch["meetingMode"] = "normal"
+            patch.pop("meeting_mode", None)
         if meeting.get("agendaFrozen") and user.get("role") != "admin":
             blocked = [key for key in patch if key in {"agendaDrafts", "agenda", "issueSources", "agendaTitle", "agendaFrozen"}]
             if blocked:
@@ -95,6 +113,8 @@ def update_stage(
 
         # 声纹属于会后说话人校准能力，不是开会门槛。现场只要求身份与录音
         # 客户端绑定可靠；缺少声纹时仍允许开会、终审和进入签字流程。
+        if stage == "audit" and meeting.get("phase") in {"会后终审", "待归档", "待签署", "已归档"}:
+            return meeting
         if stage in {"audit", "archive"}:
             from backend.services.recording_service import require_completed_recordings
 

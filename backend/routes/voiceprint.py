@@ -9,6 +9,7 @@ backend/routes/voiceprint.py — 声纹识别 API 路由
 import uuid
 import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
+from pydantic import BaseModel, Field
 
 from ..config import now_text
 from ..db import (
@@ -23,6 +24,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/voiceprint", tags=["voiceprint"])
 
 
+class SpeakerNameRequest(BaseModel):
+    audioEventId: str = Field(min_length=1, max_length=200)
+    speakerId: str = Field(min_length=1, max_length=200)
+    name: str = Field(default="", max_length=80)
+
+
+@router.post("/meetings/{meeting_id}/diarization/name")
+async def confirm_speaker_name(request: Request, meeting_id: str, body: SpeakerNameRequest):
+    from backend.dependencies import require_meeting, can_manage_meeting
+    from backend.services.speaker_diarization_service import set_speaker_name
+
+    user, safe_id, meeting = require_meeting(request, meeting_id)
+    if not can_manage_meeting(user, meeting) or meeting.get("archiveDone"):
+        raise HTTPException(status_code=403, detail="仅会议管理人员可在归档前确认发言人姓名")
+    if meeting.get("type") != "快速会议":
+        raise HTTPException(status_code=409, detail="仅快速会议支持此操作")
+    try:
+        return set_speaker_name(safe_id, body.audioEventId, body.speakerId, body.name, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/meetings/{meeting_id}/diarization")
 async def meeting_diarization_status(request: Request, meeting_id: str):
     from backend.dependencies import require_meeting
@@ -33,12 +56,16 @@ async def meeting_diarization_status(request: Request, meeting_id: str):
 
 
 @router.post("/meetings/{meeting_id}/diarization/retry")
-async def retry_meeting_diarization(request: Request, meeting_id: str):
-    from backend.dependencies import require_meeting
+async def retry_meeting_diarization(request: Request, meeting_id: str, audio_event_id: str = ""):
+    from backend.dependencies import require_meeting, can_manage_meeting
     from backend.services.speaker_diarization_service import retry_speaker_diarization
 
-    _, safe_id, _ = require_meeting(request, meeting_id)
-    result = retry_speaker_diarization(safe_id)
+    user, safe_id, meeting = require_meeting(request, meeting_id)
+    if not can_manage_meeting(user, meeting) or meeting.get("archiveDone"):
+        raise HTTPException(status_code=403, detail="仅会议管理人员可在归档前重试分离")
+    result = retry_speaker_diarization(safe_id, audio_event_id)
+    if result.get("eligible") is False:
+        raise HTTPException(status_code=409, detail=result.get("reason"))
     if result.get("status") == "failed":
         raise HTTPException(status_code=409, detail=result.get("error") or "无法重试说话人分离")
     return result

@@ -1689,7 +1689,7 @@ def _normalize_meeting(meeting: dict) -> dict:
         "events": meeting.get("events") if isinstance(meeting.get("events"), list) else [],
         "phase": phase,
         "statusColor": _phase_color(phase),
-        "issueCount": len(agenda_drafts) or max(1, len(issue_sources)),
+        "issueCount": len(agenda_drafts) or max(0 if meeting.get("type") == "快速会议" else 1, len(issue_sources)),
         "archived": bool(meeting.get("archived", False)),
         "projectBound": bool(meeting.get("projectBound", False)),
         "agendaFrozen": bool(meeting.get("agendaFrozen", False)),

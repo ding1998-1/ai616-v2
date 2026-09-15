@@ -34,6 +34,16 @@ from backend.services.outcome_service import (
 router = APIRouter(prefix="/api", tags=["outcomes"])
 
 
+@router.get("/meetings/{meeting_id}/records/snapshot")
+async def meeting_records_snapshot(request: Request, meeting_id: str):
+    """Read saved records without creating a generation task."""
+    require_meeting(request, meeting_id)
+    try:
+        return {"success": True, **get_records(meeting_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/meetings/{meeting_id}/records")
 async def meeting_records(request: Request, meeting_id: str, force: bool = False):
     require_meeting(request, meeting_id)

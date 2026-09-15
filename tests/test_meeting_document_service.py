@@ -82,7 +82,7 @@ def test_formal_minutes_never_fall_back_to_keypoints_or_map_evidence():
 
     for output in (enterprise, generic):
         assert "需要提供业主花名册完成数据联通" not in output
-        assert "待生成正式纪要表述" in output
+        assert "尚未生成可用的正式纪要表述" in output
         assert "错误挂接内容" not in output
     assert "需要提供业主花名册完成数据联通" not in detailed
 

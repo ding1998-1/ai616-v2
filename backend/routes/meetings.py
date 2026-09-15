@@ -36,7 +36,10 @@ async def upsert_meeting_route(request: Request, body: MeetingUpsertRequest):
         if current:
             # 更新已有会议时必须具备本场访问权。
             _, _, _ = require_meeting(request, body.id)
-    meeting, existed = upsert_meeting(body, user)
+    try:
+        meeting, existed = upsert_meeting(body, user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
 
 
@@ -63,7 +66,8 @@ async def patch_meeting_route(request: Request, meeting_id: str, body: MeetingPa
 
 @router.post("/{meeting_id}/stage")
 async def update_stage_route(request: Request, meeting_id: str, body: MeetingStageRequest):
-    user, _, _ = require_meeting(request, meeting_id)
+    user, _, previous = require_meeting(request, meeting_id)
+    previous_phase = previous.get("phase")
     try:
         meeting = update_stage(meeting_id, body.stage, body.phase, user, body.overrideReason)
     except KeyError as exc:
@@ -75,7 +79,7 @@ async def update_stage_route(request: Request, meeting_id: str, body: MeetingSta
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     response = {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
-    if body.stage == "audit":
+    if body.stage == "audit" and previous_phase not in {"会后终审", "待归档", "待签署", "已归档"}:
         from backend.services.asr_hotword_learning_service import learn_meeting_context
         from backend.services.whisper_review_service import schedule_whisper_review
 

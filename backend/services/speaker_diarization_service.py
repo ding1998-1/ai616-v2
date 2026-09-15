@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import os
+import hashlib
+import threading
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -14,11 +16,75 @@ from typing import Any
 from backend.config import MEETING_FILES_DIR, MEETINGS_LOCK, sse_manager
 from backend.db import _load_meetings
 from backend.services.gpu_job_coordinator import GPU_POST_PROCESSING_SEMAPHORE
+from backend.services.recording_service import find_audio_event
 
 
 logger = logging.getLogger(__name__)
 _tasks: dict[str, asyncio.Task] = {}
 _semaphore = GPU_POST_PROCESSING_SEMAPHORE
+_queued_fingerprints: dict[str, set[str]] = {}
+_identity_lock = threading.RLock()
+
+
+def _identities(meeting_id: str) -> dict:
+    try:
+        return json.loads((_result_dir(meeting_id) / "identities.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"names": {}, "history": []}
+
+
+def set_speaker_name(meeting_id: str, audio_event_id: str, speaker_id: str, name: str, user: dict) -> dict:
+    """Persist meeting-local annotations without rewriting source evidence."""
+    with _identity_lock:
+        try:
+            state = json.loads(_audio_state_path(meeting_id, audio_event_id).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("没有可确认的分离结果") from exc
+        if state.get("status") != "done" or not any(s.get("speakerId") == speaker_id for s in state.get("speakers", [])):
+            raise ValueError("发言人不存在或分离尚未完成")
+        data = _identities(meeting_id)
+        key = json.dumps([audio_event_id, speaker_id], ensure_ascii=False, separators=(",", ":"))
+        previous = data["names"].get(key, "")
+        name = name.strip()
+        data["names"][key] = name
+        data["history"].append({
+            "audioEventId": audio_event_id, "speakerId": speaker_id,
+            "previousName": previous, "name": name,
+            "actor": user.get("username") or user.get("id") or "",
+            "confirmedAt": datetime.now().isoformat(timespec="seconds"),
+        })
+        path = _result_dir(meeting_id) / "identities.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    return diarization_status(meeting_id)
+
+
+def _invalidate_speaker_names(meeting_id: str, audio_event_id: str) -> None:
+    """A new clustering run must not inherit names from old speaker IDs."""
+    data = _identities(meeting_id)
+    changed = False
+    for key, name in list(data["names"].items()):
+        try:
+            recording_id, speaker_id = json.loads(key)
+        except (ValueError, TypeError):
+            continue
+        if recording_id == audio_event_id and name:
+            data["names"][key] = ""
+            data["history"].append({"audioEventId": audio_event_id, "speakerId": speaker_id,
+                "previousName": name, "name": "", "actor": "system",
+                "reason": "diarization_rerun", "confirmedAt": datetime.now().isoformat(timespec="seconds")})
+            changed = True
+    if changed:
+        path = _result_dir(meeting_id) / "identities.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+
+def _audio_state_path(meeting_id: str, audio_event_id: str) -> Path:
+    key = hashlib.sha256(audio_event_id.encode()).hexdigest()
+    return _result_dir(meeting_id) / f"audio-{key}.json"
 
 
 def diarization_enabled() -> bool:
@@ -50,6 +116,11 @@ def _write_state(meeting_id: str, state: dict[str, Any]) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+    if state.get("audioEventId"):
+        audio_path = _audio_state_path(meeting_id, state["audioEventId"])
+        audio_temporary = audio_path.with_suffix(".tmp")
+        audio_temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        audio_temporary.replace(audio_path)
 
 
 def _fingerprint(path: Path) -> str:
@@ -138,7 +209,7 @@ def _stable_speaker_labels(segments: list[dict[str, Any]]) -> tuple[list[dict[st
     return normalized, labels
 
 
-def _latest_whisper_segments(meeting_id: str) -> list[dict[str, Any]]:
+def _latest_whisper_segments(meeting_id: str, source_file: str = "") -> list[dict[str, Any]]:
     with MEETINGS_LOCK:
         events = list((_load_meetings().get(meeting_id) or {}).get("events") or [])
     reviews = [
@@ -146,6 +217,8 @@ def _latest_whisper_segments(meeting_id: str) -> list[dict[str, Any]]:
         if item.get("type") == "transcript" and item.get("action") == "whisper-review"
     ]
     latest = max(reviews, key=lambda item: str(item.get("serverTime") or ""), default={})
+    if source_file and latest.get("sourceFileNames") != [source_file]:
+        return []
     return list(latest.get("segments") or [])
 
 
@@ -180,7 +253,7 @@ def refresh_whisper_alignment(meeting_id: str) -> dict[str, Any]:
     state = _read_state(meeting_id)
     if state.get("status") != "done" or not state.get("segments"):
         return diarization_status(meeting_id)
-    whisper_segments = _latest_whisper_segments(meeting_id)
+    whisper_segments = _latest_whisper_segments(meeting_id, state.get("sourceFile", ""))
     if whisper_segments:
         state["alignedWhisperSegments"] = _align_whisper_segments(whisper_segments, state["segments"])
         state["alignedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -207,7 +280,9 @@ async def _run(meeting_id: str, audio_path: Path, audio_event_id: str, fingerpri
             "sourceFile": audio_path.name, "sourceFingerprint": fingerprint, "updatedAt": now,
             "error": "", "segments": [], "speakers": [],
         }
-        _write_state(meeting_id, state)
+        with _identity_lock:
+            _invalidate_speaker_names(meeting_id, audio_event_id)
+            _write_state(meeting_id, state)
         await _publish_status(meeting_id, state)
         result_dir = _result_dir(meeting_id)
         result_dir.mkdir(parents=True, exist_ok=True)
@@ -230,7 +305,7 @@ async def _run(meeting_id: str, audio_path: Path, audio_event_id: str, fingerpri
                 "segmentCount": len(segments),
                 "speakerCount": len(label_map),
             })
-            whisper_segments = _latest_whisper_segments(meeting_id)
+            whisper_segments = _latest_whisper_segments(meeting_id, audio_path.name)
             if whisper_segments:
                 state["alignedWhisperSegments"] = _align_whisper_segments(whisper_segments, segments)
                 state["alignedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -275,9 +350,20 @@ async def _run_after_whisper_priority_window(
 
 def diarization_status(meeting_id: str) -> dict[str, Any]:
     state = _read_state(meeting_id)
+    recordings = []
+    for path in sorted(_result_dir(meeting_id).glob("audio-*.json")):
+        try:
+            recordings.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
     task = _tasks.get(meeting_id)
-    if task and not task.done() and state.get("status") not in {"queued", "running"}:
+    active = bool(task and not task.done())
+    if active and state.get("status") not in {"queued", "running"}:
         state["status"] = "queued"
+    if not active:
+        for item in [state, *recordings]:
+            if item.get("status") in {"queued", "running"}:
+                item.update(status="interrupted", error="任务已中断，可重新执行本段分离")
     return {
         "enabled": diarization_enabled(),
         "status": state.get("status", "idle"),
@@ -290,6 +376,8 @@ def diarization_status(meeting_id: str) -> dict[str, Any]:
         "speakers": state.get("speakers", []),
         "segments": state.get("segments", []),
         "alignedWhisperSegments": state.get("alignedWhisperSegments", []),
+        "recordings": recordings,
+        "identities": _identities(meeting_id),
     }
 
 
@@ -302,13 +390,28 @@ def schedule_speaker_diarization(
 ) -> dict[str, Any]:
     if not diarization_enabled():
         return diarization_status(meeting_id)
+    meeting = _load_meetings().get(meeting_id) or {}
+    if meeting.get("type") != "快速会议":
+        return {**diarization_status(meeting_id), "eligible": False, "reason": "仅快速会议支持电脑说话人分离"}
+    expected_path = MEETING_FILES_DIR / "recordings" / meeting_id / audio_path.name
+    source_event = find_audio_event(meeting_id, audio_event_id) or {}
+    trusted = (source_event.get("storedName") == audio_path.name
+        and source_event.get("deviceType") == "desktop" and not source_event.get("clientId"))
+    if audio_path.resolve() != expected_path.resolve() or not trusted:
+        return {**diarization_status(meeting_id), "eligible": False, "reason": "缺少已保存的电脑录音凭据"}
     if not audio_path.is_file() or audio_path.stat().st_size == 0:
         return {**diarization_status(meeting_id), "status": "failed", "error": "完整录音不存在"}
-    current = _tasks.get(meeting_id)
-    if current and not current.done():
-        return diarization_status(meeting_id)
     fingerprint = _fingerprint(audio_path)
+    if fingerprint in _queued_fingerprints.get(meeting_id, set()):
+        return diarization_status(meeting_id)
+    current = _tasks.get(meeting_id)
     previous = _read_state(meeting_id)
+    saved_path = _audio_state_path(meeting_id, audio_event_id)
+    if saved_path.is_file():
+        try:
+            previous = json.loads(saved_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
     if not force and previous.get("status") == "done" and previous.get("sourceFingerprint") == fingerprint:
         return diarization_status(meeting_id)
     _write_state(meeting_id, {
@@ -316,21 +419,38 @@ def schedule_speaker_diarization(
         "sourceFile": audio_path.name, "sourceFingerprint": fingerprint,
         "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "error": "",
     })
+    async def run_queued():
+        if current and not current.done():
+            await asyncio.gather(current, return_exceptions=True)
+        await _run_after_whisper_priority_window(meeting_id, audio_path, audio_event_id, fingerprint)
+
+    _queued_fingerprints.setdefault(meeting_id, set()).add(fingerprint)
     task = asyncio.create_task(
-        _run_after_whisper_priority_window(meeting_id, audio_path, audio_event_id, fingerprint),
+        run_queued(),
         name=f"speaker-diarization-{meeting_id}",
     )
     _tasks[meeting_id] = task
-    task.add_done_callback(lambda _: _tasks.pop(meeting_id, None))
+    def finished(completed):
+        _queued_fingerprints.get(meeting_id, set()).discard(fingerprint)
+        if _tasks.get(meeting_id) is completed:
+            _tasks.pop(meeting_id, None)
+    task.add_done_callback(finished)
     asyncio.create_task(_publish_status(meeting_id, _read_state(meeting_id)))
     return diarization_status(meeting_id)
 
 
-def retry_speaker_diarization(meeting_id: str) -> dict[str, Any]:
+def retry_speaker_diarization(meeting_id: str, audio_event_id: str = "") -> dict[str, Any]:
     state = _read_state(meeting_id)
+    if audio_event_id:
+        try:
+            state = json.loads(_audio_state_path(meeting_id, audio_event_id).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"status": "failed", "error": "没有可重试的录音结果"}
     source_file = str(state.get("sourceFile") or "")
     audio_event_id = str(state.get("audioEventId") or "")
     audio_path = MEETING_FILES_DIR / "recordings" / meeting_id / source_file
+    if source_file != Path(source_file).name:
+        return {"status": "failed", "error": "录音路径无效"}
     if not source_file or not audio_event_id:
         return {**diarization_status(meeting_id), "status": "failed", "error": "没有可重试的 PC 完整录音"}
     return schedule_speaker_diarization(meeting_id, audio_path, audio_event_id, force=True)

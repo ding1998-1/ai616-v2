@@ -73,9 +73,11 @@ async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
 
 @router.post("/session")
 async def recorder_session(request: Request, body: MeetingRecorderSessionRequest):
-    user, safe_id, _ = require_meeting(request, body.meeting_id)
+    user, safe_id, meeting = require_meeting(request, body.meeting_id)
     role = _resolve_meeting_role(user)
     client_id = (body.device_id or "").strip()
+    if client_id and body.action in {"start", "join", "resume"} and meeting.get("type") == "快速会议":
+        raise HTTPException(status_code=409, detail="快速会议使用电脑录音，无需手机接入")
     if client_id and body.action in {"start", "join", "resume"}:
         _db_upsert_audio_client(safe_id, client_id, user, {
             "device_type": body.device_type or "mobile",

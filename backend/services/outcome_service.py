@@ -733,6 +733,18 @@ async def generate_records_v2(meeting_id: str) -> dict:
     return await asyncio.shield(task)
 
 
+def _store_generated_candidate(current: dict, records: dict) -> dict | None:
+    """Protect human-confirmed records when background analysis finishes."""
+    if current.get("reviewDone") or current.get("archiveDone"):
+        preserved = deepcopy(current.get("generatedRecords") or {})
+        preserved.pop("pendingGeneratedRecords", None)
+        current["generatedRecords"] = {**preserved, "pendingGeneratedRecords": deepcopy(records)}
+        preserved["pendingGenerationId"] = records.get("generationId")
+        return preserved
+    current["generatedRecords"] = records
+    return None
+
+
 async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> dict:
     """Generate and persist one Records Pipeline v2 result using local Qwen."""
 
@@ -837,7 +849,7 @@ async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> d
         current = meetings.get(safe_id)
         if not current:
             raise KeyError("会议不存在")
-        current["generatedRecords"] = records
+        preserved = _store_generated_candidate(current, records)
         current["updatedAt"] = records["generatedAt"]
         meetings[safe_id] = current
         _save_meetings(meetings)
@@ -855,7 +867,7 @@ async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> d
         )
     except Exception:
         logger.exception("保存 AI 纪要历史版本失败 meeting=%s generation=%s", safe_id, generation_id)
-    return records
+    return preserved if preserved is not None else records
 
 
 async def regenerate_record_paragraphs(meeting_id: str) -> dict:
@@ -1046,12 +1058,16 @@ def get_records(meeting_id: str) -> dict:
     meeting = _load_meetings().get(safe_id)
     if not meeting:
         raise KeyError("会议不存在")
-    records = meeting.get("generatedRecords")
+    records = deepcopy(meeting.get("generatedRecords"))
+    pending_records = records.pop("pendingGeneratedRecords", None) if isinstance(records, dict) else None
     if not isinstance(records, dict):
         records = {"generated": False, "summary": [], "minutes": [], "decisions": [], "todos": []}
     elif records.get("generated"):
         records = normalize_review_metadata(deepcopy(records))
-    return {"meetingId": safe_id, "records": records}
+    return {
+        "meetingId": safe_id, "records": records,
+        "pendingRecords": pending_records or deepcopy(meeting.get("pendingGeneratedRecords")),
+    }
 
 
 def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
