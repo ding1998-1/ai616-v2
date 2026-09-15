@@ -1,6 +1,6 @@
 import { createDesktopAsr } from '../lib/desktopAsr.mjs';
 import { recordingRequest, withDeadline } from '../lib/recordingRequest.mjs';
-import { desktopDurationSeconds, desktopSpeakerIdentity } from '../lib/desktopRecording.mjs';
+import { desktopDurationSeconds, desktopSpeakerIdentity, desktopTranscriptLabel } from '../lib/desktopRecording.mjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Tabs, Timeline, Tooltip, Typography, message } from 'antd';
 import {
@@ -2492,8 +2492,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         id: item.id,
         time: item.clientTime || item.serverTime?.slice(11, 16) || '--:--',
         rawTime: item.clientTime || item.serverTime || '', // 原始时间戳，用于音频联动
-        speaker: item.speakerName,
-        role: item.speakerRole,
+        ...desktopTranscriptLabel(isQuickMeeting, item),
         text: item.transcript,
         active: true,
         source: item.source || 'mobile',
@@ -2502,7 +2501,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       });
     }
     return remoteRows;
-  }, [remoteTranscripts]);
+  }, [remoteTranscripts, isQuickMeeting]);
 
   const recordingPlaybackRows = useMemo(
     () => remoteEvents
@@ -3317,7 +3316,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       // 乐观更新本地转写列表
       setRemoteTranscripts(prev => prev.map(item =>
         item.id === transcriptId
-          ? { ...item, speakerName, speakerRole, speakerDept: speakerDept || '' }
+          ? { ...item, speakerName, speakerRole, speakerCorrected: true, speakerDept: speakerDept || '' }
           : item));
       message.success(`发言人已更新为 ${speakerName}`);
     } catch (err) {

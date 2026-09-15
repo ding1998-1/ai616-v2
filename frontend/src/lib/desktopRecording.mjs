@@ -12,3 +12,8 @@ export function desktopSpeakerIdentity(quick, userName, userRole, voiceprint = {
     speaker_confidence: voiceprint.speaker_confidence || 0,
   };
 }
+
+export function desktopTranscriptLabel(quick, item) {
+  const unassigned = quick && !item.audioClientId && !item.speakerCorrected && !item.correctionSigned;
+  return unassigned ? { speaker: '现场发言', role: '待确认发言人' } : { speaker: item.speakerName, role: item.speakerRole };
+}

@@ -17,3 +17,13 @@ test('ordinary desktop speaker identity remains compatible', () => {
   assert.equal(desktopSpeakerIdentity(false, 'Operator', 'Admin').speaker_name, 'Operator');
   assert.equal(desktopSpeakerIdentity(false, 'Operator', 'Admin', { speaker_name: 'Confirmed' }).speaker_name, 'Confirmed');
 });
+
+test('legacy quick speech is anonymous in view while corrected and H5 identity is preserved', async () => {
+  const { desktopTranscriptLabel } = await import('./desktopRecording.mjs');
+  const old = { speakerName:'Operator', speakerRole:'Admin' };
+  assert.equal(desktopTranscriptLabel(true,old).speaker,'现场发言');
+  assert.equal(desktopTranscriptLabel(false,old).speaker,'Operator');
+  assert.equal(desktopTranscriptLabel(true,{...old,audioClientId:'phone'}).speaker,'Operator');
+  assert.equal(desktopTranscriptLabel(true,{...old,speakerCorrected:true}).speaker,'Operator');
+  assert.equal(old.speakerName,'Operator');
+});
