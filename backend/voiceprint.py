@@ -70,7 +70,10 @@ class VoiceprintEngine:
     MIN_SEGMENT_DURATION = 2.0
 
     # pyannote 模型标识
-    _DIAR_MODEL_ID = "pyannote/speaker-diarization-3.1"
+    _DIAR_MODEL_ID = os.environ.get(
+        "SPEAKER_DIARIZATION_MODEL",
+        "pyannote/speaker-diarization-community-1",
+    )
     _EMBED_MODEL_ID = "pyannote/wespeaker-voxceleb-resnet34-LM"
 
     def __init__(self):
@@ -121,7 +124,12 @@ class VoiceprintEngine:
                 import torch
                 from pyannote.audio import Pipeline as PyannotePipeline
 
-                devices_to_try = [device, "cpu"] if device != "cpu" else ["cpu"]
+                allow_cpu_fallback = os.environ.get(
+                    "SPEAKER_DIARIZATION_ALLOW_CPU_FALLBACK", "false"
+                ).strip().lower() in {"1", "true", "yes", "on"}
+                devices_to_try = [device]
+                if device != "cpu" and allow_cpu_fallback:
+                    devices_to_try.append("cpu")
                 last_err = None
                 for dev in devices_to_try:
                     try:

@@ -202,6 +202,10 @@ async def complete_audio(
             and existing_path.stat().st_size > 0
         ):
             existing_id = str(existing_manifest.get("audioEventId") or existing_path.stem)
+            if not client_id:
+                from backend.services.speaker_diarization_service import schedule_speaker_diarization
+
+                schedule_speaker_diarization(safe_id, existing_path, existing_id)
             return {
                 "success": True,
                 "duplicate": True,
@@ -250,12 +254,17 @@ async def complete_audio(
             "recordingStartTime": recording_start_time,
             "clientId": client_id,
             "sessionId": session_id,
+            "deviceType": "mobile" if client_id else "desktop",
             "sourceChunks": [chunk.name for chunk in chunks],
             "missingChunks": 0,
             "playbackUrl": f"/api/meeting/recorder/audio/{safe_id}/{audio_id}",
             "checkpoints": manifest.get("checkpoints", []),
         }
         _append_meeting_activity_light(safe_id, event)
+        if not client_id:
+            from backend.services.speaker_diarization_service import schedule_speaker_diarization
+
+            schedule_speaker_diarization(safe_id, path, audio_id)
         return {"success": True, "event": event, "audioSize": path.stat().st_size, "sourceChunksPreserved": True}
 
 

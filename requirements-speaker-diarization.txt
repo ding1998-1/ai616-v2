@@ -1,0 +1,4 @@
+# Install only inside the dedicated speaker-diarization environment.
+# PyTorch and torchaudio must be installed separately for the server CUDA version.
+pyannote-audio==4.0.7
+soundfile>=0.13.1,<0.14

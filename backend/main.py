@@ -155,6 +155,12 @@ async def lifespan(_app):
             await shutdown_whisper_reviews(timeout=2.0)
         except Exception:
             logger.exception("停止 Whisper 终审任务失败")
+        try:
+            from backend.services.speaker_diarization_service import shutdown_speaker_diarization
+
+            await shutdown_speaker_diarization(timeout=2.0)
+        except Exception:
+            logger.exception("停止 PC 说话人分离任务失败")
         if startup_executor is not None:
             startup_executor.shutdown(wait=False, cancel_futures=True)
         await _shutdown_runtime_resources()

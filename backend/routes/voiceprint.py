@@ -8,7 +8,7 @@ backend/routes/voiceprint.py — 声纹识别 API 路由
 
 import uuid
 import logging
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 
 from ..config import now_text
 from ..db import (
@@ -21,6 +21,27 @@ from ..db import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/voiceprint", tags=["voiceprint"])
+
+
+@router.get("/meetings/{meeting_id}/diarization")
+async def meeting_diarization_status(request: Request, meeting_id: str):
+    from backend.dependencies import require_meeting
+    from backend.services.speaker_diarization_service import diarization_status
+
+    _, safe_id, _ = require_meeting(request, meeting_id)
+    return diarization_status(safe_id)
+
+
+@router.post("/meetings/{meeting_id}/diarization/retry")
+async def retry_meeting_diarization(request: Request, meeting_id: str):
+    from backend.dependencies import require_meeting
+    from backend.services.speaker_diarization_service import retry_speaker_diarization
+
+    _, safe_id, _ = require_meeting(request, meeting_id)
+    result = retry_speaker_diarization(safe_id)
+    if result.get("status") == "failed":
+        raise HTTPException(status_code=409, detail=result.get("error") or "无法重试说话人分离")
+    return result
 
 
 def _voiceprint_runtime():

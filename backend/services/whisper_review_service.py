@@ -20,7 +20,10 @@ from backend.deps import _append_meeting_activity_light
 
 
 logger = logging.getLogger(__name__)
-_semaphore = asyncio.Semaphore(1)
+from backend.services.gpu_job_coordinator import GPU_POST_PROCESSING_SEMAPHORE
+
+
+_semaphore = GPU_POST_PROCESSING_SEMAPHORE
 _tasks: dict[str, asyncio.Task] = {}
 _audio_extensions = {".webm", ".mp4", ".m4a", ".wav", ".mp3", ".ogg"}
 
@@ -210,6 +213,12 @@ async def _run_review(meeting_id: str, force: bool) -> None:
                 },
             )
             _append_status(meeting_id, "done")
+            try:
+                from backend.services.speaker_diarization_service import refresh_whisper_alignment
+
+                refresh_whisper_alignment(meeting_id)
+            except Exception:
+                logger.exception("更新说话人分离与 Whisper 对齐失败 meeting=%s", meeting_id)
             # Formal closeout is a server-side job. Users do not need to keep
             # the browser open, repair evidence manually, or click several
             # workflow actions before a usable Word file exists.

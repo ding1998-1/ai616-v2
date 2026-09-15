@@ -787,6 +787,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [recordGenerationVersions, setRecordGenerationVersions] = useState([]);
   const recordGenerationStatusRef = useRef('idle');
   const [whisperStatus, setWhisperStatus] = useState('idle'); // idle | running | done | failed
+  const [speakerDiarization, setSpeakerDiarization] = useState({ enabled: false, status: 'idle', speakerCount: 0, error: '' });
   const [meetingMarkers, setMeetingMarkers] = useState([]);
   const [editingRecords, setEditingRecords] = useState(false);
   const [editedRecords, setEditedRecords] = useState(null);
@@ -2154,6 +2155,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             setTranscriptUpdatedAt(new Date().toISOString());
           } else if (payload.type === 'session' && payload.data) {
             setRemoteEvents(prev => [...prev, payload.data].slice(-100));
+          } else if (payload.type === 'speaker-diarization' && payload.data) {
+            setSpeakerDiarization(prev => ({ ...prev, ...payload.data }));
           }
         } catch (err) { console.warn("Parse error:", err); }
       };
@@ -2320,6 +2323,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             setWhisperStatus('idle');
           }
         }
+      } catch {}
+      try {
+        const diarization = await authFetchJson(`/api/voiceprint/meetings/${currentMeetingId}/diarization`);
+        if (alive) setSpeakerDiarization(diarization);
       } catch {}
     };
     poll();
@@ -5912,6 +5919,33 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     {whisperStatus === 'done' || recordUsesWhisper(meetingGeneratedRecords) ? '✓ 已完成（高精度转写已注入纪实）' : whisperStatus === 'running' ? '⏳ 转写中…' : '未触发'}
                   </span>
                 </div>
+                {speakerDiarization.enabled && (
+                  <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: palette.panelSoft, border: `1px solid ${palette.line}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: palette.muted }}>PC 发言人区分</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: speakerDiarization.status === 'done' ? '#52c41a' : speakerDiarization.status === 'failed' ? '#ff4d4f' : '#faad14' }}>
+                      {speakerDiarization.status === 'done'
+                        ? `已区分 ${speakerDiarization.speakerCount || 0} 位发言人`
+                        : speakerDiarization.status === 'running'
+                          ? '正在区分发言人…'
+                          : speakerDiarization.status === 'queued'
+                            ? '等待说话人分离'
+                            : speakerDiarization.status === 'failed'
+                              ? '分离失败'
+                              : '尚未开始'}
+                    </span>
+                    {speakerDiarization.status === 'failed' && (
+                      <Button size="small" onClick={async () => {
+                        try {
+                          const next = await authFetchJson(`/api/voiceprint/meetings/${currentMeetingId}/diarization/retry`, { method: 'POST' });
+                          setSpeakerDiarization(next);
+                          message.success('已重新提交说话人分离');
+                        } catch (error) {
+                          message.error(error.message || '重新分离失败');
+                        }
+                      }}>重新分离</Button>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
           </div>
