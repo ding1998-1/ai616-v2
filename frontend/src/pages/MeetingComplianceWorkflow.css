@@ -6520,3 +6520,19 @@
 .meeting-compliance-page.is-stage-archive .meeting-compact-title {
   flex: 1 0 100%;
 }
+
+/* Keep PC capture actions visible without changing mobile recording layouts. */
+.meeting-quick-capture {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid #dce8f6;
+  border-radius: 14px;
+  background: #f7faff;
+}
+.meeting-quick-capture .meeting-ai-core { width: 48px; height: 48px; flex: 0 0 48px; }
+.meeting-quick-capture-copy { flex: 1 1 240px; min-width: 0; display: grid; gap: 5px; }
+.meeting-quick-capture-copy strong { color: #172b4d; font-size: 15px; }
+.meeting-quick-capture-copy span { color: #697b93; font-size: 12px; line-height: 1.6; }

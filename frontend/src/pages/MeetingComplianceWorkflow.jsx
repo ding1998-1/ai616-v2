@@ -1,3 +1,6 @@
+import { createDesktopAsr } from '../lib/desktopAsr.mjs';
+import { recordingRequest, withDeadline } from '../lib/recordingRequest.mjs';
+import { desktopDurationSeconds, desktopSpeakerIdentity } from '../lib/desktopRecording.mjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Tabs, Timeline, Tooltip, Typography, message } from 'antd';
 import {
@@ -840,45 +843,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const currentUserDept = currentUser?.dept || '信息管理中心';
   const currentUserMeetingRole = currentUser?.meetingRole || (currentUser?.role === 'admin' ? '会议管理员' : '参会代表');
 
-  // ── 音频处理工具（与手机端一致的 16kHz int16 PCM 转换）──────────────
-  const TARGET_SAMPLE_RATE = 16000;
-  const concatFloat32 = (a, b) => {
-    const out = new Float32Array(a.length + b.length);
-    out.set(a, 0); out.set(b, a.length);
-    return out;
-  };
-  const downsampleTo16k = (buffer, inputSampleRate) => {
-    if (inputSampleRate === TARGET_SAMPLE_RATE) return buffer;
-    const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
-    const newLength = Math.max(1, Math.round(buffer.length / ratio));
-    const result = new Float32Array(newLength);
-    let offsetResult = 0, offsetBuffer = 0;
-    while (offsetResult < result.length) {
-      const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-      let accum = 0, count = 0;
-      for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-        accum += buffer[i]; count += 1;
-      }
-      result[offsetResult] = count ? accum / count : 0;
-      offsetResult += 1; offsetBuffer = nextOffsetBuffer;
-    }
-    return result;
-  };
-  const floatToPcm16 = (float32Array) => {
-    const output = new ArrayBuffer(float32Array.length * 2);
-    const view = new DataView(output);
-    for (let i = 0; i < float32Array.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-    }
-    return output;
-  };
-
   // ── 桌面麦克风采集 + Qwen3-ASR 实时识别 ──────────────────────────────
   const micStreamRef = useRef(null);
-  const micAudioCtxRef = useRef(null);
-  const micWsRef = useRef(null);
-  const micProcessorRef = useRef(null);
   const micMediaRecorderRef = useRef(null);
   const micAudioChunksRef = useRef([]);
   const micChunkIndexRef = useRef(0); // 流式上传 chunk 序号
@@ -886,6 +852,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const micUploadFailedRef = useRef(false);
   const micFailedChunksRef = useRef(new Map());
   const micFinalizedSentenceIdsRef = useRef(new Set());
+  const micCaptureStartedAtRef = useRef(null);
+  const micCaptureStoppedAtRef = useRef(null);
+  const micRecordingSessionRef = useRef('');
+  const micStopPromiseRef = useRef(null);
+  const micAsrRef = useRef(null);
+  const micTranscriptUploadsRef = useRef(new Set());
+  const [desktopAsrStatus, setDesktopAsrStatus] = useState('idle');
+
 
   // 流式上传单个录音 chunk（每 3 秒调用一次，避免浏览器内存溢出）
   const uploadMicAudioChunk = async (blob, index) => {
@@ -896,8 +870,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         const form = new FormData();
         form.append('meeting_id', currentMeetingId);
         form.append('chunk_index', String(index));
-        form.append('file', blob, `chunk_${index}.webm`);
-        const resp = await fetch('/api/meeting/recorder/audio/chunk', {
+        form.append('session_id', micRecordingSessionRef.current);
+        form.append('file', blob, `chunk_${index}.${blob.type.includes('mp4') ? 'mp4' : blob.type.includes('ogg') ? 'ogg' : 'webm'}`);
+        const resp = await recordingRequest('/api/meeting/recorder/audio/chunk', {
           method: 'POST',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: form,
@@ -928,23 +903,23 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       form.append('agenda', '');
       form.append('duration_seconds', String(durationSeconds || 0));
       form.append('total_chunks', String(totalChunks));
+      form.append('session_id', micRecordingSessionRef.current);
       // 传录音开始时间，用于 Whisper 时间戳对齐会议时间轴
-      if (recordingStartedAtRef.current) {
-        form.append('recording_start_time', new Date(recordingStartedAtRef.current).toISOString());
+      if (micCaptureStartedAtRef.current) {
+        form.append('recording_start_time', new Date(micCaptureStartedAtRef.current).toISOString());
       }
-      const resp = await fetch('/api/meeting/recorder/audio/complete', {
+      const resp = await recordingRequest('/api/meeting/recorder/audio/complete', {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form,
       });
       if (!resp.ok) {
-        console.warn(`录音合并失败: HTTP ${resp.status}`);
-        return null;
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(typeof data.detail === 'string' ? data.detail : data.detail?.message || `保存失败 (${resp.status})`);
       }
       return resp.json();
     } catch (e) {
-      console.warn('录音合并异常:', e);
-      return null;
+      throw e;
     }
   };
 
@@ -980,67 +955,79 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const postDesktopSession = async (action) => {
     try {
       const token = getStoredToken();
-      await fetch('/api/meeting/recorder/session', {
+      await recordingRequest('/api/meeting/recorder/session', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ meeting_id: currentMeetingId, meeting_title: meetingTitle || '', agenda: '', action }),
+        body: JSON.stringify({ meeting_id: currentMeetingId, meeting_title: meetingTitle || '', agenda: '', action, device_type: 'desktop', device_label: '电脑麦克风', transport: 'web-desktop' }),
       });
     } catch (_) {}
   };
 
-  const stopAndUploadDesktopAudio = async () => {
-    if (desktopRecorderState === 'uploading') return false;
-    setDesktopRecorderState('uploading');
-    const recorder = micMediaRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      await new Promise(resolve => {
-        const timeoutId = window.setTimeout(resolve, 3000);
-        recorder.addEventListener('stop', () => {
-          window.clearTimeout(timeoutId);
-          resolve();
-        }, { once: true });
-        try { recorder.stop(); } catch (_) { window.clearTimeout(timeoutId); resolve(); }
-      });
-    }
-    micMediaRecorderRef.current = null;
-    const pendingUploads = Array.from(micPendingUploadsRef.current);
-    if (pendingUploads.length) await Promise.allSettled(pendingUploads);
-    if (micFailedChunksRef.current.size) {
-      micUploadFailedRef.current = false;
-      const retries = Array.from(micFailedChunksRef.current.entries()).map(([index, blob]) => uploadMicAudioChunk(blob, index));
-      await Promise.allSettled(retries);
-    }
-    const totalChunks = micChunkIndexRef.current;
-    if (micUploadFailedRef.current) {
-      setDesktopRecorderState('error');
-      message.error('部分电脑录音尚未上传，请保持网络连接后重试停止录音');
-      return false;
-    }
-    if (totalChunks > 0) {
-      const durationSeconds = recordingStartedAtRef.current
-        ? Math.max(1, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000))
-        : 0;
-      const result = await completeMicAudioUpload(durationSeconds, totalChunks);
-      if (!result) {
+  const stopAndUploadDesktopAudio = () => {
+    if (micStopPromiseRef.current) return micStopPromiseRef.current;
+    if (!micMediaRecorderRef.current && !micCaptureStartedAtRef.current && !micChunkIndexRef.current) return Promise.resolve(true);
+    const operation = (async () => {
+      setDesktopRecorderState('uploading');
+      try {
+        const recorder = micMediaRecorderRef.current;
+        if (recorder && recorder.state !== 'inactive') {
+          micCaptureStoppedAtRef.current = Date.now();
+          await withDeadline(() => new Promise((resolve, reject) => {
+            recorder.addEventListener('stop', resolve, { once: true });
+            recorder.addEventListener('error', () => reject(new Error('录音停止失败，原分片仍保留')), { once: true });
+            recorder.stop();
+          }), 10000, '浏览器未确认录音停止，已保留录音分片');
+        }
+        // Release capture before awaiting network or server-side merging.
+        if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(track => track.stop()); micStreamRef.current = null; }
+        await micAsrRef.current?.stop();
+        micAsrRef.current = null;
+        setDesktopAsrStatus('idle');
+        setRecording(false);
+        micMediaRecorderRef.current = null;
+        await withDeadline(() => Promise.allSettled(Array.from(micTranscriptUploadsRef.current)), 35000);
+        await Promise.allSettled(Array.from(micPendingUploadsRef.current));
+        if (micFailedChunksRef.current.size) {
+          micUploadFailedRef.current = false;
+          await Promise.allSettled(Array.from(micFailedChunksRef.current.entries()).map(([index, blob]) => uploadMicAudioChunk(blob, index)));
+        }
+        if (micFailedChunksRef.current.size) throw new Error('部分录音尚未上传，请恢复网络后重试保存');
+        const totalChunks = micChunkIndexRef.current;
+        if (!totalChunks && micCaptureStartedAtRef.current) throw new Error('尚未收到有效音频，不能确认保存完成');
+        if (totalChunks > 0) {
+          const durationSeconds = desktopDurationSeconds(micCaptureStartedAtRef.current, micCaptureStoppedAtRef.current);
+          const result = await completeMicAudioUpload(durationSeconds, totalChunks);
+          if (!result?.success) throw new Error('录音尚未保存，请重试保存');
+        }
+        micAudioChunksRef.current = [];
+        micChunkIndexRef.current = 0;
+        micFailedChunksRef.current.clear();
+        micCaptureStartedAtRef.current = null;
+        micCaptureStoppedAtRef.current = null;
+        micRecordingSessionRef.current = '';
+        void postDesktopSession('stop');
+        setDesktopRecorderState('idle');
+        return true;
+      } catch (error) {
+        if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(track => track.stop()); micStreamRef.current = null; }
+        micAsrRef.current?.dispose(); micAsrRef.current = null;
+        setRecording(false);
         setDesktopRecorderState('error');
-        message.error('电脑录音合并未完成，请重试停止录音');
+        message.error(`录音保存未完成：${error.message}`);
         return false;
       }
-    }
-    micAudioChunksRef.current = [];
-    micChunkIndexRef.current = 0;
-    micFailedChunksRef.current.clear();
-    await postDesktopSession('stop');
-    setDesktopRecorderState('idle');
-    return true;
+    })();
+    micStopPromiseRef.current = operation;
+    operation.finally(() => { micStopPromiseRef.current = null; });
+    return operation;
   };
 
   const toggleDesktopRecording = async () => {
     if (desktopRecorderState === 'requesting' || desktopRecorderState === 'uploading') return;
-    if (recording) {
+    if (recording || desktopRecorderState === 'error' && micChunkIndexRef.current > 0) {
       const saved = await stopAndUploadDesktopAudio();
       if (!saved) return;
       setRecording(false);
@@ -1053,15 +1040,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   useEffect(() => {
     if (!recording) {
-      if (micProcessorRef.current) { micProcessorRef.current.disconnect(); micProcessorRef.current = null; }
-      if (micAudioCtxRef.current) { micAudioCtxRef.current.close(); micAudioCtxRef.current = null; }
+      micAsrRef.current?.dispose(); micAsrRef.current = null;
       if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null; }
-      if (micWsRef.current) { micWsRef.current.close(); micWsRef.current = null; }
       return;
     }
 
     let stopped = false;
-    let ws = null;
 
     const startMic = async () => {
       try {
@@ -1069,16 +1053,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
           throw new Error('浏览器只允许在 HTTPS 安全地址使用麦克风，请打开 https://aimeeting.xingsnb.cn/');
         }
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
         micStreamRef.current = stream;
 
         // MediaRecorder 录音兜底（Whisper 终审用）— 流式上传避免内存溢出
         try {
-          const recorder = new MediaRecorder(stream);
+          const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find(type => MediaRecorder.isTypeSupported(type));
+          const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
           micAudioChunksRef.current = [];
           micChunkIndexRef.current = 0;
           micPendingUploadsRef.current.clear();
+          micFinalizedSentenceIdsRef.current.clear();
           micUploadFailedRef.current = false;
           micFailedChunksRef.current.clear();
           recorder.ondataavailable = e => {
@@ -1089,10 +1075,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               upload.finally(() => micPendingUploadsRef.current.delete(upload)).catch(() => {});
             }
           };
+          micRecordingSessionRef.current = `desktop-${crypto.randomUUID()}`;
+          micCaptureStartedAtRef.current = Date.now();
+          micCaptureStoppedAtRef.current = null;
           recorder.start(3000); // 每 3 秒分段，立即上传释放内存
           micMediaRecorderRef.current = recorder;
         } catch (recErr) {
-          console.warn('MediaRecorder 启动失败（不影响实时ASR）:', recErr);
+          throw new Error(`无法保存原始录音：${recErr.message}`);
         }
 
         const token = getStoredToken();
@@ -1101,19 +1090,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         // certificate and route through the configured reverse proxy.
         const wsHost = window.location.host;
         const wsUrl = `${wsProtocol}//${wsHost}/api/meeting/asr/2pass/ws?token=${encodeURIComponent(token)}&meetingId=${encodeURIComponent(currentMeetingId)}`;
-        ws = new WebSocket(wsUrl);
-        micWsRef.current = ws;
-        ws.binaryType = 'arraybuffer';
-
-        ws.onopen = () => {
-          if (stopped) { ws.close(); return; }
-          message.success('桌面麦克风已接入实时转写');
-        };
-
-        ws.onmessage = (event) => {
+        const onAsrPayload = payload => {
           if (stopped) return;
           try {
-            const payload = JSON.parse(event.data);
             if (payload.type === 'interim') {
               // 桌面麦克风 interim — 仅预览，不入库
               const text = String(payload.text || '').trim();
@@ -1126,27 +1105,25 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
               const tempId = `desktop-mic-${Date.now()}-${Math.random()}`;
               // 声纹识别结果（如有）
-              const voiceprintFields = vpInfo && vpInfo.speaker_name
-                ? { speaker_name: vpInfo.speaker_name, speaker_confidence: vpInfo.speaker_confidence, identified_by: vpInfo.identified_by || 'voiceprint-realtime' }
-                : {};
+              const voiceprintFields = desktopSpeakerIdentity(meetingOrg === '快速会议', currentUserName, currentUserMeetingRole, vpInfo || {});
               setRemoteTranscripts(prev => [...prev, {
                 id: tempId,
                 speakerName: voiceprintFields.speaker_name || currentUserName,
-                speakerRole: currentUserMeetingRole,
+                speakerRole: voiceprintFields.speaker_role,
                 transcript: text,
                 clientTime: now,
-                serverTime: new Date().toISOString().slice(0, 19).replace('T', ' '),
+                serverTime: new Date().toISOString(),
                 isFinal: true,
                 source: 'desktop-mic',
                 speakerConfidence: voiceprintFields.speaker_confidence || 0,
                 identifiedBy: voiceprintFields.identified_by || 'manual',
               }]);
-              authFetchJson('/api/meeting/transcripts/chunk', {
+              const transcriptUpload = authFetchJson('/api/meeting/transcripts/chunk', {
                 method: 'POST',
                 body: JSON.stringify({
                   meeting_id: currentMeetingId, transcript: text, is_final: true, client_time: now,
                   speaker_name: voiceprintFields.speaker_name || currentUserName,
-                  speaker_role: currentUserMeetingRole,
+                  speaker_role: voiceprintFields.speaker_role,
                   ...(sentenceId ? { sentence_id: sentenceId } : {}),
                   ...(sentenceMeta.sentenceSeq ? { sentence_seq: sentenceMeta.sentenceSeq } : {}),
                   ...(Number.isFinite(sentenceMeta.startMs) ? { start_ms: sentenceMeta.startMs } : {}),
@@ -1166,7 +1143,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     );
                   });
                 }
-              }).catch(() => {});
+              }).catch(error => { message.warning(`字幕回传失败，原始录音仍保留：${error.message}`); });
+              micTranscriptUploadsRef.current.add(transcriptUpload);
+              transcriptUpload.finally(() => micTranscriptUploadsRef.current.delete(transcriptUpload));
             };
             if (payload.type === 'final' && payload.newText) {
               const sentenceId = String(payload.sentenceId || '').trim();
@@ -1186,7 +1165,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 startMs: Number(payload.startMs || 0),
                 endMs: Number(payload.endMs || 0),
               });
-            } else if (payload.type === 'result' && payload.text) {
+            } else if (payload.type === 'result' && payload.text && payload.isFinal) {
               // 兼容旧协议
               const vpInfo = payload.speaker_name ? {
                 speaker_name: payload.speaker_name,
@@ -1200,36 +1179,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           } catch (_) {}
         };
 
-        ws.onerror = () => { if (!stopped) message.warning('麦克风 WebSocket 异常'); };
-        ws.onclose = () => { if (!stopped) message.info('麦克风 ASR 已断开'); };
-
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        micAudioCtxRef.current = audioCtx;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const gainNode = audioCtx.createGain();
-        gainNode.gain.value = 2.5; // 放大 2.5 倍，提升小声录音的 ASR 识别率
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-        micProcessorRef.current = processor;
-        // 积累 1 秒音频再发送，避免过多小 chunk 导致 429
-        let audioBuf = new Float32Array(0);
-        const CHUNK_SAMPLES = 16000; // 1 秒 @ 16kHz
-
-        processor.onaudioprocess = (e) => {
-          if (stopped || ws?.readyState !== WebSocket.OPEN) return;
-          const input = e.inputBuffer.getChannelData(0);
-          const downsampled = downsampleTo16k(input, audioCtx.sampleRate);
-          audioBuf = concatFloat32(audioBuf, downsampled);
-          while (audioBuf.length >= CHUNK_SAMPLES) {
-            const chunk = audioBuf.slice(0, CHUNK_SAMPLES);
-            audioBuf = audioBuf.slice(CHUNK_SAMPLES);
-            ws.send(floatToPcm16(chunk));
-          }
-        };
-
-        source.connect(gainNode);
-        gainNode.connect(processor);
-        processor.connect(audioCtx.destination);
-        await postDesktopSession('start');
+        try {
+          micAsrRef.current = createDesktopAsr({ stream, url: wsUrl, onPayload: onAsrPayload, onStatus: setDesktopAsrStatus });
+        } catch (error) {
+          setDesktopAsrStatus('error');
+          message.warning(`实时转写暂不可用，原始录音继续保存：${error.message}`);
+        }
+        void postDesktopSession('start');
         setDesktopRecorderState('recording');
 
       } catch (err) {
@@ -1243,21 +1199,19 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
     return () => {
       stopped = true;
-      if (micProcessorRef.current) { micProcessorRef.current.disconnect(); micProcessorRef.current = null; }
-      if (micAudioCtxRef.current) { micAudioCtxRef.current.close(); micAudioCtxRef.current = null; }
+      micAsrRef.current?.dispose(); micAsrRef.current = null;
       // 停止 MediaRecorder 并上传录音
       if (micMediaRecorderRef.current && micMediaRecorderRef.current.state !== 'inactive') {
         try { micMediaRecorderRef.current.stop(); } catch (_) {}
       }
       micMediaRecorderRef.current = null;
       if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null; }
-      if (micWsRef.current) { micWsRef.current.close(); micWsRef.current = null; }
       micAudioChunksRef.current = [];
     };
   }, [recording, currentMeetingId, currentUserName, currentUserMeetingRole]);
 
   useEffect(() => {
-    if (!['recording', 'uploading'].includes(desktopRecorderState)) return undefined;
+    if (!['recording', 'uploading', 'error'].includes(desktopRecorderState)) return undefined;
     const warnBeforeLeave = event => {
       event.preventDefault();
       event.returnValue = '电脑录音正在采集或保存，请先停止录音。';
@@ -1274,6 +1228,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const isMajorMeeting = !isQuickMeeting && meetingMode !== 'normal';
   const groupedIssueSources = useMemo(() => groupIssueSourcesByPerson(chatMessages), [chatMessages]);
   const backToMeetingList = () => {
+    if (recording || micStopPromiseRef.current || micChunkIndexRef.current > 0) {
+      message.warning('请先停止并保存电脑录音，再返回会议列表');
+      return;
+    }
     setTimeout(() => setMeetingWorkspaceOpen(false), 0);
   };
 
@@ -4117,7 +4075,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             <div style={{ padding: 12, borderRadius: 12, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                 <Text strong style={{ color: palette.ink }}>实时转写与声纹分轨</Text>
-                <Button size="small" icon={<AudioOutlined />} onClick={async () => { if (recording) { await stopAndUploadDesktopAudio(); } setRecording(prev => !prev); }}>
+                <Button size="small" icon={<AudioOutlined />} onClick={toggleDesktopRecording}>
                   {recording ? '暂停录音' : '开始录音'}
                 </Button>
               </div>
@@ -4788,6 +4746,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const renderHeaderParticipantStrip = () => {
+    if (isQuickMeeting) {
+      const saving = desktopRecorderState === 'uploading';
+      const retry = desktopRecorderState === 'error' && micChunkIndexRef.current > 0;
+      return (
+        <div className="meeting-quick-capture">
+          <MeetingAiPulse active={recording && desktopRecorderState === 'recording'} />
+          <div className="meeting-quick-capture-copy">
+            <strong>{saving ? '已停止采集，正在保存录音' : retry ? '已停止采集，录音待保存' : recording ? '正在录制现场声音' : '电脑录制 · 无需手机接入'}</strong>
+            <span>{recording ? '现场发言不归属操作人账号；发言人姓名可在会后确认。' : '一台电脑采集多人发言，参会人无需逐个登录。'}</span>
+          </div>
+          <Button type="primary" danger={recording} loading={saving || desktopRecorderState === 'requesting'} onClick={toggleDesktopRecording}>
+            {saving ? '正在保存' : recording ? '停止并保存' : retry ? '重试保存录音' : '开始电脑录音'}
+          </Button>
+        </div>
+      );
+    }
     const { participantStrip } = getMeetingParticipantState();
     return (
       <div className="meeting-header-participant-wrap">
@@ -4902,7 +4876,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               <StatusPill color="blue">正在讨论</StatusPill>
             </div>
             <div className="meeting-share-mode-actions">
-              <span>{connectedCount} 人已接入</span>
+              <span>{isQuickMeeting ? '电脑现场采集' : `${connectedCount} 人已接入`}</span>
               <ClockCircleOutlined />
               <span>已讨论 {hasMeetingSpeech || recording ? meetingElapsed : '00:00:00'}</span>
               {meetingAgendaItems.length > 0 && (() => {
@@ -6342,7 +6316,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ),
           footer: [
             <Button key="close" onClick={closeMeetingActionModal}>知道了</Button>,
-            <Button key="toggle" type="primary" loading={['requesting', 'uploading'].includes(desktopRecorderState)} onClick={async () => { await toggleDesktopRecording(); closeMeetingActionModal(); }}>{recording ? '停止并保存电脑录音' : '开始电脑录音'}</Button>,
+            <Button key="toggle" type="primary" loading={['requesting', 'uploading'].includes(desktopRecorderState)} onClick={async () => { await toggleDesktopRecording(); closeMeetingActionModal(); }}>{recording ? '停止并保存电脑录音' : desktopRecorderState === 'error' ? '重试保存录音' : '开始电脑录音'}</Button>,
           ],
         };
       case 'chat':
@@ -6418,7 +6392,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               {[
                 ['会议 ID', currentMeetingId],
                 ['电脑录音', desktopRecorderState === 'requesting' ? '正在请求麦克风' : desktopRecorderState === 'uploading' ? '正在上传并合并' : recording ? '录音与转写中' : desktopRecorderState === 'error' ? '保存未完成' : '未开始'],
-                ['手机接入', `${remoteSpeakerRows.filter(item => item.fromRemote).length} 人`],
+                ...(isQuickMeeting ? [['发言人', '现场发言，姓名待人工确认']] : [['手机接入', `${remoteSpeakerRows.filter(item => item.fromRemote).length} 人`]]),
+                ['实时转写', desktopAsrStatus === 'connected' ? '已连接' : desktopAsrStatus === 'reconnecting' ? '正在重连，原始录音继续保存' : desktopAsrStatus === 'connecting' ? '正在连接' : desktopAsrStatus === 'error' ? '暂不可用，原始录音继续保存' : '未开始'],
                 ['底稿回传', `${remoteTranscripts.length} 条`],
               ].map(([label, value]) => (
                 <div key={label} style={{ padding: 11, borderRadius: 10, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
@@ -6430,7 +6405,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ),
           footer: [
             <Button key="close" onClick={closeMeetingActionModal}>关闭</Button>,
-            <Button key="toggle" type="primary" danger={recording} loading={['requesting', 'uploading'].includes(desktopRecorderState)} onClick={toggleDesktopRecording}>{recording ? '停止并保存' : '开始电脑录音'}</Button>,
+            <Button key="toggle" type="primary" danger={recording} loading={['requesting', 'uploading'].includes(desktopRecorderState)} onClick={toggleDesktopRecording}>{recording ? '停止并保存' : desktopRecorderState === 'error' ? '重试保存录音' : '开始电脑录音'}</Button>,
           ],
         };
       case 'evidence':
@@ -6668,7 +6643,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         <QuickMeetingSpeakers meetingId={currentMeetingId} state={speakerDiarization} audioRows={recordingPlaybackRows} readOnly={archiveDone} onChange={setSpeakerDiarization} />
       </Drawer>
       <Drawer
-        title={<Space wrap><strong>{meetingTitle}</strong><Tag color="default">{archiveDone ? '会议已归档' : '会议已结束'} · 查看模式</Tag></Space>}
+        title={<Space wrap><strong>{meetingTitle}</strong><Tag color="default">只读查看</Tag></Space>}
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
         width="min(1100px, 96vw)"
