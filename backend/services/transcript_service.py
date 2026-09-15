@@ -114,6 +114,9 @@ def build_record(user: dict, body, meeting_id: str, transcript: str, agenda_id: 
     sentence_seq = max(0, int(getattr(body, "sentence_seq", None) or 0))
     start_ms = max(0, int(getattr(body, "start_ms", None) or 0))
     end_ms = max(start_ms, int(getattr(body, "end_ms", None) or start_ms))
+    device_type = str(getattr(body, "device_type", None) or "mobile").strip().lower()
+    if device_type not in {"mobile", "desktop"}:
+        device_type = "mobile"
     record_id = (
         f"tr_asr_{hashlib.sha256(f'{meeting_id}:{sentence_id}'.encode()).hexdigest()[:20]}"
         if sentence_id
@@ -134,7 +137,7 @@ def build_record(user: dict, body, meeting_id: str, transcript: str, agenda_id: 
         "clientTime": body.client_time,
         "serverTime": now,
         "confidence": body.confidence if body.confidence is not None else 0.92,
-        "source": "mobile-recorder",
+        "source": "desktop-recorder" if device_type == "desktop" else "mobile-recorder",
         "speakerConfidence": body.speaker_confidence or 0,
         "identifiedBy": body.identified_by or "manual",
         "agendaId": agenda_id,
@@ -147,6 +150,15 @@ def build_record(user: dict, body, meeting_id: str, transcript: str, agenda_id: 
         "end": end_ms / 1000,
         "startMs": start_ms,
         "endMs": end_ms,
+        "deviceType": device_type,
+        "recordingSessionId": str(getattr(body, "recording_session_id", None) or ""),
+        "onlineText": str(getattr(body, "online_text", None) or ""),
+        "reviewedText": str(getattr(body, "reviewed_text", None) or ""),
+        "finalText": transcript,
+        "asrBackend": str(getattr(body, "asr_backend", None) or ""),
+        "corrected": bool(getattr(body, "corrected", None)),
+        "forcedSplit": bool(getattr(body, "forced_split", None)),
+        "mergeAdvice": getattr(body, "merge_advice", None) or {},
     }
 
 

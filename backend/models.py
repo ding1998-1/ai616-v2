@@ -81,6 +81,14 @@ class MeetingTranscriptChunkRequest(BaseModel):
     sentence_seq: Optional[int] = None    # 2pass ordering within one ASR session
     start_ms: Optional[int] = None        # audio-relative evidence start
     end_ms: Optional[int] = None          # audio-relative evidence end
+    device_type: Optional[str] = None     # "mobile" / "desktop"
+    recording_session_id: Optional[str] = None
+    online_text: Optional[str] = None     # Paraformer first-pass result
+    reviewed_text: Optional[str] = None   # Qwen accepted review result
+    asr_backend: Optional[str] = None
+    corrected: Optional[bool] = None
+    forced_split: Optional[bool] = None
+    merge_advice: Optional[dict] = None   # shadow-only semantic merge decision
 
 
 class MeetingRecorderSessionRequest(BaseModel):

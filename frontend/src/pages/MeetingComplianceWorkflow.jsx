@@ -1089,7 +1089,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         // Use the page origin so HTTPS deployments keep a valid WSS
         // certificate and route through the configured reverse proxy.
         const wsHost = window.location.host;
-        const wsUrl = `${wsProtocol}//${wsHost}/api/meeting/asr/2pass/ws?token=${encodeURIComponent(token)}&meetingId=${encodeURIComponent(currentMeetingId)}`;
+        const wsParams = new URLSearchParams({
+          token,
+          meetingId: currentMeetingId,
+          deviceType: 'desktop',
+          recordingSessionId: micRecordingSessionRef.current,
+          semanticMerge: 'shadow',
+        });
+        const wsUrl = `${wsProtocol}//${wsHost}/api/meeting/asr/2pass/ws?${wsParams.toString()}`;
         const onAsrPayload = payload => {
           if (stopped) return;
           try {
@@ -1128,6 +1135,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   ...(sentenceMeta.sentenceSeq ? { sentence_seq: sentenceMeta.sentenceSeq } : {}),
                   ...(Number.isFinite(sentenceMeta.startMs) ? { start_ms: sentenceMeta.startMs } : {}),
                   ...(Number.isFinite(sentenceMeta.endMs) ? { end_ms: sentenceMeta.endMs } : {}),
+                  device_type: 'desktop',
+                  recording_session_id: micRecordingSessionRef.current,
+                  online_text: sentenceMeta.onlineText || '',
+                  reviewed_text: sentenceMeta.reviewedText || '',
+                  asr_backend: sentenceMeta.backend || '',
+                  corrected: Boolean(sentenceMeta.corrected),
+                  forced_split: Boolean(sentenceMeta.forcedSplit),
+                  merge_advice: sentenceMeta.mergeAdvice || {},
                   ...voiceprintFields,
                 }),
               }).then(data => {
@@ -1164,6 +1179,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 sentenceSeq: Number(payload.sentenceSeq || 0),
                 startMs: Number(payload.startMs || 0),
                 endMs: Number(payload.endMs || 0),
+                onlineText: String(payload.onlineText || ''),
+                reviewedText: String(payload.reviewedText || ''),
+                backend: String(payload.backend || ''),
+                corrected: Boolean(payload.corrected),
+                forcedSplit: Boolean(payload.forcedSplit),
+                mergeAdvice: payload.mergeAdvice || {},
               });
             } else if (payload.type === 'result' && payload.text && payload.isFinal) {
               // 兼容旧协议

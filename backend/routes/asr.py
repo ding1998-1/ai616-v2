@@ -967,11 +967,19 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
         ]
         if part
     )
+    device_type = str(websocket.query_params.get("deviceType") or "mobile").strip().lower()
+    if device_type not in {"mobile", "desktop"}:
+        device_type = "mobile"
+    recording_session_id = str(websocket.query_params.get("recordingSessionId") or "").strip()[:96]
+    resume_session = websocket.query_params.get("resume") == "1"
+    semantic_merge_mode = str(websocket.query_params.get("semanticMerge") or "").strip().lower()
     try:
-        recent_items = _db_load_transcripts_for_meeting(meeting_id).get("transcripts", [])[-8:]
-        recent_text = "".join(
-            str(item.get("transcript") or "") for item in recent_items
-        )[-600:]
+        from backend.services.asr_2pass_service import recent_context_for_recording_session
+        recent_text = recent_context_for_recording_session(
+            _db_load_transcripts_for_meeting(meeting_id).get("transcripts", []),
+            recording_session_id,
+            resume=resume_session,
+        )
         if recent_text:
             context = f"{context}；最近发言：{recent_text}" if context else f"最近发言：{recent_text}"
     except Exception:
@@ -1043,7 +1051,18 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
             "backend": backend_name,
             "corrected": corrected,
             "forcedSplit": forced_split,
+            "deviceType": device_type,
+            "recordingSessionId": recording_session_id,
+            "reviewedText": final_text if corrected else "",
         }
+        if semantic_merge_mode == "shadow":
+            from backend.services.asr_2pass_service import semantic_merge_advice
+            payload["mergeAdvice"] = semantic_merge_advice(
+                online_text,
+                start_ms,
+                end_ms,
+                forced_split=forced_split,
+            )
         await commit_result(payload)
 
     def clean_text_2pass(value: str) -> str:

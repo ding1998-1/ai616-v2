@@ -1059,6 +1059,14 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
           ...(sentenceMeta.sentenceSeq ? { sentence_seq: sentenceMeta.sentenceSeq } : {}),
           ...(Number.isFinite(sentenceMeta.startMs) ? { start_ms: sentenceMeta.startMs } : {}),
           ...(Number.isFinite(sentenceMeta.endMs) ? { end_ms: sentenceMeta.endMs } : {}),
+          device_type: 'mobile',
+          recording_session_id: recordingSessionIdRef.current,
+          online_text: sentenceMeta.onlineText || '',
+          reviewed_text: sentenceMeta.reviewedText || '',
+          asr_backend: sentenceMeta.backend || '',
+          corrected: Boolean(sentenceMeta.corrected),
+          forced_split: Boolean(sentenceMeta.forcedSplit),
+          merge_advice: sentenceMeta.mergeAdvice || {},
           ...(confidence !== undefined ? { confidence } : {}),
           ...speakerOverride,
           ...voiceprintFields,
@@ -1349,6 +1357,9 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
         ...(currentUser?.id ? { participant_id: currentUser.id } : {}),
         ...(currentUser?.username ? { participant_username: currentUser.username } : {}),
         audio_client_id: clientIdRef.current,
+        deviceType: 'mobile',
+        recordingSessionId: recordingSessionIdRef.current,
+        semanticMerge: 'shadow',
         ...(isReconnect ? { resume: '1' } : {}),
       });
       // Always use the page origin. The public HTTPS proxy supports WebSocket;
@@ -1494,6 +1505,12 @@ export default function MobileMeetingRecorder({ currentUser, onLogout }) {
             sentenceSeq: Number(payload.sentenceSeq || 0),
             startMs: Number(payload.startMs || 0),
             endMs: Number(payload.endMs || 0),
+            onlineText: String(payload.onlineText || ''),
+            reviewedText: String(payload.reviewedText || ''),
+            backend: String(payload.backend || ''),
+            corrected: Boolean(payload.corrected),
+            forcedSplit: Boolean(payload.forcedSplit),
+            mergeAdvice: payload.mergeAdvice || {},
           }).catch(err => message.error(`${asrName} 回传失败：${err.message}`));
         }
         return;
