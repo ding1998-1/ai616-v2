@@ -1075,7 +1075,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               upload.finally(() => micPendingUploadsRef.current.delete(upload)).catch(() => {});
             }
           };
-          micRecordingSessionRef.current = `desktop-${crypto.randomUUID()}`;
+          micRecordingSessionRef.current = (globalThis.crypto?.randomUUID?.() || `desktop-${Date.now()}-${Math.random().toString(16).slice(2)}`).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
           micCaptureStartedAtRef.current = Date.now();
           micCaptureStoppedAtRef.current = null;
           recorder.start(3000); // 每 3 秒分段，立即上传释放内存
@@ -4755,6 +4755,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             <strong>{saving ? '已停止采集，正在保存录音' : retry ? '已停止采集，录音待保存' : recording ? '正在录制现场声音' : '电脑录制 · 无需手机接入'}</strong>
             <span>{recording ? '现场发言不归属操作人账号；发言人姓名可在会后确认。' : '一台电脑采集多人发言，参会人无需逐个登录。'}</span>
           </div>
+          <Button icon={<FileTextOutlined />} onClick={() => setHistoryOpen(true)}>查看录音与字幕</Button>
           <Button type="primary" danger={recording} loading={saving || desktopRecorderState === 'requesting'} onClick={toggleDesktopRecording}>
             {saving ? '正在保存' : recording ? '停止并保存' : retry ? '重试保存录音' : '开始电脑录音'}
           </Button>
