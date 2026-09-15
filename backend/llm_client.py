@@ -456,6 +456,8 @@ class QwenLocalLLM(BaseChatModel):
     temperature: float = 0.1
     max_tokens: int = 8000
     timeout: float = 180.0
+    structured_output_schema: Optional[Dict[str, Any]] = None
+    structured_output_name: str = "structured_response"
 
     def _resolve_model_name(self, client: httpx.Client) -> str:
         """Use the configured model when available, otherwise discover vLLM's model ID."""
@@ -517,11 +519,35 @@ class QwenLocalLLM(BaseChatModel):
             "max_tokens": self.max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
+        if self.structured_output_schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": self.structured_output_name,
+                    "strict": True,
+                    "schema": self.structured_output_schema,
+                },
+            }
         resp = client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        text = data["choices"][0]["message"].get("content") or ""
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+        choice = data["choices"][0]
+        finish_reason = str(choice.get("finish_reason") or "").strip()
+        if finish_reason and finish_reason != "stop":
+            raise RuntimeError(f"local LLM stopped before completion: {finish_reason}")
+        text = choice["message"].get("content") or ""
+        if not text.strip():
+            raise RuntimeError("local LLM returned empty content")
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        metadata = {
+            "finish_reason": finish_reason or "stop",
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+        }
+        return ChatResult(generations=[ChatGeneration(
+            message=AIMessage(content=text, response_metadata=metadata),
+            generation_info=metadata,
+        )])
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         return await asyncio.get_event_loop().run_in_executor(

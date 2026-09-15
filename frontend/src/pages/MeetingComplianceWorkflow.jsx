@@ -1687,11 +1687,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const recorderShareUrl = useMemo(() => {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     const params = new URLSearchParams({ meetingId: currentMeetingId });
-    // 同时传递会议标题，手机登录页可直接显示无需等待 API
-    if (meetingTitle) params.set('meeting', meetingTitle);
-    if (projectName) params.set('project', projectName);
     return `${origin}/mobile-recorder?${params.toString()}`;
-  }, [currentMeetingId, meetingTitle, projectName]);
+  }, [currentMeetingId]);
 
   // 会议短标识用于核对
   const meetingShortId = useMemo(() => {
@@ -2204,7 +2201,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
-  const generateMeetingRecords = async ({ onlyIfMissing = false } = {}) => {
+  const generateMeetingRecords = async ({ onlyIfMissing = false, force = false } = {}) => {
     if (!currentMeetingId) return null;
     setMeetingRecordsLoading(true);
     try {
@@ -2219,7 +2216,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           return existing;
         }
       }
-      const data = await authFetchJson(`/api/meetings/${currentMeetingId}/records/generate`, {
+      const data = await authFetchJson(`/api/meetings/${currentMeetingId}/records/generate${force ? '?force=true' : ''}`, {
         method: 'POST',
       });
       setMeetingGeneratedRecords(data.records || null);
@@ -2317,8 +2314,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         } else {
           if (backendStatus === 'queued' || backendStatus === 'running') {
             setWhisperStatus('running');
-          } else if (backendStatus === 'failed') {
-            setWhisperStatus('failed');
+          } else if (backendStatus === 'failed' || backendStatus === 'interrupted') {
+            setWhisperStatus(backendStatus);
           } else if (whisperStatus === 'running') {
             setWhisperStatus('idle');
           }
@@ -5495,9 +5492,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
                   {[
                     ['转写', `${recordTranscriptCount(meetingGeneratedRecords)} 条`],
-                    ['录音', `${recordAudioCount(meetingGeneratedRecords)} 段`],
+                    ['录音', `${recordingPlaybackRows.length || recordAudioCount(meetingGeneratedRecords)} 段`],
                     ['来源', recordProviderLabel(meetingGeneratedRecords)],
-                    ['Whisper 终审', whisperStatus === 'done' ? '✓ 已完成' : whisperStatus === 'running' ? '⏳ 转写中…' : recordUsesWhisper(meetingGeneratedRecords) ? '✓ 已完成' : '未触发'],
+                    ['Whisper 终审', whisperStatus === 'done' ? '✓ 已完成' : whisperStatus === 'running' ? '⏳ 转写中…' : whisperStatus === 'interrupted' ? '已中断，可重试' : whisperStatus === 'failed' ? '转写失败，可重试' : recordUsesWhisper(meetingGeneratedRecords) ? '✓ 已完成' : '未触发'],
                   ].map(([label, value]) => (
                     <div key={label} style={{ padding: '8px 9px', borderRadius: 8, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
                       <div style={{ color: palette.muted, fontSize: 11 }}>{label}</div>
@@ -5979,11 +5976,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     if (!currentMeetingId) { message.warning('请先创建或选择一个会议'); return; }
     setArchiveGenerating(true);
     try {
-      const result = await generateMeetingRecords();
+      const shouldForce = Boolean(meetingGeneratedRecords?.generated);
+      const result = await generateMeetingRecords({ force: shouldForce });
       if (!result || !result.generated) {
         message.warning('转写数据不足，AI 无法生成。请确认已有机录音转写后再试。');
       } else {
-        message.success(result.reused ? '已使用当前会议纪要结果，未重复生成' : 'AI 会议纪要生成完成！');
+        message.success(result.reused ? '已使用当前会议纪要结果，未重复生成' : shouldForce ? 'AI 会议纪要已重新分析并生成' : 'AI 会议纪要生成完成！');
       }
     } catch (err) {
       message.error(`生成失败：${err.message}`);
@@ -6331,7 +6329,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ],
         };
       case 'share': {
-        const shareUrl = `${window.location.origin}/mobile-recorder?meetingId=${currentMeetingId}`;
+        const shareUrl = recorderQrUrl;
         return {
           title: '共享材料与参会邀请',
           content: (
@@ -6341,8 +6339,17 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <div style={{ color: palette.muted, fontSize: 13 }}>参会人看到的是当前审议材料；AI 会把材料标题、议题和会中发言一起绑定到当前会议。</div>
               </div>
               <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-                <div style={{ flex: '0 0 auto', padding: 8, borderRadius: 12, background: '#fff', border: `1px solid ${palette.line}` }}>
-                  <QRCode value={shareUrl} size={120} />
+                <div style={{ flex: '0 0 auto', padding: 16, borderRadius: 12, background: '#fff', border: `1px solid ${palette.line}`, lineHeight: 0 }}>
+                  <QRCode
+                    key={shareUrl}
+                    value={shareUrl}
+                    type="svg"
+                    size={136}
+                    color="#111827"
+                    bgColor="#FFFFFF"
+                    errorLevel="M"
+                    bordered={false}
+                  />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: palette.ink, fontWeight: 600, marginBottom: 6 }}>手机端接入链接</div>
@@ -6795,18 +6802,18 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         width={520}
         centered
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 18, alignItems: 'start' }}>
-          <div style={{ padding: 12, borderRadius: 12, background: '#fff', border: `1px solid ${palette.line}`, display: 'flex', justifyContent: 'center' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0, 1fr)', gap: 18, alignItems: 'start' }}>
+          <div style={{ boxSizing: 'border-box', width: 232, padding: 16, borderRadius: 12, background: '#fff', border: `1px solid ${palette.line}`, display: 'flex', justifyContent: 'center', lineHeight: 0 }}>
             <QRCode
               key={recorderQrUrl}
               value={recorderQrUrl}
               type="svg"
-              size={220}
-              color="#000000"
+              size={184}
+              color="#111827"
               bgColor="#FFFFFF"
-              errorLevel="H"
+              errorLevel="M"
               bordered={false}
-              style={{ display: 'block', width: 196, height: 196 }}
+              style={{ display: 'block' }}
             />
           </div>
           <div style={{ minWidth: 0 }}>

@@ -28,6 +28,7 @@ from difflib import SequenceMatcher
 import hashlib
 import inspect
 import json
+import logging
 import os
 import re
 from collections import OrderedDict
@@ -59,6 +60,7 @@ except Exception:  # pragma: no cover - only used by stripped-down deployments
 PIPELINE_VERSION = "records-v2"
 DEFAULT_MAX_CHARS = 4000
 DEFAULT_CONCURRENCY = max(1, int(os.environ.get("LLM_CONCURRENCY", "5")))
+logger = logging.getLogger(__name__)
 _TIME_RE = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.(\d+))?$")
 _SPACE_RE = re.compile(r"\s+")
 
@@ -477,6 +479,22 @@ def build_reduce_prompt(
         "<map_outputs>\n"
         f"{json.dumps(list(map_outputs), ensure_ascii=False)}\n"
         "</map_outputs>"
+    )
+
+
+def build_reduce_repair_prompt(response: Any, error: str) -> str:
+    """Ask the same local model to repair structure without re-analysing evidence."""
+
+    text = _as_text(getattr(response, "content", response))
+    return (
+        "你是 JSON 结构修复器。只修复下面结果的 JSON 结构和缺失字段，不新增、删除、改写会议事实。\n"
+        "必须返回一个 JSON 对象，且包含 summary、minutes、decisions、risks、disclosures、todos 六个字段。\n"
+        "minutes 中每项必须包含 agenda、status、keyPoints、formalSummary、basis；formalSummary 必须为含一段正文的数组。\n"
+        "只返回 JSON，不要 Markdown，不要解释。\n"
+        f"校验错误：{_as_text(error)[:500]}\n"
+        "<invalid_result>\n"
+        f"{text}\n"
+        "</invalid_result>"
     )
 
 
@@ -1839,11 +1857,15 @@ class MeetingRecordGenerationService:
             reduce_error = ""
             if self.reduce_call is not None:
                 reduce_prompt = build_reduce_prompt(map_payloads, meeting_context=context)
+                reduced_response: Any = None
                 for reduce_attempt in range(1, 3):
                     reduce_calls = reduce_attempt
                     try:
                         async with self.semaphore:
-                            reduced_response = await _invoke_handler(self.reduce_call, reduce_prompt, {
+                            attempt_prompt = reduce_prompt if reduce_attempt == 1 or reduced_response is None else build_reduce_repair_prompt(
+                                reduced_response, reduce_error,
+                            )
+                            reduced_response = await _invoke_handler(self.reduce_call, attempt_prompt, {
                                 **context,
                                 "mapOutputs": map_payloads,
                                 "chunks": [chunk.to_dict() for chunk in chunks],
@@ -1859,6 +1881,16 @@ class MeetingRecordGenerationService:
                         break
                     except Exception as exc:
                         reduce_error = str(exc)
+                        response_text = _as_text(getattr(reduced_response, "content", reduced_response))
+                        metadata = getattr(reduced_response, "response_metadata", {}) if reduced_response is not None else {}
+                        logger.warning(
+                            "Records REDUCE attempt failed meeting=%s attempt=%s error=%s response_chars=%s finish_reason=%s",
+                            meeting_id,
+                            reduce_attempt,
+                            reduce_error[:500],
+                            len(response_text),
+                            metadata.get("finish_reason", "") if isinstance(metadata, Mapping) else "",
+                        )
                 if reduce_error:
                     records = _deterministic_reduce(
                         map_results, segments=segments, participants=context.get("participants") or [],

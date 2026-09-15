@@ -761,7 +761,23 @@ async def _generate_records_v2_once(meeting_id: str, *, generation_id: str) -> d
         return cached or {"summary": [], "minutes": [], "decisions": [], "todos": []}
 
     map_llm = QwenLocalLLM(max_tokens=4000)
-    reduce_llm = QwenLocalLLM(max_tokens=4000)
+    reduce_llm = QwenLocalLLM(
+        max_tokens=4000,
+        structured_output_name="meeting_minutes_reduce",
+        structured_output_schema={
+            "type": "object",
+            "properties": {
+                "summary": {"type": "object"},
+                "minutes": {"type": "array", "items": {"type": "object"}},
+                "decisions": {"type": "array", "items": {"type": "object"}},
+                "risks": {"type": "array", "items": {"type": "object"}},
+                "disclosures": {"type": "array", "items": {"type": "object"}},
+                "todos": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["summary", "minutes", "decisions", "risks", "disclosures", "todos"],
+            "additionalProperties": False,
+        },
+    )
     service = MeetingRecordGenerationService(
         map_call=map_llm,
         reduce_call=reduce_llm,

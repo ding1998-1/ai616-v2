@@ -529,6 +529,34 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(records["degraded"])
         self.assertEqual(records["generationSnapshot"]["reduceCallCount"], 2)
 
+    async def test_reduce_validation_retry_repairs_previous_result_only(self):
+        source = [{"id": "seg-1", "fileId": "audio-a", "start": 0, "end": 2, "text": "讨论预算调整"}]
+        prompts = []
+
+        async def map_call(_prompt, _context):
+            return {"topics": [{"title": "预算调整", "evidence": "讨论预算调整"}]}
+
+        async def reduce_call(prompt, context):
+            prompts.append(prompt)
+            if context["attempt"] == 1:
+                return {"minutes": [{"agenda": "预算调整", "formalSummary": []}]}
+            return {"minutes": [{
+                "agenda": "预算调整",
+                "formalSummary": ["会议讨论了预算调整。"],
+                "basis": {"quotes": [{"text": "讨论预算调整"}]},
+            }]}
+
+        records = await MeetingRecordGenerationService(
+            map_call=map_call,
+            reduce_call=reduce_call,
+        ).generate("meeting-reduce-repair", source)
+
+        self.assertEqual(records["pipelineStatus"], "ok")
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("JSON 结构修复器", prompts[1])
+        self.assertIn("REDUCE omitted formalSummary", prompts[1])
+        self.assertNotIn("<map_outputs>", prompts[1])
+
 
 if __name__ == "__main__":
     unittest.main()
