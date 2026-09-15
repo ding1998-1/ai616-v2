@@ -233,21 +233,22 @@ function MeetingAudioPlayer({ playbackUrl, audioRef, onSeek }) {
 }
 
 function MeetingAiPulse({ active }) {
+  const heights = [8, 16, 28, 38, 30, 20, 34, 42, 28, 16, 8];
   return (
-    <div
-      className={`meeting-ai-core ${active ? 'is-active' : ''}`}
-      aria-hidden="true"
-      style={{ width: 72, height: 72, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', isolation: 'isolate' }}
-    >
-      <span className="meeting-ai-ring meeting-ai-ring-one" style={{ position: 'absolute', inset: 5, borderRadius: '50%', border: '1px solid rgba(29, 95, 215, 0.3)' }} />
-      <span className="meeting-ai-ring meeting-ai-ring-two" style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(29, 95, 215, 0.3)', opacity: 0.56 }} />
-      <img
-        className="meeting-ai-orb-media"
-        src="/voice-ai-orb-transparent.webp"
-        alt=""
-        draggable={false}
-        style={{ width: 86, height: 86, objectFit: 'contain', pointerEvents: 'none', userSelect: 'none', filter: 'drop-shadow(0 12px 22px rgba(29,95,215,0.18))', zIndex: 2 }}
-      />
+    <div className={`meeting-ai-core ${active ? 'is-active' : ''}`} aria-hidden="true">
+      <svg className="meeting-voiceprint" viewBox="0 0 72 72" fill="none" focusable="false">
+        <rect x="2" y="2" width="68" height="68" rx="23" fill="#EFF6FF" />
+        <path d="M15 20C24 10 48 10 57 20M15 52C24 62 48 62 57 52" stroke="#C6E0FF" strokeWidth="1.2" strokeLinecap="round" />
+        <g className="meeting-voiceprint-breath">
+          {heights.map((height, index) => (
+            <rect key={index} className="meeting-voiceprint-bar"
+              x={12 + index * 4.5} y={36 - height / 2} width="3" height={height} rx="1.5"
+              fill={index > 6 ? '#15B8C4' : index > 3 ? '#2688F5' : '#0868E8'}
+              style={{ '--voice-delay': `${index * -0.19}s` }} />
+          ))}
+        </g>
+        <circle className="meeting-voiceprint-spark" cx="57" cy="17" r="2" fill="#16B8C5" />
+      </svg>
     </div>
   );
 }
@@ -6603,7 +6604,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               renderHeaderParticipantStrip()
             ) : (
               <div className="meeting-compact-progress" style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: 10, alignItems: 'center', padding: '8px 10px', borderRadius: 12, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
-                <MeetingAiPulse active={recording || activeStage === 'collect' || activeStage === 'audit'} />
+                <MeetingAiPulse active={recording || meetingRecordsLoading || recordGenerationStatus.status === 'running' || whisperStatus === 'running'} />
                 <div>
                   <div style={{ color: palette.ink, fontWeight: 600 }}>{isMajorMeeting ? '全链路闭环度' : '会议记录完整度'}</div>
                   <Progress percent={completion} size="small" strokeColor={completion >= 80 ? palette.green : palette.blue} />
