@@ -7,79 +7,6 @@ import re
 from typing import Any, Awaitable, Callable
 
 
-_STANDALONE_SHORT_REPLIES = {
-    "是", "不是", "对", "不对", "确认", "可以", "不可以", "同意", "不同意",
-    "收到", "好的", "明白", "没有", "有", "行", "不行",
-}
-
-
-def semantic_merge_advice(
-    text: str,
-    start_ms: int,
-    end_ms: int,
-    *,
-    forced_split: bool = False,
-    min_duration_ms: int = 2500,
-    min_chars: int = 5,
-    target_min_ms: int = 4000,
-    target_max_ms: int = 10000,
-    hard_max_ms: int = 12000,
-) -> dict[str, Any]:
-    """Describe a future semantic merge decision without changing live output."""
-
-    clean_text = re.sub(r"[\s，。！？、,.!?;；:：'\"“”‘’()（）-]", "", str(text or ""))
-    duration_ms = max(0, int(end_ms or 0) - int(start_ms or 0))
-    standalone_reply = clean_text in _STANDALONE_SHORT_REPLIES
-    short_candidate = (
-        not forced_split
-        and not standalone_reply
-        and (duration_ms < min_duration_ms or len(clean_text) < min_chars)
-    )
-    if forced_split or duration_ms >= hard_max_ms:
-        action = "release"
-        reason = "forced-or-hard-limit"
-    elif standalone_reply:
-        action = "release"
-        reason = "standalone-short-reply"
-    elif short_candidate:
-        action = "hold"
-        reason = "insufficient-context"
-    else:
-        action = "release"
-        reason = "semantic-window-ready"
-    return {
-        "mode": "shadow",
-        "action": action,
-        "reason": reason,
-        "durationMs": duration_ms,
-        "characterCount": len(clean_text),
-        "targetMinMs": target_min_ms,
-        "targetMaxMs": target_max_ms,
-        "hardMaxMs": hard_max_ms,
-        "waitMs": 1200 if action == "hold" else 0,
-    }
-
-
-def recent_context_for_recording_session(
-    items: list[dict[str, Any]],
-    recording_session_id: str,
-    *,
-    resume: bool,
-    limit: int = 8,
-    max_chars: int = 600,
-) -> str:
-    """Return reconnect context from the same recording session only."""
-
-    safe_session_id = str(recording_session_id or "").strip()
-    if not resume or not safe_session_id:
-        return ""
-    matching = [
-        item for item in items
-        if str(item.get("recordingSessionId") or "").strip() == safe_session_id
-    ][-max(1, int(limit)) :]
-    return "".join(str(item.get("transcript") or "") for item in matching)[-max(1, int(max_chars)) :]
-
-
 @dataclass
 class OrderedFinalBuffer:
     """Buffer concurrently completed finals and expose them in sentence order."""
@@ -194,7 +121,7 @@ def plausible_offline_review(online_text: str, reviewed_text: str, context: str 
         return False
     if len(reviewed) > max(240, len(online) * 4 + 40):
         return False
-    if reviewed != online and len(reviewed) >= 4 and reviewed in reference:
+    if len(reviewed) >= 20 and reviewed in reference:
         return False
     if reviewed.startswith(("会议名称：", "当前议题：", "参会人及术语：")):
         return False
@@ -232,34 +159,6 @@ def plausible_chinese_meeting_text(value: str) -> bool:
     if re.search(r"(.{1,8})\1\1", text, flags=re.IGNORECASE):
         return False
     return cjk_count > 0
-
-
-def plausible_realtime_preview(value: str) -> bool:
-    """Only expose Chinese meeting previews and known business abbreviations."""
-
-    text = str(value or "").strip()
-    if not plausible_chinese_meeting_text(text):
-        return False
-    latin_terms = {term.upper() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", text)}
-    return not latin_terms or latin_terms.issubset(_ALLOWED_LATIN_TERMS)
-
-
-def offline_review_context(
-    context: str,
-    online_text: str,
-    start_ms: int,
-    end_ms: int,
-    *,
-    min_context_duration_ms: int = 2500,
-) -> str:
-    """Avoid letting meeting identity hints dominate short or noisy audio."""
-
-    duration_ms = max(0, int(end_ms or 0) - int(start_ms or 0))
-    if duration_ms < max(1, int(min_context_duration_ms)):
-        return ""
-    if not plausible_realtime_preview(online_text):
-        return ""
-    return str(context or "")
 
 
 async def review_with_fallback(
