@@ -5782,7 +5782,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                         <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
                           {minutesItems.slice(0, 6).map((m, i) => (
                             <div key={i} style={{ padding: '8px 10px', borderRadius: 8, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>
-                              <div style={{ fontWeight: 600, color: palette.ink, fontSize: 13 }}>{m.agenda || `议题 ${i + 1}`}</div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <div style={{ fontWeight: 600, color: palette.ink, fontSize: 13 }}>{m.agenda || `议题 ${i + 1}`}</div>
+                                {m.topicSource === 'transcript' && <Tag color="blue" style={{ margin: 0, fontSize: 10 }}>根据录音识别</Tag>}
+                                {m.plannedAgendaMatch && <Tag color="green" style={{ margin: 0, fontSize: 10 }}>匹配预设议题：{m.plannedAgendaMatch}</Tag>}
+                              </div>
                               <div style={{ color: palette.text, fontSize: 12, marginTop: 4, lineHeight: 1.7 }}>
                                 {(Array.isArray(m.formalSummary) ? m.formalSummary : [m.formalSummary]).filter(Boolean).map((p, j) => <div key={j}>{p}</div>)}
                               </div>
@@ -6890,7 +6894,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 const displayContent = String(content || '').trim() || `议题：${item?.agenda || item?.title || '未命名'}（当前记录未生成可展示正文）`;
                 return (
                   <div className={`record-review-detail-item ${status === 'human_supported' ? 'is-confirmed' : status === 'rejected' ? 'is-rejected' : ''}`} key={`${field}-${item?.id || index}`}>
-                    <div className="record-review-detail-meta"><Tag>{label}</Tag><span>#{index + 1}</span><em>{status === 'human_supported' ? '已人工确认' : status === 'rejected' ? '不采用' : '待确认'}</em></div>
+                    <div className="record-review-detail-meta">
+                      <Tag>{label}</Tag>
+                      {item?.topicSource === 'transcript' && <Tag color="blue">根据录音识别</Tag>}
+                      {item?.plannedAgendaMatch && <Tag color="green">匹配预设议题：{item.plannedAgendaMatch}</Tag>}
+                      <span>#{index + 1}</span>
+                      <em>{status === 'human_supported' ? '已人工确认' : status === 'rejected' ? '不采用' : '待确认'}</em>
+                    </div>
                     <p>{displayContent}</p>
                   </div>
                 );

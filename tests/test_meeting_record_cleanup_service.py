@@ -5,6 +5,7 @@ from backend.services.meeting_record_cleanup_service import (
     MAX_OUTPUT_PARAGRAPH_CHARS,
     MeetingRecordCleanupService,
     build_cleanup_chunks,
+    build_fallback_topics,
     reuse_existing_topics,
     validate_topic_reduce_result,
     validate_cleanup_result,
@@ -144,6 +145,48 @@ def test_topic_reduce_covers_every_included_block_once():
         "subTopics": [{"title": "数据整理", "blockIds": ["r1"]}, {"title": "价格分类", "blockIds": ["r2"]}],
     }]}, blocks)
     assert topics[0]["blockIds"] == ["r1", "r2"]
+
+
+def test_fallback_topics_use_content_density_instead_of_duration_only():
+    blocks = [
+        {
+            "id": f"r{index}",
+            "title": f"真实讨论主题 {index}",
+            "startTime": f"00:{index - 1:02d}:00",
+            "endTime": f"00:{index:02d}:00",
+            "recordText": f"第 {index} 个有效内容块。",
+            "includeInRecord": True,
+        }
+        for index in range(1, 12)
+    ]
+
+    topics = build_fallback_topics(blocks)
+
+    assert len(topics) == 6
+    assert [block_id for topic in topics for block_id in topic["blockIds"]] == [f"r{index}" for index in range(1, 12)]
+    assert topics[0]["title"] == "真实讨论主题 1与真实讨论主题 2"
+
+
+def test_topic_reduce_failure_reason_is_recorded_with_fallback_outline():
+    async def cleanup(_prompt):
+        return {"blocks": [{
+            "title": "预算执行",
+            "recordText": "会议讨论预算执行情况。",
+            "contentType": "meeting_speech",
+            "sourceSegmentIds": ["s0"],
+        }]}
+
+    async def broken_reduce(_prompt):
+        raise RuntimeError("topic service unavailable")
+
+    result = asyncio.run(MeetingRecordCleanupService(
+        cleanup_call=cleanup,
+        topic_reduce_call=broken_reduce,
+    ).build_record_paragraphs(_rows(1)))
+
+    assert result["snapshot"]["topicReduceFallback"] is True
+    assert "topic service unavailable" in result["snapshot"]["topicReduceError"]
+    assert result["recordTopics"]
 
 
 def test_existing_topic_outline_is_remapped_when_block_ids_change():

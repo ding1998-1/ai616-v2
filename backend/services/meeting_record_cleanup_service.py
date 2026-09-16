@@ -590,7 +590,10 @@ def build_fallback_topics(blocks: Sequence[Mapping[str, Any]]) -> list[dict[str,
     included = [item for item in blocks if item.get("includeInRecord") and item.get("recordText")]
     if not included:
         return []
-    target = min(12, max(1, round(max(_parse_time(item.get("endTime")) for item in included) / 720)))
+    duration_seconds = max(_parse_time(item.get("endTime")) for item in included)
+    duration_target = max(1, round(duration_seconds / 600))
+    content_target = max(1, (len(included) + 1) // 2)
+    target = min(12, len(included), max(duration_target, content_target))
     group_size = max(1, (len(included) + target - 1) // target)
     by_id = {str(item.get("id")): item for item in included}
     topics: list[dict[str, Any]] = []
@@ -716,22 +719,25 @@ class MeetingRecordCleanupService:
         blocks: Sequence[Mapping[str, Any]],
         context: Mapping[str, Any],
         existing_topics: Sequence[Mapping[str, Any]] | None = None,
-    ) -> tuple[list[dict[str, Any]], bool, bool]:
+    ) -> tuple[list[dict[str, Any]], bool, bool, str]:
         prompt = build_topic_reduce_prompt(blocks, context)
+        reduce_error = ""
         for attempt in range(3):
             try:
                 async with self.semaphore:
                     response = await _invoke(self.topic_reduce_call, prompt)
                 topics = validate_topic_reduce_result(_extract_json(response), blocks)
                 if topics:
-                    return topics, False, False
+                    return topics, False, False, ""
+                reduce_error = "topic reduce returned no topics"
             except Exception as exc:
+                reduce_error = str(exc)
                 if attempt < 2:
                     prompt += f"\n上一次结果未通过校验：{exc}。请严格按seq顺序切分连续区间，完整覆盖且不得重叠。"
         reused = reuse_existing_topics(existing_topics, blocks)
         if reused:
-            return reused, False, True
-        return build_fallback_topics(blocks), True, False
+            return reused, False, True, reduce_error[:500]
+        return build_fallback_topics(blocks), True, False, reduce_error[:500]
 
     async def build_record_paragraphs(
         self,
@@ -789,7 +795,7 @@ class MeetingRecordCleanupService:
                 "locked": False, "inputHash": "", "promptVersion": CLEANUP_PROMPT_VERSION,
             })
         paragraphs.sort(key=lambda item: (str(item.get("startTime") or ""), str(item.get("id") or "")))
-        topics, topic_reduce_fallback, topic_outline_reused = await self._reduce_topics(
+        topics, topic_reduce_fallback, topic_outline_reused, topic_reduce_error = await self._reduce_topics(
             paragraphs,
             meeting_context or {},
             existing_topics,
@@ -809,6 +815,7 @@ class MeetingRecordCleanupService:
                 "topicCount": len(topics),
                 "topicReducePromptVersion": TOPIC_REDUCE_PROMPT_VERSION,
                 "topicReduceFallback": topic_reduce_fallback,
+                "topicReduceError": topic_reduce_error,
                 "topicOutlineReused": topic_outline_reused,
                 "sourceSegmentCount": len(normalise_transcript_segments(source)),
             },

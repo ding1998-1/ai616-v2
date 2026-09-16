@@ -60,6 +60,20 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             ["查山土地款审核与取证流程", "水头项目合规风险与暂停处理", "委托程序合规性要求"],
         )
 
+    def test_numbered_fallback_minutes_are_not_collapsed_by_substring_similarity(self):
+        records = {"minutes": [
+            {"agenda": f"会议过程记录 {index}", "formalSummary": [f"第 {index} 段讨论。"]}
+            for index in range(1, 13)
+        ]}
+
+        result = _deduplicate_formal_minutes(records)
+
+        self.assertEqual(result, {"inputCount": 12, "outputCount": 8, "mergedCount": 0})
+        self.assertEqual(
+            [item["agenda"] for item in records["minutes"]],
+            [f"会议过程记录 {index}" for index in range(1, 9)],
+        )
+
     def test_auto_evidence_resolution_never_refills_formal_minutes_from_raw_map_topic(self):
         basis = {
             "evidenceValid": True,
@@ -79,6 +93,94 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             [{"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "核实土地成本资料"}],
         )
         self.assertEqual([item["agenda"] for item in records["minutes"]], ["土地成本审核"])
+
+    def test_transcript_topics_survive_when_they_do_not_match_planned_agenda(self):
+        basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "毕业以后我选择回到台湾工作", "segmentId": "s1"}],
+        }
+        records = {
+            "minutes": [{
+                "agenda": "无关的预设议题",
+                "formalSummary": ["无法核验。"],
+                "basis": {"evidenceValid": False},
+            }],
+            "decisions": [], "risks": [], "disclosures": [], "todos": [],
+        }
+        map_results = [{
+            "ok": True,
+            "chunkSegments": [{"segmentId": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "毕业以后我选择回到台湾工作"}],
+            "output": {"topics": [{
+                "title": "职业选择与回台原因",
+                "basis": basis,
+            }]},
+        }]
+
+        auto_resolve_formal_evidence(
+            records,
+            map_results,
+            [{"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "毕业以后我选择回到台湾工作"}],
+            planned_agenda_titles=["666"],
+        )
+
+        self.assertEqual([item["agenda"] for item in records["minutes"]], ["职业选择与回台原因"])
+        self.assertEqual(records["minutes"][0]["topicSource"], "transcript")
+        self.assertEqual(records["minutes"][0]["plannedAgendaMatch"], "")
+        self.assertTrue(records["minutes"][0]["requiresHumanReview"])
+
+    def test_transcript_topic_keeps_optional_planned_agenda_match(self):
+        basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "继续讨论预算执行情况", "segmentId": "s1"}],
+        }
+        records = {"minutes": [], "decisions": [], "risks": [], "disclosures": [], "todos": []}
+        map_results = [{
+            "ok": True,
+            "chunkSegments": [{"segmentId": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "继续讨论预算执行情况"}],
+            "output": {"topics": [{
+                "title": "预算执行情况",
+                "basis": basis,
+            }]},
+        }]
+
+        auto_resolve_formal_evidence(
+            records,
+            map_results,
+            [{"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "继续讨论预算执行情况"}],
+            planned_agenda_titles=["预算执行情况"],
+        )
+
+        self.assertEqual(records["minutes"][0]["plannedAgendaMatch"], "预算执行情况")
+
+    def test_semantic_mismatch_topic_keeps_its_quote_for_manual_review(self):
+        records = {
+            "minutes": [{
+                "agenda": "家庭关系与父母态度",
+                "formalSummary": ["模型生成的概括不得直接进入正式纪要。"],
+                "basis": {
+                    "evidenceValid": False,
+                    "evidenceIssue": "semantic_mismatch",
+                    "sourceSegmentIds": ["s1"],
+                    "quotes": [{"text": "爸妈不接受这件事", "segmentId": "s1"}],
+                },
+                "status": "待人工核验",
+            }],
+            "decisions": [], "risks": [], "disclosures": [], "todos": [],
+        }
+
+        auto_resolve_formal_evidence(
+            records,
+            [],
+            [{"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "爸妈不接受这件事"}],
+            planned_agenda_titles=["666"],
+        )
+
+        self.assertEqual(records["minutes"][0]["agenda"], "家庭关系与父母态度")
+        self.assertEqual(records["minutes"][0]["formalSummary"], ["录音中提及：爸妈不接受这件事"])
+        self.assertEqual(records["minutes"][0]["status"], "根据录音识别·待复核")
+        self.assertTrue(records["minutes"][0]["requiresHumanReview"])
 
     def test_uncertain_statement_is_not_promoted_to_formal_decision(self):
         basis = {

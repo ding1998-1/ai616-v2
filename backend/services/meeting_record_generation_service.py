@@ -1242,16 +1242,83 @@ def _fallback_minutes_from_segments(segments: Sequence[TranscriptSegment], limit
     return result
 
 
+def _match_planned_agenda(topic: Any, planned_agenda_titles: Sequence[Any]) -> str:
+    """Return an optional agenda association without constraining transcript topics."""
+
+    title = _as_text(topic)
+    ranked = sorted(
+        (
+            (_text_similarity(title, planned), _as_text(planned))
+            for planned in planned_agenda_titles
+            if _as_text(planned)
+        ),
+        reverse=True,
+    )
+    if not ranked:
+        return ""
+    score, planned = ranked[0]
+    return planned if score >= 0.56 else ""
+
+
+def _transcript_topic_minutes(
+    topic_candidates: Sequence[Mapping[str, Any]],
+    *,
+    planned_agenda_titles: Sequence[Any] = (),
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Keep evidence-backed transcript topics visible for human review.
+
+    Planned agendas are association metadata only.  A real topic extracted
+    from the transcript must not disappear merely because it does not match a
+    title supplied before the meeting.
+    """
+
+    result: list[dict[str, Any]] = []
+    for candidate in topic_candidates:
+        title = _as_text(candidate.get("content"))
+        basis = candidate.get("basis") if isinstance(candidate.get("basis"), Mapping) else {}
+        quotes = [
+            deepcopy(dict(quote))
+            for quote in basis.get("quotes") or []
+            if isinstance(quote, Mapping) and _as_text(quote.get("text"))
+        ]
+        source_ids = [str(value) for value in basis.get("sourceSegmentIds") or [] if value]
+        if not title or not quotes or not source_ids:
+            continue
+        if any(_text_similarity(title, existing.get("agenda")) >= 0.88 for existing in result):
+            continue
+        quote_texts = list(dict.fromkeys(_as_text(quote.get("text")) for quote in quotes if _as_text(quote.get("text"))))[:3]
+        planned_match = _match_planned_agenda(title, planned_agenda_titles)
+        result.append({
+            "agenda": title,
+            "status": "根据录音识别·待复核",
+            "keyPoints": quote_texts,
+            "formalSummary": [f"录音中提及：{text}" for text in quote_texts],
+            "basis": deepcopy(dict(basis)),
+            "supportStatus": "ai_suggested",
+            "supportSource": "transcript",
+            "topicSource": "transcript",
+            "plannedAgendaMatch": planned_match,
+            "requiresHumanReview": True,
+            "reviewReason": "transcript_topic_recovery",
+        })
+        if len(result) >= limit:
+            break
+    return result
+
+
 def auto_resolve_formal_evidence(
     records: dict[str, Any],
     map_results: Sequence[Mapping[str, Any]],
     source: Any,
+    *,
+    planned_agenda_titles: Sequence[Any] = (),
 ) -> dict[str, int]:
-    """Produce a hands-off formal set and move unsupported AI text to audit data.
+    """Produce a reviewable formal set and move unsupported AI text to audit data.
 
-    Government users receive a directly exportable Word document. Unsupported
-    model prose is never presented as an official claim, but it remains in
-    ``evidenceExceptions`` for technical audit and future model improvement.
+    Unsupported model prose is never presented as an official claim. Topics
+    backed by transcript quotes remain visible for human review, while the
+    original rejected payload remains in ``evidenceExceptions`` for audit.
     """
 
     segments = normalise_transcript_segments(source)
@@ -1289,33 +1356,42 @@ def auto_resolve_formal_evidence(
     for item in invalid_minutes:
         exceptions.append({"field": "minutes", "reason": "unsupported_ai_claim", "item": deepcopy(dict(item))})
     removed += len(invalid_minutes)
-    # MAP topics are extraction evidence, not finished formal prose.  Never
-    # refill a rejected REDUCE minute with a raw MAP title/key point: doing so
-    # reintroduces ASR-like text into the official Word and can create a new
-    # duplicate after semantic aggregation.  Rejected topics remain available
-    # in evidenceExceptions and the lossless meeting record.
     if not verified_minutes:
-        verified_outcomes = [
-            item
-            for field in ("decisions", "risks", "disclosures")
-            for item in records.get(field) or []
-            if _is_verified_formal_item(item, field)
+        pending_topic_candidates = [
+            {
+                "content": _as_text(item.get("agenda")),
+                "basis": deepcopy(item.get("basis") or {}),
+            }
+            for item in invalid_minutes
+            if _as_text(item.get("agenda"))
         ]
-        if verified_outcomes:
-            points = [
-                _as_text(item.get("content"))
-                for item in verified_outcomes[:6]
-                if _as_text(item.get("content"))
+        pending_topic_candidates.extend(topic_candidates)
+        verified_minutes = _transcript_topic_minutes(
+            pending_topic_candidates,
+            planned_agenda_titles=planned_agenda_titles,
+        )
+        if not verified_minutes:
+            verified_outcomes = [
+                item
+                for field in ("decisions", "risks", "disclosures")
+                for item in records.get(field) or []
+                if _is_verified_formal_item(item, field)
             ]
-            verified_minutes = [{
-                "agenda": "会议结论与安排",
-                "status": "系统自动核验",
-                "formalSummary": [f"会议形成如下结论：{point}" for point in points],
-                "keyPoints": [],
-                "basis": deepcopy(verified_outcomes[0].get("basis") or {}),
-            }]
-        else:
-            verified_minutes = _fallback_minutes_from_segments(segments)
+            if verified_outcomes:
+                points = [
+                    _as_text(item.get("content"))
+                    for item in verified_outcomes[:6]
+                    if _as_text(item.get("content"))
+                ]
+                verified_minutes = [{
+                    "agenda": "会议结论与安排",
+                    "status": "系统自动核验",
+                    "formalSummary": [f"会议形成如下结论：{point}" for point in points],
+                    "keyPoints": [],
+                    "basis": deepcopy(verified_outcomes[0].get("basis") or {}),
+                }]
+            else:
+                verified_minutes = _fallback_minutes_from_segments(segments)
     records["minutes"] = verified_minutes
     records["evidenceExceptions"] = exceptions
     records["summary"] = _dump_model(SummarySections(
@@ -1576,6 +1652,15 @@ def _formal_agendas_overlap(left: Any, right: Any) -> bool:
 
     first = _normalise_spaces(left)
     second = _normalise_spaces(right)
+    first_numbered = re.fullmatch(r"(.+?)(\d+)", first)
+    second_numbered = re.fullmatch(r"(.+?)(\d+)", second)
+    if (
+        first_numbered
+        and second_numbered
+        and first_numbered.group(1) == second_numbered.group(1)
+        and first_numbered.group(2) != second_numbered.group(2)
+    ):
+        return False
     similarity = _text_similarity(first, second)
     if similarity >= 0.58:
         return True
@@ -1913,6 +1998,7 @@ class MeetingRecordGenerationService:
             records,
             map_results,
             segments,
+            planned_agenda_titles=context.get("agendaTitles") or [],
         )
         records["formalMinuteDeduplication"] = _deduplicate_formal_minutes(records)
         snapshot["reduceCallCount"] = reduce_calls
