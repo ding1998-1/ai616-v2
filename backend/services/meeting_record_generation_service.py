@@ -1289,7 +1289,7 @@ def _transcript_topic_minutes(
         source_ids = [str(value) for value in basis.get("sourceSegmentIds") or [] if value]
         if not title or not quotes or not source_ids:
             continue
-        if any(_text_similarity(title, existing.get("agenda")) >= 0.88 for existing in result):
+        if any(_formal_agendas_overlap(title, existing.get("agenda")) for existing in result):
             continue
         quote_texts = list(dict.fromkeys(_as_text(quote.get("text")) for quote in quotes if _as_text(quote.get("text"))))[:3]
         planned_match = _match_planned_agenda(title, planned_agenda_titles)
@@ -1383,7 +1383,7 @@ def auto_resolve_formal_evidence(
     )
     for transcript_minute in transcript_minutes:
         if any(
-            _text_similarity(transcript_minute.get("agenda"), existing.get("agenda")) >= 0.88
+            _formal_agendas_overlap(transcript_minute.get("agenda"), existing.get("agenda"))
             for existing in verified_minutes
         ):
             continue
