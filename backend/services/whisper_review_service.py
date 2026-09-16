@@ -68,7 +68,13 @@ def whisper_review_status(meeting_id: str) -> dict[str, Any]:
     }
 
 
-def _append_status(meeting_id: str, status: str, error: str = "") -> None:
+def _append_status(
+    meeting_id: str,
+    status: str,
+    error: str = "",
+    *,
+    recording_override: bool = False,
+) -> None:
     _append_meeting_activity_light(
         meeting_id,
         {
@@ -78,8 +84,20 @@ def _append_status(meeting_id: str, status: str, error: str = "") -> None:
             "meetingId": meeting_id,
             "status": status,
             "error": error,
+            "recordingOverride": recording_override,
             "serverTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         },
+    )
+
+
+def has_recording_override(meeting_id: str) -> bool:
+    """Return whether an audited admin override permits post-meeting processing."""
+
+    return any(
+        event.get("type") == "stage"
+        and event.get("stage") == "audit"
+        and bool(event.get("recordingOverride"))
+        for event in reversed(_meeting_events(meeting_id))
     )
 
 
@@ -169,16 +187,16 @@ def _merge_audio(files: list[Path], output: Path) -> None:
         raise RuntimeError(result.stderr.decode("utf-8", errors="ignore")[-500:] or "ffmpeg 合并失败")
 
 
-async def _run_review(meeting_id: str, force: bool) -> None:
+async def _run_review(meeting_id: str, force: bool, allow_incomplete_recordings: bool = False) -> None:
     async with _semaphore:
         if not force and whisper_review_status(meeting_id)["status"] == "done":
             return
-        _append_status(meeting_id, "running")
+        _append_status(meeting_id, "running", recording_override=allow_incomplete_recordings)
         merged = MEETING_FILES_DIR / "recordings" / meeting_id / "_merged_whisper.wav"
         try:
             from backend.services.recording_service import require_completed_recordings
 
-            require_completed_recordings(meeting_id)
+            require_completed_recordings(meeting_id, allow_incomplete=allow_incomplete_recordings)
             files = _valid_audio_files(_audio_files(meeting_id))
             if not files:
                 raise RuntimeError("没有可用于 Whisper 终审的完整录音")
@@ -212,7 +230,7 @@ async def _run_review(meeting_id: str, force: bool) -> None:
                     "sourceFileNames": [path.name for path in files],
                 },
             )
-            _append_status(meeting_id, "done")
+            _append_status(meeting_id, "done", recording_override=allow_incomplete_recordings)
             try:
                 from backend.services.speaker_diarization_service import refresh_whisper_alignment
 
@@ -260,23 +278,40 @@ async def _run_review(meeting_id: str, force: bool) -> None:
                 )
         except asyncio.CancelledError:
             logger.warning("Whisper 终审因服务停机中断 meeting=%s", meeting_id)
-            _append_status(meeting_id, "interrupted", "服务重启，任务可重新执行")
+            _append_status(
+                meeting_id,
+                "interrupted",
+                "服务重启，任务可重新执行",
+                recording_override=allow_incomplete_recordings,
+            )
             raise
         except Exception as exc:
             logger.exception("Whisper 终审失败 meeting=%s", meeting_id)
-            _append_status(meeting_id, "failed", str(exc)[:500])
+            _append_status(
+                meeting_id,
+                "failed",
+                str(exc)[:500],
+                recording_override=allow_incomplete_recordings,
+            )
         finally:
             merged.unlink(missing_ok=True)
 
 
-def schedule_whisper_review(meeting_id: str, force: bool = False) -> dict[str, Any]:
+def schedule_whisper_review(
+    meeting_id: str,
+    force: bool = False,
+    allow_incomplete_recordings: bool = False,
+) -> dict[str, Any]:
     current = _tasks.get(meeting_id)
     if current and not current.done():
         return whisper_review_status(meeting_id)
     if not force and whisper_review_status(meeting_id)["status"] == "done":
         return whisper_review_status(meeting_id)
-    _append_status(meeting_id, "queued")
-    task = asyncio.create_task(_run_review(meeting_id, force), name=f"whisper-review-{meeting_id}")
+    _append_status(meeting_id, "queued", recording_override=allow_incomplete_recordings)
+    task = asyncio.create_task(
+        _run_review(meeting_id, force, allow_incomplete_recordings),
+        name=f"whisper-review-{meeting_id}",
+    )
     _tasks[meeting_id] = task
     task.add_done_callback(lambda _: _tasks.pop(meeting_id, None))
     return {"status": "queued", "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "error": ""}

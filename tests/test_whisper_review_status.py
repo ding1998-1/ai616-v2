@@ -71,3 +71,51 @@ def test_records_source_uses_newest_whisper_result():
         ]
     }
     assert _whisper_source_from_meeting(meeting)[0]["text"] == "最新终审"
+
+
+def test_recording_override_requires_audited_stage_event(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "_meeting_events",
+        lambda _meeting_id: [
+            {"type": "system", "recordingOverride": {"reason": "untrusted"}},
+            {"type": "stage", "stage": "meeting", "recordingOverride": {"reason": "wrong stage"}},
+            {"type": "stage", "stage": "audit", "recordingOverride": {"reason": "admin override"}},
+        ],
+    )
+    assert service.has_recording_override("meeting") is True
+
+
+def test_recording_override_is_false_for_normal_meeting(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "_meeting_events",
+        lambda _meeting_id: [{"type": "stage", "stage": "audit"}],
+    )
+    assert service.has_recording_override("meeting") is False
+
+
+def test_schedule_passes_recording_override_to_review_task(monkeypatch):
+    async def exercise():
+        received = {}
+
+        async def fake_run(meeting_id, force, allow_incomplete_recordings=False):
+            received.update(
+                meeting_id=meeting_id,
+                force=force,
+                allow_incomplete_recordings=allow_incomplete_recordings,
+            )
+
+        monkeypatch.setattr(service, "_run_review", fake_run)
+        monkeypatch.setattr(service, "_append_status", lambda *args, **kwargs: None)
+        monkeypatch.setattr(service, "whisper_review_status", lambda _meeting_id: {"status": "failed"})
+        service.schedule_whisper_review("meeting-force", True, allow_incomplete_recordings=True)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert received == {
+            "meeting_id": "meeting-force",
+            "force": True,
+            "allow_incomplete_recordings": True,
+        }
+
+    asyncio.run(exercise())

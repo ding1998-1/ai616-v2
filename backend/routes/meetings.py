@@ -91,7 +91,10 @@ async def update_stage_route(request: Request, meeting_id: str, body: MeetingSta
         from backend.services.whisper_review_service import schedule_whisper_review
 
         response["asrHotwords"] = learn_meeting_context(meeting_id)
-        response["whisperStatus"] = schedule_whisper_review(meeting_id)
+        response["whisperStatus"] = schedule_whisper_review(
+            meeting_id,
+            allow_incomplete_recordings=body.forceIncompleteRecordings,
+        )
     return response
 
 

@@ -17,7 +17,11 @@ from backend.services.meeting_review_service import (
     update_transcript_speaker,
 )
 from backend.services.outcome_service import generate_record_documents
-from backend.services.whisper_review_service import schedule_whisper_review, whisper_review_status
+from backend.services.whisper_review_service import (
+    has_recording_override,
+    schedule_whisper_review,
+    whisper_review_status,
+)
 
 
 router = APIRouter(prefix="/api", tags=["meeting-review"])
@@ -37,7 +41,15 @@ async def whisper_review(request: Request, meeting_id: str):
 @router.post("/meetings/{meeting_id}/whisper-review/run")
 async def run_whisper_review(request: Request, meeting_id: str, force: bool = False):
     _, safe_id, _ = require_meeting(request, meeting_id)
-    return {"success": True, "meetingId": safe_id, "whisperStatus": schedule_whisper_review(safe_id, force)}
+    return {
+        "success": True,
+        "meetingId": safe_id,
+        "whisperStatus": schedule_whisper_review(
+            safe_id,
+            force,
+            allow_incomplete_recordings=has_recording_override(safe_id),
+        ),
+    }
 
 
 @router.get("/meetings/{meeting_id}/documents/status")
