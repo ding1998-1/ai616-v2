@@ -234,6 +234,34 @@ def plausible_chinese_meeting_text(value: str) -> bool:
     return cjk_count > 0
 
 
+def plausible_realtime_preview(value: str) -> bool:
+    """Only expose Chinese meeting previews and known business abbreviations."""
+
+    text = str(value or "").strip()
+    if not plausible_chinese_meeting_text(text):
+        return False
+    latin_terms = {term.upper() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", text)}
+    return not latin_terms or latin_terms.issubset(_ALLOWED_LATIN_TERMS)
+
+
+def offline_review_context(
+    context: str,
+    online_text: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    min_context_duration_ms: int = 2500,
+) -> str:
+    """Avoid letting meeting identity hints dominate short or noisy audio."""
+
+    duration_ms = max(0, int(end_ms or 0) - int(start_ms or 0))
+    if duration_ms < max(1, int(min_context_duration_ms)):
+        return ""
+    if not plausible_realtime_preview(online_text):
+        return ""
+    return str(context or "")
+
+
 async def review_with_fallback(
     offline_call: Callable[[], Awaitable[Any]],
     online_text: str,

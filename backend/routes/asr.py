@@ -918,6 +918,8 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
     from backend.services.offline_asr_client import OfflineASRClient
     from backend.services.asr_2pass_service import (
         OrderedFinalBuffer,
+        offline_review_context,
+        plausible_realtime_preview,
         review_with_fallback,
     )
 
@@ -1024,16 +1026,23 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
         end_ms: int,
         forced_split: bool,
     ) -> None:
+        sentence_context = offline_review_context(
+            context,
+            online_text,
+            start_ms,
+            end_ms,
+        )
+
         async def offline_call():
             if not pcm:
                 raise ValueError("empty sentence audio")
             return await offline_client.transcribe(
                     pcm,
-                    context=context,
+                    context=sentence_context,
                     sentence_id=sentence_id,
                 )
         final_text, backend_name, corrected = await review_with_fallback(
-            offline_call, online_text, clean_text_2pass, context
+            offline_call, online_text, clean_text_2pass, sentence_context
         )
         payload = {
             "type": "final",
@@ -1141,7 +1150,11 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
                 current_pcm.extend(audio)
 
             preview = clean_text_2pass(result.get("preview_text", ""))
-            if preview and preview != last_preview:
+            if (
+                preview
+                and preview != last_preview
+                and plausible_realtime_preview(preview)
+            ):
                 last_preview = preview
                 await send(
                     {

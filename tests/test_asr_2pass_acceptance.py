@@ -8,8 +8,10 @@ from backend.services.asr_2pass_service import (
     ContinuationFinalBuffer,
     OrderedFinalBuffer,
     join_continuation_text,
+    offline_review_context,
     plausible_chinese_meeting_text,
     plausible_offline_review,
+    plausible_realtime_preview,
     recent_context_for_recording_session,
     review_with_fallback,
     semantic_merge_advice,
@@ -355,6 +357,25 @@ def test_foreign_language_and_repetition_hallucinations_are_rejected():
     assert plausible_chinese_meeting_text("项目预算需要重新调整。") is True
     assert plausible_chinese_meeting_text("AI 项目进入评审阶段。") is True
     assert plausible_chinese_meeting_text("ASR") is True
+
+
+def test_realtime_preview_filters_unexpected_english_but_keeps_business_terms():
+    assert plausible_realtime_preview("I.") is False
+    assert plausible_realtime_preview("But能会想傻傻笑。") is False
+    assert plausible_realtime_preview("It's clear.") is False
+    assert plausible_realtime_preview("AI 项目进入 PC 端测试。") is True
+    assert plausible_realtime_preview("会议预算需要重新调整。") is True
+
+
+def test_short_or_noisy_sentence_does_not_receive_identity_context():
+    context = "会议名称：周会；参会人及术语：丁志强"
+
+    assert offline_review_context(context, "嗯。", 780, 2220) == ""
+    assert offline_review_context(context, "It's clear.", 27_240, 30_360) == ""
+    assert (
+        offline_review_context(context, "请确认本月预算调整方案。", 1_000, 6_500)
+        == context
+    )
 
 
 def test_filler_noise_is_not_committed_when_both_passes_are_weak():
