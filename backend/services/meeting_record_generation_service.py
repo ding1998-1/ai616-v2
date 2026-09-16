@@ -1356,42 +1356,50 @@ def auto_resolve_formal_evidence(
     for item in invalid_minutes:
         exceptions.append({"field": "minutes", "reason": "unsupported_ai_claim", "item": deepcopy(dict(item))})
     removed += len(invalid_minutes)
+    pending_topic_candidates = [
+        {
+            "content": _as_text(item.get("agenda")),
+            "basis": deepcopy(item.get("basis") or {}),
+        }
+        for item in invalid_minutes
+        if _as_text(item.get("agenda"))
+    ]
+    pending_topic_candidates.extend(topic_candidates)
+    transcript_minutes = _transcript_topic_minutes(
+        pending_topic_candidates,
+        planned_agenda_titles=planned_agenda_titles,
+    )
+    for transcript_minute in transcript_minutes:
+        if any(
+            _text_similarity(transcript_minute.get("agenda"), existing.get("agenda")) >= 0.88
+            for existing in verified_minutes
+        ):
+            continue
+        verified_minutes.append(transcript_minute)
+        if len(verified_minutes) >= 8:
+            break
     if not verified_minutes:
-        pending_topic_candidates = [
-            {
-                "content": _as_text(item.get("agenda")),
-                "basis": deepcopy(item.get("basis") or {}),
-            }
-            for item in invalid_minutes
-            if _as_text(item.get("agenda"))
+        verified_outcomes = [
+            item
+            for field in ("decisions", "risks", "disclosures")
+            for item in records.get(field) or []
+            if _is_verified_formal_item(item, field)
         ]
-        pending_topic_candidates.extend(topic_candidates)
-        verified_minutes = _transcript_topic_minutes(
-            pending_topic_candidates,
-            planned_agenda_titles=planned_agenda_titles,
-        )
-        if not verified_minutes:
-            verified_outcomes = [
-                item
-                for field in ("decisions", "risks", "disclosures")
-                for item in records.get(field) or []
-                if _is_verified_formal_item(item, field)
+        if verified_outcomes:
+            points = [
+                _as_text(item.get("content"))
+                for item in verified_outcomes[:6]
+                if _as_text(item.get("content"))
             ]
-            if verified_outcomes:
-                points = [
-                    _as_text(item.get("content"))
-                    for item in verified_outcomes[:6]
-                    if _as_text(item.get("content"))
-                ]
-                verified_minutes = [{
-                    "agenda": "会议结论与安排",
-                    "status": "系统自动核验",
-                    "formalSummary": [f"会议形成如下结论：{point}" for point in points],
-                    "keyPoints": [],
-                    "basis": deepcopy(verified_outcomes[0].get("basis") or {}),
-                }]
-            else:
-                verified_minutes = _fallback_minutes_from_segments(segments)
+            verified_minutes = [{
+                "agenda": "会议结论与安排",
+                "status": "系统自动核验",
+                "formalSummary": [f"会议形成如下结论：{point}" for point in points],
+                "keyPoints": [],
+                "basis": deepcopy(verified_outcomes[0].get("basis") or {}),
+            }]
+        else:
+            verified_minutes = _fallback_minutes_from_segments(segments)
     records["minutes"] = verified_minutes
     records["evidenceExceptions"] = exceptions
     records["summary"] = _dump_model(SummarySections(

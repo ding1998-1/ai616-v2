@@ -182,6 +182,46 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records["minutes"][0]["status"], "根据录音识别·待复核")
         self.assertTrue(records["minutes"][0]["requiresHumanReview"])
 
+    def test_pending_transcript_topics_remain_visible_beside_verified_minutes(self):
+        verified_basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "职业选择与回台原因，毕业以后我选择回到台湾工作", "segmentId": "s1"}],
+        }
+        pending_basis = {
+            "evidenceValid": False,
+            "evidenceIssue": "semantic_mismatch",
+            "sourceSegmentIds": ["s2"],
+            "quotes": [{"text": "爸妈当时并不接受这件事", "segmentId": "s2"}],
+        }
+        records = {
+            "minutes": [
+                {
+                    "agenda": "职业选择与回台原因",
+                    "formalSummary": ["毕业以后我选择回到台湾工作"],
+                    "basis": verified_basis,
+                },
+                {
+                    "agenda": "家庭关系与父母态度",
+                    "formalSummary": ["需要复核的模型概括"],
+                    "basis": pending_basis,
+                },
+            ],
+            "decisions": [], "risks": [], "disclosures": [], "todos": [],
+        }
+
+        auto_resolve_formal_evidence(records, [], [
+            {"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "职业选择与回台原因，毕业以后我选择回到台湾工作"},
+            {"id": "s2", "fileId": "f1", "start": 2, "end": 4, "text": "爸妈当时并不接受这件事"},
+        ])
+
+        self.assertEqual(
+            [item["agenda"] for item in records["minutes"]],
+            ["职业选择与回台原因", "家庭关系与父母态度"],
+        )
+        self.assertIsNone(records["minutes"][0].get("topicSource"))
+        self.assertEqual(records["minutes"][1]["topicSource"], "transcript")
+
     def test_uncertain_statement_is_not_promoted_to_formal_decision(self):
         basis = {
             "evidenceValid": True,
