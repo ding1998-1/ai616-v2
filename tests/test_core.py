@@ -310,6 +310,14 @@ class TestDatabase:
         assert "agendaDrafts" in result
         assert "phase" in result
 
+    def test_normalize_legacy_review_phase(self):
+        """旧版纪要确认状态读取后仍停留在会后终审。"""
+        from backend.db import _normalize_meeting
+
+        result = _normalize_meeting({"id": "legacy-review", "phase": "纪要已确认"})
+        assert result["phase"] == "会后终审"
+        assert result["reviewDone"] is True
+
     def test_default_meetings(self):
         """_default_meetings 返回演示数据"""
         from backend.db import _default_meetings

@@ -125,6 +125,8 @@ def test_records_confirmation_enables_formal_documents(monkeypatch):
     assert records["proofreadStatus"] == "human-approved"
     assert records["proofreadBy"] == "主持人"
     assert records["humanReviewed"] is True
+    assert meetings["m1"]["phase"] == "会后终审"
+    assert meetings["m1"]["reviewDone"] is True
     assert saved_versions[-1][2] == {"humanReviewed": True, "formalOverride": {}}
     assert records["minutes"][0]["supportStatus"] == "human_supported"
     assert records["minutes"][0]["locked"] is True

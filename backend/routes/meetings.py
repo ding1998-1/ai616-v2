@@ -86,7 +86,7 @@ async def update_stage_route(request: Request, meeting_id: str, body: MeetingSta
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     response = {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
-    if body.stage == "audit" and previous_phase not in {"会后终审", "待归档", "待签署", "已归档"}:
+    if body.stage == "audit" and previous_phase not in {"会后终审", "纪要已确认", "待归档", "待签署", "已归档"}:
         from backend.services.asr_hotword_learning_service import learn_meeting_context
         from backend.services.whisper_review_service import schedule_whisper_review
 

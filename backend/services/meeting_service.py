@@ -114,7 +114,7 @@ def update_stage(
 
         # 声纹属于会后说话人校准能力，不是开会门槛。现场只要求身份与录音
         # 客户端绑定可靠；缺少声纹时仍允许开会、终审和进入签字流程。
-        if stage == "audit" and meeting.get("phase") in {"会后终审", "待归档", "待签署", "已归档"}:
+        if stage == "audit" and meeting.get("phase") in {"会后终审", "纪要已确认", "待归档", "待签署", "已归档"}:
             return meeting
         recording_override = []
         if stage in {"audit", "archive"}:

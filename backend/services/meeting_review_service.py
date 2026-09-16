@@ -72,6 +72,7 @@ def list_whisper_reviews(meeting_id: str, user: dict) -> dict:
                 "serverTime": event.get("serverTime", ""),
                 "sourceFiles": event.get("sourceFiles", 0),
                 "segmentCount": len(event.get("segments") or []),
+                "segments": list(event.get("segments") or []),
                 "status": event.get("status", "done"),
             }
         )

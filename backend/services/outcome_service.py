@@ -1228,7 +1228,10 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
             "basisGate": gate,
         })
         meeting["reviewDone"] = True
-        meeting["phase"] = "纪要已确认"
+        # Review completion is an outcome flag, not a workflow phase. Keeping
+        # the meeting in audit prevents clients from falling back to the live
+        # meeting workspace after confirmation.
+        meeting["phase"] = "会后终审"
         meeting["generatedRecords"] = records
         meeting["updatedAt"] = now
         meetings[safe_id] = meeting

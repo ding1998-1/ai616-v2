@@ -381,6 +381,7 @@ function inferMeetingMode(record) {
 }
 
 function normalizeMeetingRecord(record) {
+  const legacyReviewCompleted = record.phase === '纪要已确认';
   return {
     id: record.id,
     title: record.title || '未命名 AI 会议',
@@ -393,13 +394,13 @@ function normalizeMeetingRecord(record) {
     creator: record.creator || '当前用户',
     createdAt: record.createdAt || record.created_at || createLocalTimestamp(),
     updatedAt: record.updatedAt || record.updated_at || '',
-    phase: record.phase || '问题收集中',
+    phase: legacyReviewCompleted ? '会后终审' : (record.phase || '问题收集中'),
     statusColor: record.statusColor || 'default',
     issueCount: record.issueCount ?? record.issue_count ?? Math.max(record.type === '快速会议' ? 0 : 1, record.agendaDrafts?.length || record.issueSources?.length || 0),
     participantCount: record.participantCount || record.participant_count || record.participants?.length || 0,
     projectBound: Boolean(record.projectBound),
     agendaFrozen: Boolean(record.agendaFrozen),
-    reviewDone: Boolean(record.reviewDone),
+    reviewDone: legacyReviewCompleted || Boolean(record.reviewDone),
     archiveDone: Boolean(record.archiveDone),
   };
 }
@@ -800,6 +801,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [recordGenerationVersions, setRecordGenerationVersions] = useState([]);
   const recordGenerationStatusRef = useRef('idle');
   const [whisperStatus, setWhisperStatus] = useState('idle'); // idle | running | done | failed
+  const [whisperReviewResults, setWhisperReviewResults] = useState([]);
   const [speakerDiarization, setSpeakerDiarization] = useState({ enabled: false, status: 'idle', speakerCount: 0, error: '' });
   const [meetingMarkers, setMeetingMarkers] = useState([]);
   const [editingRecords, setEditingRecords] = useState(false);
@@ -2298,6 +2300,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         const results = data?.whisperReview || [];
         const backendStatus = data?.whisperStatus?.status || 'idle';
         if (!alive) return;
+        setWhisperReviewResults(results);
         if (results.length > 0) {
           const hasGood = results.some(r => (r.text || '').length > 50);
           if (hasGood && whisperStatus !== 'done') {
@@ -2523,6 +2526,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
     return remoteRows;
   }, [remoteTranscripts, isQuickMeeting]);
+
+  const latestWhisperReview = useMemo(
+    () => [...whisperReviewResults].sort((a, b) => String(b.serverTime || '').localeCompare(String(a.serverTime || '')))[0] || null,
+    [whisperReviewResults],
+  );
+
+  const whisperTranscriptRows = useMemo(() => {
+    return (latestWhisperReview?.segments || []).map((segment, index) => ({
+      id: segment.id || `whisper-${index}`,
+      time: formatDuration(Number(segment.start || 0)),
+      endTime: formatDuration(Number(segment.end || segment.start || 0)),
+      text: String(segment.text || '').trim(),
+      model: latestWhisperReview.model || 'Whisper-large-v3',
+      completedAt: latestWhisperReview.serverTime || '',
+    })).filter(item => item.text);
+  }, [latestWhisperReview]);
 
   const recordingPlaybackRows = useMemo(
     () => remoteEvents
@@ -5773,7 +5792,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           {/* 右侧侧边栏：转写与录音 */}
           <div className="audit-layout-side">
             <section style={{ ...panelStyle, padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
-              <Text strong style={{ color: palette.ink, fontSize: 16 }}><AudioOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />{recordUsesWhisper(meetingGeneratedRecords) ? 'Whisper 终审转写' : '转写与录音'}</Text>
+              <Text strong style={{ color: palette.ink, fontSize: 16 }}><AudioOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />{whisperStatus === 'done' || recordUsesWhisper(meetingGeneratedRecords) ? 'Whisper 终审原文' : '录音与会中实时字幕'}</Text>
+                {latestWhisperReview && <div style={{ marginTop: 4, color: palette.muted, fontSize: 11 }}>{latestWhisperReview.model || 'Whisper-large-v3'} · {latestWhisperReview.segmentCount || whisperTranscriptRows.length} 段 · {latestWhisperReview.serverTime || '已完成'}</div>}
                 {hasAudio && (
                   <div style={{ marginTop: 12 }}>
                     {recordingPlaybackRows.map(item => (
@@ -5783,17 +5803,21 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                     ))}
                   </div>
                 )}
-                {recordUsesWhisper(meetingGeneratedRecords) && (meetingGeneratedRecords?.chronicle || []).length > 0 ? (
+                {whisperTranscriptRows.length > 0 ? (
                   <div style={{ marginTop: 12, display: 'grid', gap: 4, maxHeight: hasAudio ? 400 : 600, overflow: 'auto' }}>
-                    {(meetingGeneratedRecords.chronicle).slice(0, 100).map((item, idx) => (
+                    {whisperTranscriptRows.map((item) => (
                       <div
-                        key={idx}
+                        key={item.id}
                         style={{ display: 'grid', gridTemplateColumns: '50px minmax(0, 1fr)', gap: 6, padding: '6px 8px', borderRadius: 6, background: palette.panelSoft, border: `1px solid ${palette.line}`, fontSize: 12 }}
                       >
-                        <span style={{ color: palette.muted }}>{item.time || ''}</span>
-                        <div><strong style={{ color: '#52c41a' }}>{item.speaker || 'Whisper'}</strong> <span style={{ color: palette.text }}>{item.content || ''}</span></div>
+                        <span style={{ color: palette.muted }}>{item.time}</span>
+                        <div><strong style={{ color: '#52c41a' }}>终审</strong> <span style={{ color: palette.text }}>{item.text}</span></div>
                       </div>
                     ))}
+                  </div>
+                ) : (whisperStatus === 'done' || recordUsesWhisper(meetingGeneratedRecords)) ? (
+                  <div style={{ marginTop: 12, padding: 14, borderRadius: 8, background: palette.panelSoft, border: `1px dashed ${palette.line}`, color: palette.muted, fontSize: 13, textAlign: 'center' }}>
+                    Whisper 终审已完成，正在载入原文分段…
                   </div>
                 ) : transcriptRows.length > 0 ? (
                   <div style={{ marginTop: 12, display: 'grid', gap: 4, maxHeight: hasAudio ? 400 : 600, overflow: 'auto' }}>
@@ -5978,7 +6002,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           {/* 右侧侧边栏：转写与录音 */}
         <div className="audit-layout-side">
           <section style={{ ...panelStyle, padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
-            <Text strong style={{ color: palette.ink, fontSize: 16 }}><AudioOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />{recordUsesWhisper(meetingGeneratedRecords) ? 'Whisper 终审转写' : '转写与录音'}</Text>
+            <Text strong style={{ color: palette.ink, fontSize: 16 }}><AudioOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />{whisperStatus === 'done' || recordUsesWhisper(meetingGeneratedRecords) ? 'Whisper 终审原文' : '录音与会中实时字幕'}</Text>
+              {latestWhisperReview && <div style={{ marginTop: 4, color: palette.muted, fontSize: 11 }}>{latestWhisperReview.model || 'Whisper-large-v3'} · {latestWhisperReview.segmentCount || whisperTranscriptRows.length} 段 · {latestWhisperReview.serverTime || '已完成'}</div>}
               {recordingPlaybackRows.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   {recordingPlaybackRows.map(item => (
@@ -5988,17 +6013,21 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   ))}
                 </div>
               )}
-              {recordUsesWhisper(meetingGeneratedRecords) && (meetingGeneratedRecords?.chronicle || []).length > 0 ? (
+              {whisperTranscriptRows.length > 0 ? (
                 <div style={{ marginTop: 12, display: 'grid', gap: 4, maxHeight: 400, overflow: 'auto' }}>
-                  {(meetingGeneratedRecords.chronicle).slice(0, 100).map((item, idx) => (
+                  {whisperTranscriptRows.map((item) => (
                     <div
-                      key={idx}
+                      key={item.id}
                       style={{ display: 'grid', gridTemplateColumns: '50px minmax(0, 1fr)', gap: 6, padding: '6px 8px', borderRadius: 6, background: palette.panelSoft, border: `1px solid ${palette.line}`, fontSize: 12 }}
                     >
-                      <span style={{ color: palette.muted }}>{item.time || ''}</span>
-                      <div><strong style={{ color: '#52c41a' }}>{item.speaker || 'Whisper'}</strong> <span style={{ color: palette.text }}>{item.content || ''}</span></div>
+                      <span style={{ color: palette.muted }}>{item.time}</span>
+                      <div><strong style={{ color: '#52c41a' }}>终审</strong> <span style={{ color: palette.text }}>{item.text}</span></div>
                     </div>
                   ))}
+                </div>
+              ) : (whisperStatus === 'done' || recordUsesWhisper(meetingGeneratedRecords)) ? (
+                <div style={{ marginTop: 12, padding: 14, borderRadius: 8, background: palette.panelSoft, border: `1px dashed ${palette.line}`, color: palette.muted, fontSize: 13, textAlign: 'center' }}>
+                  Whisper 终审已完成，正在载入原文分段…
                 </div>
               ) : liveTranscriptRows.length > 0 ? (
                 <div style={{ marginTop: 12, display: 'grid', gap: 4, maxHeight: 400, overflow: 'auto' }}>
@@ -6672,7 +6701,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   disabled={meetingRecordsLoading}
                   style={{ fontWeight: 600 }}
                 >
-                  {reviewDone ? '继续审核' : '确认本次纪要'}
+                  {reviewDone ? '查看已确认纪要' : '审核并确认纪要'}
                 </Button>
               )}
               <Button
@@ -6702,11 +6731,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         <Tabs items={[
           { key: 'overview', label: '会议概况', children: <Space orientation="vertical"><Text strong>{meetingTitle}</Text><Text>{meetingDate.replace('T', ' ')}</Text><Text>{meetingOrg}</Text><Paragraph>{meetingNotes || '暂无会中备注'}</Paragraph></Space> },
           { key: 'agendas', label: '议题与讨论', children: meetingAgendaItems.length ? meetingAgendaItems.map((item, index) => <section key={item.id || index} style={{ padding: 16, borderBottom: `1px solid ${palette.line}` }}><Text strong>{item.title || item.agenda || '未命名议题'}</Text><Paragraph style={{ whiteSpace: 'pre-wrap' }}>{item.content || item.description || item.summary || '暂无已保存的讨论说明，可在录音与字幕中查看发言。'}</Paragraph></section>) : <Empty description="暂无已保存议题" /> },
-          { key: 'transcripts', label: '录音与字幕', children: <>
+          { key: 'transcripts', label: '录音与会中实时字幕', children: <>
             <Input.Search aria-label="搜索已保存字幕" placeholder="搜索发言人或字幕内容" value={historyQuery} onChange={event => setHistoryQuery(event.target.value)} allowClear style={{ marginBottom: 16 }} />
             {recordingPlaybackRows.map(item => <section key={item.id} style={{ marginBottom: 12 }}><MeetingAudioPlayer playbackUrl={item.playbackUrl} /></section>)}
             {liveTranscriptRows.length ? liveTranscriptRows.filter(line => `${line.speaker || ''} ${line.text || ''}`.toLowerCase().includes(historyQuery.trim().toLowerCase())).map(line => <section key={line.id} style={{ padding: '12px 0', borderBottom: `1px solid ${palette.line}` }}><Space><Text type="secondary">{line.time}</Text><Text strong>{line.speaker || '会议室麦克风'}</Text></Space><Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{line.text}</Paragraph></section>) : <Empty description="暂无已保存字幕" />}
           </> },
+          ...(whisperTranscriptRows.length ? [{ key: 'whisper', label: 'Whisper 终审原文', children: whisperTranscriptRows.map(line => <section key={line.id} style={{ padding: '12px 0', borderBottom: `1px solid ${palette.line}` }}><Space><Text type="secondary">{line.time}–{line.endTime}</Text><Text strong>Whisper 终审</Text></Space><Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{line.text}</Paragraph></section>) }] : []),
           ...(isQuickMeeting ? [{ key: 'speakers', label: '发言人', children: <QuickMeetingSpeakers meetingId={currentMeetingId} state={speakerDiarization} audioRows={recordingPlaybackRows} readOnly onChange={setSpeakerDiarization} /> }] : []),
           ...(pendingMeetingRecords ? [{ key: 'pending', label: '新分析版本（待审核）', children: <><Tag color="orange">已确认纪要保持不变，以下为新分析结果</Tag>{recordSummaryLines(pendingMeetingRecords).map((line, index) => <Paragraph key={index}>{line}</Paragraph>)}{(pendingMeetingRecords.minutes || []).map((item, index) => <Paragraph key={index}>{item.formalSummary || item.content || item.agenda || '暂无正文'}</Paragraph>)}</> }] : []),
           { key: 'minutes', label: '纪要与归档材料', children: meetingGeneratedRecords?.generated ? <>
@@ -6737,7 +6767,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         open={recordReviewOpen}
         onCancel={() => setRecordReviewOpen(false)}
         footer={null}
-        width={recordReviewExpanded ? 'calc(100vw - 96px)' : 760}
+        width={recordReviewStep === 'complete' ? 640 : recordReviewExpanded ? 'calc(100vw - 32px)' : 'min(1180px, calc(100vw - 48px))'}
         centered
         destroyOnClose
         className="record-review-modal"
@@ -6808,7 +6838,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           ) : null;
         })() : (
           <div className="record-review-overview">
-            <Paragraph className="record-review-overview-intro">AI 已提炼本次会议内容，请核对后确认。系统将自动确认证据完整的内容，异常内容需要重点核验。</Paragraph>
+            <Paragraph className="record-review-overview-intro">{reviewDone ? '本次会议纪要已经人工确认。您可以查看确认内容，下一步进入归档。' : 'AI 已提炼本次会议内容，请核对后确认。系统将自动确认证据完整的内容，异常内容需要重点核验。'}</Paragraph>
             <div className="record-review-field-grid">
               {[
                 ['minutes', '会议纪要'], ['decisions', '议定事项'], ['risks', '风险事项'],
@@ -6856,23 +6886,29 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 查看 {recordReviewSummary.manualRequired} 项需要核验的内容
               </Button>
             )}
-            <Checkbox checked={recordReviewConsent} onChange={event => setRecordReviewConsent(event.target.checked)}>
-              我已核对本次会议内容，确认证据校验通过的内容可纳入正式会议材料。
-            </Checkbox>
+            {!reviewDone && (
+              <Checkbox checked={recordReviewConsent} onChange={event => setRecordReviewConsent(event.target.checked)}>
+                我已核对本次会议内容，确认证据校验通过的内容可纳入正式会议材料。
+              </Checkbox>
+            )}
             </div>
             <aside className="record-review-overview-side">
-              <div className="record-review-side-card is-green"><h4>可批量确认 {recordReviewSummary?.batchEligible || 0} 项</h4><p>证据校验通过，建议统一确认。</p><Button type="primary" onClick={completeMeetingReview}>预览并确认内容 →</Button></div>
-              <div className="record-review-side-card is-orange"><h4>需要重点核验 {recordReviewSummary?.manualRequired || 0} 项</h4><p>异常内容需要逐条判断。</p><Button onClick={() => setRecordReviewStep('exceptions')}>查看待核验内容</Button></div>
-              <div className="record-review-side-card"><h4>确认后将完成</h4><ol><li>纳入正式会议材料</li><li>记录人工确认日志</li><li>完成会议审核</li><li>进入归档流程</li></ol></div>
+              <div className="record-review-side-card is-green"><h4>{reviewDone ? `已人工确认 ${recordReviewSummary?.confirmed || 0} 项` : `可批量确认 ${recordReviewSummary?.batchEligible || 0} 项`}</h4><p>{reviewDone ? '确认结果已经写入会议审核记录。' : '证据校验通过后，可在底部统一确认。'}</p></div>
+              <div className="record-review-side-card is-orange"><h4>需要重点核验 {recordReviewSummary?.manualRequired || 0} 项</h4><p>{(recordReviewSummary?.manualRequired || 0) > 0 ? '异常内容需要逐条判断。' : '当前没有需要重点核验的内容。'}</p>{(recordReviewSummary?.manualRequired || 0) > 0 && <Button onClick={() => setRecordReviewStep('exceptions')}>查看待核验内容</Button>}</div>
+              <div className="record-review-side-card"><h4>{reviewDone ? '下一步' : '确认后将完成'}</h4><ol>{reviewDone ? <li>关闭窗口后点击“进入归档”</li> : <><li>纳入正式会议材料</li><li>记录人工确认日志</li><li>完成会议审核</li><li>进入归档流程</li></>}</ol></div>
             </aside>
             </div>
             <div className="record-review-footer">
-              <Button onClick={() => setRecordReviewOpen(false)}>取消</Button>
-              <Button type="primary" disabled={!recordReviewConsent} loading={recordReviewSubmitting} onClick={completeMeetingReview}>
-                {(recordReviewSummary?.manualRequired || 0) > 0
-                  ? `确认 ${recordReviewSummary?.batchEligible || 0} 项并处理异常`
-                  : `确认 ${recordReviewSummary?.batchEligible || 0} 项可采用内容`}
-              </Button>
+              <Button onClick={() => setRecordReviewOpen(false)}>{reviewDone ? '关闭' : '取消'}</Button>
+              {!reviewDone && (
+                <Button type="primary" disabled={!recordReviewConsent} loading={recordReviewSubmitting} onClick={completeMeetingReview}>
+                  {(recordReviewSummary?.manualRequired || 0) > 0
+                    ? `确认 ${recordReviewSummary?.batchEligible || 0} 项并处理异常`
+                    : (recordReviewSummary?.batchEligible || 0) > 0
+                      ? `确认 ${recordReviewSummary.batchEligible} 项可采用内容`
+                      : '完成纪要确认'}
+                </Button>
+              )}
             </div>
           </div>
         )}

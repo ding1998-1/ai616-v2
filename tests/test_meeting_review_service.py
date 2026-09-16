@@ -51,6 +51,7 @@ def test_list_whisper_reviews_preserves_legacy_fields(monkeypatch):
     assert result["meetingId"] == "m1"
     assert result["whisperReview"][0]["id"] == "w1"
     assert result["whisperReview"][0]["segmentCount"] == 1
+    assert result["whisperReview"][0]["segments"] == [{"id": "s1"}]
     assert result["whisperDocx"]["status"] == "generating"
 
 

@@ -1677,6 +1677,12 @@ def _normalize_meeting(meeting: dict) -> dict:
     Returns:
         规范化后的会议字典
     """
+    # Compatibility for records written before review completion was separated
+    # from the workflow phase. Do not expose the legacy pseudo-phase to clients.
+    if meeting.get("phase") == "纪要已确认":
+        meeting = dict(meeting)
+        meeting["phase"] = "会后终审"
+        meeting["reviewDone"] = True
     issue_sources = meeting.get("issueSources") if isinstance(meeting.get("issueSources"), list) else []
     agenda_drafts = meeting.get("agendaDrafts") if isinstance(meeting.get("agendaDrafts"), list) else []
     phase = meeting.get("phase") or "问题收集中"
