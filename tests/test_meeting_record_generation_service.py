@@ -222,6 +222,43 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(records["minutes"][0].get("topicSource"))
         self.assertEqual(records["minutes"][1]["topicSource"], "transcript")
 
+    def test_generic_process_minute_does_not_displace_real_transcript_topic(self):
+        real_basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s1"],
+            "quotes": [{"text": "名校效用与就业人脉是这段讨论的主题", "segmentId": "s1"}],
+        }
+        generic_basis = {
+            "evidenceValid": True,
+            "sourceSegmentIds": ["s2"],
+            "quotes": [{"text": "这是一段会议过程记录", "segmentId": "s2"}],
+        }
+        pending_basis = {
+            "evidenceValid": False,
+            "evidenceIssue": "semantic_mismatch",
+            "sourceSegmentIds": ["s3"],
+            "quotes": [{"text": "小孩会嫌弃妈妈做的菜不够好吃", "segmentId": "s3"}],
+        }
+        records = {
+            "minutes": [
+                {"agenda": "名校效用与就业人脉", "formalSummary": ["名校效用与就业人脉是这段讨论的主题"], "basis": real_basis},
+                {"agenda": "会议过程记录 1", "formalSummary": ["这是一段会议过程记录"], "basis": generic_basis},
+                {"agenda": "育儿互动与家庭关系", "formalSummary": ["需要复核"], "basis": pending_basis},
+            ],
+            "decisions": [], "risks": [], "disclosures": [], "todos": [],
+        }
+
+        auto_resolve_formal_evidence(records, [], [
+            {"id": "s1", "fileId": "f1", "start": 0, "end": 2, "text": "名校效用与就业人脉是这段讨论的主题"},
+            {"id": "s2", "fileId": "f1", "start": 2, "end": 4, "text": "这是一段会议过程记录"},
+            {"id": "s3", "fileId": "f1", "start": 4, "end": 6, "text": "小孩会嫌弃妈妈做的菜不够好吃"},
+        ])
+
+        self.assertEqual(
+            [item["agenda"] for item in records["minutes"]],
+            ["名校效用与就业人脉", "育儿互动与家庭关系"],
+        )
+
     def test_uncertain_statement_is_not_promoted_to_formal_decision(self):
         basis = {
             "evidenceValid": True,

@@ -1260,6 +1260,10 @@ def _match_planned_agenda(topic: Any, planned_agenda_titles: Sequence[Any]) -> s
     return planned if score >= 0.56 else ""
 
 
+def _is_generic_process_agenda(value: Any) -> bool:
+    return bool(re.fullmatch(r"会议过程记录\s*\d+", _normalise_spaces(value)))
+
+
 def _transcript_topic_minutes(
     topic_candidates: Sequence[Mapping[str, Any]],
     *,
@@ -1365,6 +1369,14 @@ def auto_resolve_formal_evidence(
         if _as_text(item.get("agenda"))
     ]
     pending_topic_candidates.extend(topic_candidates)
+    if pending_topic_candidates and any(
+        not _is_generic_process_agenda(item.get("agenda"))
+        for item in verified_minutes
+    ):
+        verified_minutes = [
+            item for item in verified_minutes
+            if not _is_generic_process_agenda(item.get("agenda"))
+        ]
     transcript_minutes = _transcript_topic_minutes(
         pending_topic_candidates,
         planned_agenda_titles=planned_agenda_titles,
