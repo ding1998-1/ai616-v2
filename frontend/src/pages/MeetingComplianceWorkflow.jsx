@@ -405,6 +405,13 @@ function normalizeMeetingRecord(record) {
   };
 }
 
+function formatTranscriptDuration(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.floor(seconds % 60);
+  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+}
+
 function deriveBasisGate(records) {
   if (records?.basisGate && typeof records.basisGate === 'object') return records.basisGate;
   const fields = ['minutes', 'decisions', 'risks', 'disclosures', 'todos'];
@@ -2535,8 +2542,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const whisperTranscriptRows = useMemo(() => {
     return (latestWhisperReview?.segments || []).map((segment, index) => ({
       id: segment.id || `whisper-${index}`,
-      time: formatDuration(Number(segment.start || 0)),
-      endTime: formatDuration(Number(segment.end || segment.start || 0)),
+      time: formatTranscriptDuration(segment.start),
+      endTime: formatTranscriptDuration(segment.end ?? segment.start),
       text: String(segment.text || '').trim(),
       model: latestWhisperReview.model || 'Whisper-large-v3',
       completedAt: latestWhisperReview.serverTime || '',
