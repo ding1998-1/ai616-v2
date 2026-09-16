@@ -3096,7 +3096,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     });
   });
 
-  const persistStage = async (nextStage, phase, suppliedOverrideReason = '') => {
+  const persistStage = async (nextStage, phase, suppliedOverrideReason = '', forceIncompleteRecordings = false) => {
     let overrideReason = suppliedOverrideReason;
     if (nextStage === 'archive' && !recordsBasisGate.ready && !overrideReason) {
       overrideReason = await requestEvidenceOverrideReason('进入归档');
@@ -3105,12 +3105,41 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     try {
       const data = await authFetchJson(`/api/meetings/${currentMeetingId}/stage`, {
         method: 'POST',
-        body: JSON.stringify({ stage: nextStage, phase, overrideReason }),
+        body: JSON.stringify({ stage: nextStage, phase, overrideReason, forceIncompleteRecordings }),
       });
       hydrateMeetingDetail(data.meeting);
       await loadMeetings();
       return true;
     } catch (error) {
+      const incompleteRecording = nextStage === 'audit'
+        && !forceIncompleteRecordings
+        && error.message.includes('手机录音尚未保存完成');
+      if (incompleteRecording && currentUser?.role === 'admin') {
+        return new Promise(resolve => {
+          Modal.confirm({
+            title: '仍有手机录音未完成保存',
+            width: 540,
+            okText: '核验后强制结束',
+            cancelText: '返回等待手机保存',
+            okButtonProps: { danger: true },
+            content: (
+              <div style={{ display: 'grid', gap: 12, lineHeight: 1.7 }}>
+                <div>{error.message}</div>
+                <div style={{ padding: 12, borderRadius: 10, background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412' }}>
+                  强制结束会保留已成功保存的录音和全部残留分片，但未完成的那一段可能无法直接播放。操作原因会写入会议审计记录。
+                </div>
+              </div>
+            ),
+            onOk: async () => resolve(await persistStage(
+              nextStage,
+              phase,
+              '管理员已核对已保存录音，同意保留残留分片并强制结束会议',
+              true,
+            )),
+            onCancel: () => resolve(false),
+          });
+        });
+      }
       message.warning(`阶段状态未写入后端：${error.message}`);
       return false;
     }

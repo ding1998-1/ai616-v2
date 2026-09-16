@@ -30,10 +30,10 @@ def recording_dir(meeting_id: str) -> Path:
     return path
 
 
-def require_completed_recordings(meeting_id: str) -> None:
-    """Do not start formal processing with an unfinished recording session."""
+def pending_recording_sessions(meeting_id: str) -> list[dict]:
+    """Return unfinished recording manifests without mutating evidence files."""
     directory = MEETING_FILES_DIR / "recordings" / meeting_id
-    pending = 0
+    pending: list[dict] = []
     for path in directory.glob("recording_*.manifest.json"):
         try:
             manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -43,11 +43,30 @@ def require_completed_recordings(meeting_id: str) -> None:
             continue
         output = str(manifest.get("outputFile") or "")
         if not manifest.get("finalized") or not output or not (directory / output).is_file():
-            pending += 1
+            chunks = manifest.get("chunks") or {}
+            pending.append({
+                "sessionId": str(manifest.get("sessionId") or path.stem.replace("recording_", "")),
+                "clientId": str(manifest.get("clientId") or "unknown"),
+                "userId": str(manifest.get("userId") or "unknown"),
+                "receivedChunks": len(chunks),
+                "manifest": path.name,
+            })
+    return pending
+
+
+def require_completed_recordings(meeting_id: str, allow_incomplete: bool = False) -> list[dict]:
+    """Do not start formal processing with an unfinished recording session."""
+    pending = pending_recording_sessions(meeting_id)
     if pending:
+        if allow_incomplete:
+            return pending
+        first = pending[0]
         raise ValueError(
-            f"还有 {pending} 段手机录音尚未保存完成。请在对应手机点击结束录音或重试保存，完成后再结束会议。"
+            f"还有 {len(pending)} 段手机录音尚未保存完成"
+            f"（设备 {first['clientId']}，已收到 {first['receivedChunks']} 个分片）。"
+            "请在对应手机点击结束录音或重试保存；管理员也可核验后强制结束。"
         )
+    return []
 
 
 def recording_completion_lock(meeting_id: str, session_id: str) -> asyncio.Lock:

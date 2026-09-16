@@ -101,6 +101,7 @@ def update_stage(
     phase: str,
     user: dict,
     override_reason: str = "",
+    force_incomplete_recordings: bool = False,
 ) -> dict:
     safe_id = _safe_meeting_id(meeting_id)
     stage = stage if stage in PHASE_BY_STAGE else "collect"
@@ -115,10 +116,22 @@ def update_stage(
         # 客户端绑定可靠；缺少声纹时仍允许开会、终审和进入签字流程。
         if stage == "audit" and meeting.get("phase") in {"会后终审", "待归档", "待签署", "已归档"}:
             return meeting
+        recording_override = []
         if stage in {"audit", "archive"}:
             from backend.services.recording_service import require_completed_recordings
 
-            require_completed_recordings(safe_id)
+            if force_incomplete_recordings:
+                if stage != "audit":
+                    raise PermissionError("强制结束仅用于进入会后整理，不能绕过正式归档检查")
+                if user.get("role") != "admin":
+                    raise PermissionError("仅系统管理员可强制结束未完成录音的会议")
+                if len((override_reason or "").strip()) < 8:
+                    raise ValueError("强制结束原因至少填写 8 个字")
+            recording_override = (
+                require_completed_recordings(safe_id, allow_incomplete=True)
+                if force_incomplete_recordings
+                else require_completed_recordings(safe_id)
+            )
         if stage == "archive":
             from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
             from backend.services.outcome_service import authorize_basis_override
@@ -143,6 +156,13 @@ def update_stage(
             meeting["reviewDone"] = True
             meeting["archiveDone"] = True
         event = {"id": f"stage_{datetime.now().strftime('%Y%m%d%H%M%S%f')}", "type": "stage", "stage": stage, "phase": meeting["phase"], "serverTime": _now_text()}
+        if recording_override:
+            event["recordingOverride"] = {
+                "reason": override_reason.strip(),
+                "operator": user.get("username") or user.get("name") or user.get("id") or "admin",
+                "pendingCount": len(recording_override),
+                "sessions": recording_override,
+            }
         meeting.setdefault("events", []).append(event)
         meeting["events"] = meeting["events"][-200:]
         meeting["updatedAt"] = event["serverTime"]

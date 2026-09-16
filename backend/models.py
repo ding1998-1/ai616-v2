@@ -174,6 +174,7 @@ class MeetingStageRequest(BaseModel):
     stage: str
     phase: str = ""
     overrideReason: str = ""
+    forceIncompleteRecordings: bool = False
 
 
 class FormalActionRequest(BaseModel):

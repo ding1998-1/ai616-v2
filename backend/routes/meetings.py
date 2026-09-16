@@ -69,7 +69,14 @@ async def update_stage_route(request: Request, meeting_id: str, body: MeetingSta
     user, _, previous = require_meeting(request, meeting_id)
     previous_phase = previous.get("phase")
     try:
-        meeting = update_stage(meeting_id, body.stage, body.phase, user, body.overrideReason)
+        meeting = update_stage(
+            meeting_id,
+            body.stage,
+            body.phase,
+            user,
+            body.overrideReason,
+            body.forceIncompleteRecordings,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except VoiceprintPreflightError as exc:
