@@ -6536,3 +6536,13 @@
 .meeting-quick-capture-copy { flex: 1 1 240px; min-width: 0; display: grid; gap: 5px; }
 .meeting-quick-capture-copy strong { color: #172b4d; font-size: 15px; }
 .meeting-quick-capture-copy span { color: #697b93; font-size: 12px; line-height: 1.6; }
+
+/* Shared SVG geometry keeps document categories crisp across screen scales. */
+.minutes-template-icon svg {
+  display: block;
+  flex-shrink: 0;
+}
+.minutes-template-option:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+}

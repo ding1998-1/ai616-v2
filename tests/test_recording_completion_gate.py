@@ -93,3 +93,41 @@ def test_rejected_stage_transition_does_not_advance_meeting(monkeypatch):
     with pytest.raises(ValueError, match='incomplete'):
         meeting_service.update_stage('meeting', 'audit', '会后终审', {'role': 'admin'})
     assert meeting['phase'] == '会中记录'
+
+
+@pytest.mark.parametrize('signed', [False, True])
+def test_reviewed_meeting_can_open_archive_workspace_with_pending_audio(tmp_path, monkeypatch, signed):
+    from backend.services import meeting_service, signature_service
+
+    monkeypatch.setattr(recording_service, 'MEETING_FILES_DIR', tmp_path)
+    directory = tmp_path / 'recordings' / 'meeting'
+    directory.mkdir(parents=True)
+    manifest = directory / 'recording_session.manifest.json'
+    original = json.dumps({'chunks': {str(i): {} for i in range(8)}, 'finalized': False})
+    manifest.write_text(original)
+    meeting = {'id': 'meeting', 'phase': '会后终审', 'reviewDone': True}
+    monkeypatch.setattr(meeting_service, '_load_meetings', lambda: {'meeting': meeting})
+    monkeypatch.setattr(meeting_service, '_save_meetings', lambda _: None)
+    monkeypatch.setattr(meeting_service, '_check_meeting_access', lambda *_: None)
+    monkeypatch.setattr(signature_service, 'is_fully_signed', lambda _: signed)
+
+    result = meeting_service.update_stage('meeting', 'archive', '待归档', {'role': 'admin'})
+    assert result['phase'] == '待归档'
+    assert result['archiveDone'] is False
+    assert manifest.read_text() == original
+
+    with pytest.raises(ValueError, match='尚未保存完成'):
+        meeting_service.update_stage('meeting', 'archive', '已归档', {'role': 'admin'})
+    assert meeting['phase'] == '待归档'
+    assert meeting['archiveDone'] is False
+
+
+def test_archive_workspace_requires_review_confirmation(monkeypatch):
+    from backend.services import meeting_service
+
+    meeting = {'id': 'meeting', 'phase': '会后终审', 'reviewDone': False}
+    monkeypatch.setattr(meeting_service, '_load_meetings', lambda: {'meeting': meeting})
+    monkeypatch.setattr(meeting_service, '_check_meeting_access', lambda *_: None)
+    with pytest.raises(ValueError, match='请先确认纪要'):
+        meeting_service.update_stage('meeting', 'archive', '待归档', {'role': 'admin'})
+    assert meeting['phase'] == '会后终审'

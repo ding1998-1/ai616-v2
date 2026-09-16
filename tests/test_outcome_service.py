@@ -341,7 +341,7 @@ def test_archive_stage_is_blocked_before_signature_check_when_basis_is_invalid(m
     monkeypatch.setattr(signature_service, "is_fully_signed", lambda meeting_id: True)
 
     try:
-        meeting_service.update_stage("m1", "archive", "待归档", {"name": "主持人"})
+        meeting_service.update_stage("m1", "archive", "已归档", {"name": "主持人"})
     except ValueError as exc:
         assert "无法进入归档" in str(exc)
         assert "会议记录1条" in str(exc)
@@ -365,7 +365,7 @@ def test_archive_override_is_audited_but_does_not_bypass_signatures(monkeypatch)
         meeting_service.update_stage(
             "m1",
             "archive",
-            "待归档",
+            "已归档",
             {"name": "主持人"},
             "已经核对录音原文并确认归档",
         )

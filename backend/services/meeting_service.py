@@ -105,6 +105,8 @@ def update_stage(
 ) -> dict:
     safe_id = _safe_meeting_id(meeting_id)
     stage = stage if stage in PHASE_BY_STAGE else "collect"
+    entering_archive_workspace = stage == "archive" and phase == "待归档"
+    completing_archive = stage == "archive" and not entering_archive_workspace
     with MEETINGS_LOCK:
         meetings = _load_meetings()
         meeting = meetings.get(safe_id)
@@ -117,7 +119,14 @@ def update_stage(
         if stage == "audit" and meeting.get("phase") in {"会后终审", "纪要已确认", "待归档", "待签署", "已归档"}:
             return meeting
         recording_override = []
-        if stage in {"audit", "archive"}:
+        if entering_archive_workspace:
+            if force_incomplete_recordings:
+                raise PermissionError("强制结束仅用于进入会后整理")
+            if meeting.get("phase") == "已归档":
+                return meeting
+            if not meeting.get("reviewDone"):
+                raise ValueError("请先确认纪要内容，再进入归档")
+        if stage == "audit" or completing_archive:
             from backend.services.recording_service import require_completed_recordings
 
             if force_incomplete_recordings:
@@ -132,7 +141,7 @@ def update_stage(
                 if force_incomplete_recordings
                 else require_completed_recordings(safe_id)
             )
-        if stage == "archive":
+        if completing_archive:
             from backend.services.signature_service import is_fully_signed, required_signer_count, signed_signer_count
             from backend.services.outcome_service import authorize_basis_override
 
@@ -154,7 +163,7 @@ def update_stage(
             meeting["agendaFrozen"] = True
         if stage == "archive":
             meeting["reviewDone"] = True
-            meeting["archiveDone"] = True
+            meeting["archiveDone"] = completing_archive
         event = {"id": f"stage_{datetime.now().strftime('%Y%m%d%H%M%S%f')}", "type": "stage", "stage": stage, "phase": meeting["phase"], "serverTime": _now_text()}
         if recording_override:
             event["recordingOverride"] = {

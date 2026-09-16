@@ -1,3 +1,4 @@
+import MinutesTemplateIcon from '../components/MinutesTemplateIcon.jsx';
 import { createDesktopAsr } from '../lib/desktopAsr.mjs';
 import { recordingRequest, withDeadline } from '../lib/recordingRequest.mjs';
 import { desktopDurationSeconds, desktopSpeakerIdentity, desktopTranscriptLabel } from '../lib/desktopRecording.mjs';
@@ -60,15 +61,15 @@ const CREATE_MEETING_TYPES = [
 ];
 
 const MINUTES_TEMPLATES = [
-  { id: 'standard', name: '普通企业会议纪要', category: '通用', desc: '标准行政会议记录格式，适用于多数企业会议场景', icon: '▤', tone: 'blue' },
-  { id: 'enterprise', name: '政企红头会议纪要', category: '政企', desc: '红头公文版式，包含发文信息、纪要正文和公文尾记', icon: '文', tone: 'red' },
-  { id: 'major', name: '三重一大会议纪要', category: '经营管理', desc: '包含决策事项、表决结果、责任部门等要素', icon: '▥', tone: 'orange' },
-  { id: 'party', name: '党委会会议纪要', category: '党建会议', desc: '党委会议正式格式，突出党委决议内容', icon: '★', tone: 'red' },
-  { id: 'board', name: '董事会会议纪要', category: '经营管理', desc: '董事会决议、表决情况、董事意见等内容', icon: '♙', tone: 'purple' },
-  { id: 'project', name: '项目推进会议纪要', category: '工程项目', desc: '包含事项、负责人、计划完成时间等内容', icon: '▧', tone: 'blue' },
-  { id: 'engineering', name: '工程项目会议纪要', category: '工程项目', desc: '工程进度、问题、整改事项等工程会议专用', icon: '▧', tone: 'cyan' },
-  { id: 'audit', name: '审计会议纪要', category: '审计会议', desc: '问题、依据、整改情况等审计类会议专用', icon: '▤', tone: 'green' },
-  { id: 'concise', name: '简洁会议纪要', category: '通用', desc: '极简版会议纪要，只保留核心内容要点', icon: '▱', tone: 'gray' },
+  { id: 'standard', name: '普通企业会议纪要', category: '通用', desc: '标准行政会议记录格式，适用于多数企业会议场景', tone: 'blue' },
+  { id: 'enterprise', name: '政企红头会议纪要', category: '政企', desc: '红头公文版式，包含发文信息、纪要正文和公文尾记', tone: 'red' },
+  { id: 'major', name: '三重一大会议纪要', category: '经营管理', desc: '包含决策事项、表决结果、责任部门等要素', tone: 'orange' },
+  { id: 'party', name: '党委会会议纪要', category: '党建会议', desc: '党委会议正式格式，突出党委决议内容', tone: 'red' },
+  { id: 'board', name: '董事会会议纪要', category: '经营管理', desc: '董事会决议、表决情况、董事意见等内容', tone: 'purple' },
+  { id: 'project', name: '项目推进会议纪要', category: '工程项目', desc: '包含事项、负责人、计划完成时间等内容', tone: 'blue' },
+  { id: 'engineering', name: '工程项目会议纪要', category: '工程项目', desc: '工程进度、问题、整改事项等工程会议专用', tone: 'cyan' },
+  { id: 'audit', name: '审计会议纪要', category: '审计会议', desc: '问题、依据、整改情况等审计类会议专用', tone: 'green' },
+  { id: 'concise', name: '简洁会议纪要', category: '通用', desc: '极简版会议纪要，只保留核心内容要点', tone: 'gray' },
 ];
 
 const MINUTES_TEMPLATE_CATEGORIES = ['全部', '通用', '政企', '经营管理', '党建会议', '工程项目', '审计会议'];
@@ -795,6 +796,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [speakerReviewOpen, setSpeakerReviewOpen] = useState(false);
   const [endingMeeting, setEndingMeeting] = useState(false);
   const endingMeetingRef = useRef(false);
+  const stageActionRef = useRef(false);
+  const [stageActionPending, setStageActionPending] = useState(false);
+  const creatingMeetingRef = useRef(false);
+  const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [recordReviewSummary, setRecordReviewSummary] = useState(null);
   const [recordReviewStep, setRecordReviewStep] = useState('overview');
   const [recordReviewConsent, setRecordReviewConsent] = useState(false);
@@ -804,6 +809,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [recordReviewExpanded, setRecordReviewExpanded] = useState(false);
   const [reviewingRecordId, setReviewingRecordId] = useState('');
   const [meetingRecordsLoading, setMeetingRecordsLoading] = useState(false);
+  const [recordSnapshotState, setRecordSnapshotState] = useState({ meetingId: '', status: 'idle' });
+  const snapshotRequestRef = useRef(0);
+  const activeMeetingIdRef = useRef(currentMeetingId);
+  activeMeetingIdRef.current = currentMeetingId;
+  const postMeetingSnapshotReady = recordSnapshotState.meetingId === currentMeetingId && recordSnapshotState.status === 'ready';
   const [recordGenerationStatus, setRecordGenerationStatus] = useState({ status: 'idle' });
   const [recordGenerationVersions, setRecordGenerationVersions] = useState([]);
   const recordGenerationStatusRef = useRef('idle');
@@ -1271,6 +1281,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     const hasContent = !meetingCreated && (
       chatInput.trim() !== ''
       || chatMessages.length > 0
+      || manualAgendaItems.length > 0
+      || newAgendaInput.trim() !== ''
       || agendaTitle.trim() !== ''
       || projectName.trim() !== ''
       || hasCustomTitle
@@ -1286,6 +1298,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const saveDraftAndExit = async () => {
+    if (savingDraft) return;
     setSavingDraft(true);
     try {
       const draftId = currentMeetingId || createLocalMeetingId();
@@ -1299,18 +1312,23 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         type: meetingOrg || '普通企业会议',
         meetingMode,
         phase: '问题收集中',
-        issueSources: chatMessages,
-        agendaDrafts: agendaGenerated ? activeIssueCards : [],
+        issueSources: chatInput.trim() ? [...chatMessages, {
+          id: `draft-text-${Date.now()}`, name: currentUserName, type: 'text', content: chatInput.trim(), source: 'manual',
+        }] : chatMessages,
+        agendaDrafts: [
+          ...selectedIssueCards, ...manualAgendaItems,
+          ...(newAgendaInput.trim() ? [{ id: `draft-agenda-${Date.now()}`, title: newAgendaInput.trim(), source: 'manual' }] : []),
+        ],
       };
       await authFetchJson('/api/meetings', { method: 'POST', body: JSON.stringify(payload) });
       await loadMeetings();
       message.success('草稿已保存，可从会议列表继续编辑。');
+      setShowExitConfirm(false);
+      setTimeout(() => setMeetingWorkspaceOpen(false), 0);
     } catch (err) {
       message.warning(`草稿保存失败：${err.message}。内容已保留在页面上。`);
     } finally {
       setSavingDraft(false);
-      setShowExitConfirm(false);
-      setTimeout(() => setMeetingWorkspaceOpen(false), 0);
     }
   };
 
@@ -1796,8 +1814,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       ? meeting.agendaDrafts
       : normalized.type === '快速会议' ? [] : derivedDrafts;
     setAgendaDrafts(nextAgendaDrafts);
+    setManualAgendaItems(previous => previous.filter(item => !nextAgendaDrafts.some(saved => saved.id === item.id)));
     const sourceChanged = nextIssueSources.length !== chatMessages.length;
-    const draftReady = !['问题收集中', '待创建会议'].includes(normalized.phase) || (agendaGenerated && !sourceChanged);
+    const draftReady = !['问题收集中', '待创建会议'].includes(normalized.phase)
+      || Boolean(meeting.agendaDrafts?.length) || (agendaGenerated && !sourceChanged);
     setAgendaGenerated(prev => draftReady || prev);
     const nextSelectedIds = draftReady ? nextAgendaDrafts.map(item => item.id).filter(Boolean) : [];
     setSelectedIssueIds(nextSelectedIds);
@@ -2187,20 +2207,28 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     };
   }, [currentMeetingId, meetingWorkspaceOpen]);
 
-  const loadGeneratedMeetingRecords = async (force = false) => {
+  const loadGeneratedMeetingRecords = async () => {
     if (!currentMeetingId) return null;
+    const meetingId = currentMeetingId;
+    const requestId = ++snapshotRequestRef.current;
+    const isCurrent = () => requestId === snapshotRequestRef.current && meetingId === activeMeetingIdRef.current;
     setMeetingRecordsLoading(true);
     try {
       const url = `/api/meetings/${currentMeetingId}/records/snapshot`;
       const data = await authFetchJson(url);
+      if (!isCurrent()) return null;
+      setRecordSnapshotState({ meetingId, status: 'ready' });
       setMeetingGeneratedRecords(data.records || null);
       setPendingMeetingRecords(data.pendingRecords || null);
       return data.records || null;
     } catch (err) {
-      message.error(`会议记录生成失败：${err.message}`);
+      if (isCurrent()) {
+        setRecordSnapshotState({ meetingId, status: 'error', message: err.message });
+        message.error(`会议内容加载失败：${err.message}`);
+      }
       return null;
     } finally {
-      setMeetingRecordsLoading(false);
+      if (isCurrent()) setMeetingRecordsLoading(false);
     }
   };
 
@@ -2892,6 +2920,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const createMeeting = async () => {
+    if (creatingMeetingRef.current) return;
     if (!meetingDate) {
       message.warning('请选择会议日期');
       return;
@@ -2915,6 +2944,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     const resolvedMeetingSubject = projectName.trim() || allAgendaItems[0]?.title || meetingAgendaTitle || '本次会议';
     // 新建会议始终生成新 ID，不复用 URL 带入的旧 meetingId
     const recordId = createLocalMeetingId();
+    creatingMeetingRef.current = true;
+    setCreatingMeeting(true);
     try {
       const data = await authFetchJson('/api/meetings', {
         method: 'POST',
@@ -2945,31 +2976,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       await loadMeetings();
       message.success(isQuickMeeting ? '快速会议已创建，点击电脑录音即可开始' : '会议批次已创建并保存，进入会前议题确认');
     } catch (error) {
-      if (isQuickMeeting) { message.error(`快速会议创建失败：${error.message}`); return; }
-      setCurrentMeetingId(recordId);
-      setMeetingCreated(true);
-      setActiveStage('meeting');
-      setMeetingRecords(prev => {
-        const nextRecord = {
-          id: recordId,
-          title: meetingTitle,
-          project: resolvedMeetingSubject,
-          projectCode,
-          agenda: meetingAgendaTitle,
-          date: meetingDate,
-          type: meetingOrg,
-          meetingNo,
-          meetingMode,
-          creator: currentUserLabel,
-          createdAt: createLocalTimestamp(),
-          phase: '会前确认',
-          statusColor: 'green',
-          issueCount: allAgendaItems.length,
-        };
-        const exists = prev.some(item => item.id === recordId);
-        return exists ? prev.map(item => (item.id === recordId ? nextRecord : item)) : [nextRecord, ...prev];
-      });
-      message.warning(`会议已临时创建，但未保存到后端：${error.message}`);
+      message.error(`会议创建失败，已保留填写内容：${error.message}`);
+    } finally {
+      creatingMeetingRef.current = false;
+      setCreatingMeeting(false);
     }
   };
 
@@ -3124,7 +3134,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
   const persistStage = async (nextStage, phase, suppliedOverrideReason = '', forceIncompleteRecordings = false) => {
     let overrideReason = suppliedOverrideReason;
-    if (nextStage === 'archive' && !recordsBasisGate.ready && !overrideReason) {
+    if (nextStage === 'archive' && phase === '已归档' && !recordsBasisGate.ready && !overrideReason) {
       overrideReason = await requestEvidenceOverrideReason('进入归档');
       if (!overrideReason) return false;
     }
@@ -3166,7 +3176,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           });
         });
       }
-      message.warning(`阶段状态未写入后端：${error.message}`);
+      message.warning(`${nextStage === 'audit' ? '暂时无法结束会议' : nextStage === 'archive' ? phase === '待归档' ? '暂时无法进入归档页面' : '暂时无法完成归档' : '会议状态未更新'}：${error.message}`);
       return false;
     }
   };
@@ -3253,8 +3263,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           Modal.confirm({
             title: '正式文件导出前检查',
             width: 520,
-            okText: preflight.unconfirmedItems.length ? '人工确认并继续' : '确认继续导出',
-            cancelText: preflight.unconfirmedItems.length ? '返回审核' : '返回补充',
+            okText: preflight.unconfirmedItems.length ? '按已确认内容导出' : '确认继续导出',
+            cancelText: '暂不下载',
             content: (
               <div style={{ display: 'grid', gap: 10, lineHeight: 1.7 }}>
                 {preflight.missingFields.length > 0 && (
@@ -3332,7 +3342,6 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       link.remove();
       URL.revokeObjectURL(url);
       message.success(`已下载${publicationMode === 'review' ? '内部审阅版' : '正式发布版'}${kindLabel} Word`);
-      setDownloadTemplateOpen(false);
     } catch (error) {
       message.error(`Word 下载失败：${error.message}`);
     } finally {
@@ -3492,13 +3501,22 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const runStageAction = async () => {
+    if (stageActionRef.current) return;
+    stageActionRef.current = true;
+    setStageActionPending(true);
+    try {
+      await performStageAction();
+    } finally {
+      stageActionRef.current = false;
+      setStageActionPending(false);
+    }
+  };
+
+  const performStageAction = async () => {
     if (activeStage === 'collect') {
-      setProjectBound(true);
-      setAgendaFrozen(true);
-      setActiveStage('meeting');
-      setRecording(true);
-      await persistStage('meeting', '会中记录');
-      message.success('议题已冻结，会议录音与声纹识别已启动');
+      const started = await persistStage('meeting', '会中记录');
+      if (!started) return;
+      message.success('会议已开始，请选择电脑录音或手机接入');
       // 自动弹出扫码邀请二维码
       if (!isQuickMeeting) window.setTimeout(() => setRecorderInviteOpen(true), 500);
       return;
@@ -3514,7 +3532,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         const advanced = await persistStage('audit', '会后终审');
         if (!advanced) return;
         setActiveStage('audit');
-        message.success('会议已结束，录音已保存');
+        message.success('会议已结束，已进入会后整理');
         const records = await generateMeetingRecords();
         if (!records?.generated) return;
         message.success(records.pendingGenerationId ? '新分析结果已保留为待审核版本，已确认纪要保持不变' : '纪要已生成，请核对内容');
@@ -3542,27 +3560,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         message.warning('请先确认纪要内容，再进入归档');
         return;
       }
-      setActiveStage('archive');
       const ok = await persistStage('archive', '待归档');
-      if (!ok) {
-        setActiveStage('audit');
-        return;
-      }
+      if (!ok) return;
       message.success(isMajorMeeting ? '材料已确认，进入归档' : '纪要已确认，进入归档');
       return;
     }
-    setArchiveDone(true);
     const ok = await persistStage('archive', '已归档');
     if (ok) {
-      // 检查后端返回的签字警告
-      const signedCount = remoteTranscripts.filter(item => item.correctionSigned).length;
-      const speakers = new Set(remoteTranscripts.map(t => t.speakerName || t.username).filter(Boolean));
-      if (speakers.size > 0 && signedCount < speakers.size) {
-        const unsigned = [...speakers].filter(name => !remoteTranscripts.some(t => (t.speakerName || t.username) === name && t.correctionSigned));
-        message.warning(`归档完成，但 ${signedCount}/${speakers.size} 人已签字，未签字：${unsigned.join('、')}`, 8);
-      } else {
-        message.success('红头纪要、电子签和防伪归档包已生成');
-      }
+      message.success('会议已正式归档，可继续查看和下载材料');
     }
   };
 
@@ -3796,6 +3801,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             <div className="ref-create-title">新建会议</div>
             <div className="ref-create-subtitle">从议题准备、多人录音、实时转写到决议签署与归档，全流程高效协同。</div>
           </div>
+          <Button icon={<LeftOutlined />} onClick={handleBackToList} disabled={creatingMeeting}>返回会议列表</Button>
         </div>
 
         {/* 主工作区：事项与议题为主，会议设置保持精简 */}
@@ -4042,7 +4048,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
             <div className="ref-settings-footer">
               <div className="ref-create-readiness"><span>{plannedItems.length ? `${plannedItems.length} 个议题已准备` : isQuickMeeting ? '议题可稍后补充' : '还没有待上会议题'}</span><em>{selectedTypeLabel} · 预计 {meetingDurationMinutes} 分钟</em></div>
-              <button className="ref-btn-primary ref-create-submit" onClick={createMeeting} disabled={!canCreateMeeting}><CalendarOutlined /> {isQuickMeeting ? '创建并进入录音' : '创建会议'}</button>
+              <button className="ref-btn-primary ref-create-submit" onClick={createMeeting} disabled={!canCreateMeeting || creatingMeeting}><CalendarOutlined /> {creatingMeeting ? '正在创建…' : isQuickMeeting ? '创建并进入录音' : '创建会议'}</button>
               <div className="ref-create-note"><InfoCircleIcon /> {isQuickMeeting ? '一台电脑记录多人讨论，无需手机接入。录音完成后区分发言人。' : '创建后仍可邀请参会人、补充材料和调整议题。'}</div>
             </div>
           </aside>
@@ -4367,7 +4373,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const getActionText = () => {
     if (activeStage === 'collect') return '确认议题并开始会议';
     if (activeStage === 'meeting') return isMajorMeeting ? '结束会议，进入终审' : '结束会议，整理纪要';
-    if (activeStage === 'audit') return '进入归档';
+    if (activeStage === 'audit') return '进入归档与下载';
     return archiveDone ? '已完成归档' : '确认归档并完成';
   };
 
@@ -5553,7 +5559,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
               <section className="minutes-overview-panel" style={{ ...panelStyle, padding: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text strong style={{ color: palette.ink, fontSize: 16 }}><AppstoreOutlined style={{ color: palette.blue, marginRight: 8, fontSize: 16 }} />纪要概览</Text>
-                  <StatusPill color={meetingGeneratedRecords?.generated ? 'green' : 'blue'}>{meetingGeneratedRecords?.generated ? '待审核' : meetingRecordsLoading ? '正在处理' : recordGenerationStatus.status === 'failed' ? '生成失败' : '待生成'}</StatusPill>
+                  <StatusPill color={meetingGeneratedRecords?.generated ? 'green' : 'blue'}>{meetingGeneratedRecords?.generated ? reviewDone ? '已确认' : '待审核' : recordGenerationStatus.status === 'running' ? '正在生成' : meetingRecordsLoading ? '正在加载' : recordGenerationStatus.status === 'failed' ? '生成失败' : '待生成'}</StatusPill>
                 </div>
                 <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
                   {[
@@ -5676,7 +5682,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 {meetingRecordsLoading ? (
                   <div style={{ marginTop: 24, textAlign: 'center' }}>
                     <Spin size="large" />
-                    <div style={{ marginTop: 12, color: palette.muted, fontSize: 13 }}>AI 正在分析会议转写，生成结构化纪要…</div>
+                    <div style={{ marginTop: 12, color: palette.muted, fontSize: 13 }}>{recordGenerationStatus.status === 'running' ? '正在生成纪要，可稍后返回查看…' : '正在加载已保存的会议内容…'}</div>
                   </div>
                 ) : meetingGeneratedRecords?.generated ? (
                   <div className="minutes-confirmation-content" style={{ marginTop: 14, display: 'grid', gap: 14 }}>
@@ -6212,6 +6218,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   };
 
   const renderCurrentWorkspace = () => {
+    if (['audit', 'archive'].includes(activeStage) && !postMeetingSnapshotReady) {
+      const failed = recordSnapshotState.meetingId === currentMeetingId && recordSnapshotState.status === 'error';
+      return <section style={{ ...panelStyle, padding: 24 }} aria-live="polite">
+        {failed ? <><Text>会议内容暂未加载成功，当前阶段保持不变。</Text><Button onClick={loadGeneratedMeetingRecords} loading={meetingRecordsLoading} style={{ marginLeft: 12 }}>重新加载</Button></> : <><Text>正在加载已保存的会议内容…</Text><Skeleton active paragraph={{ rows: 5 }} style={{ marginTop: 20 }} /></>}
+      </section>;
+    }
     if (activeStage === 'collect') return renderCollectWorkspace();
     if (activeStage === 'meeting') return renderMeetingWorkspace();
     if (activeStage === 'audit') return renderAuditWorkspace();
@@ -6601,14 +6613,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           title: isMajorMeeting ? '结束会议并进入终审' : '结束会议并整理纪要',
           content: (
             <div style={{ display: 'grid', gap: 10, color: palette.text, lineHeight: 1.65 }}>
-              <div>{isMajorMeeting ? '结束会议后，系统会停止会中共享，进入 `03 会后终审`。' : '结束会议后，系统会停止会中共享，进入 `03 会后整理`。'}</div>
+              <div>结束时会先停止并保存本机录音，再进入会后整理。手机录音需在对应手机上停止并保存。</div>
               {isMajorMeeting ? (
                 <div style={{ padding: 10, borderRadius: 10, background: isDarkMode ? '#2d2112' : '#fffbeb', border: `1px solid ${isDarkMode ? '#854d0e' : '#fde68a'}`, color: isDarkMode ? '#fde68a' : '#92400e' }}>
                   终审阶段会核验项目名称、资金测算表、可研修订说明和法务意见。
                 </div>
               ) : (
                 <div style={{ padding: 10, borderRadius: 10, background: isDarkMode ? '#122239' : '#eff6ff', border: `1px solid ${isDarkMode ? '#1d4ed8' : '#bfdbfe'}`, color: isDarkMode ? '#bfdbfe' : '#1d4ed8' }}>
-                  普通会议不会触发三重一大材料拦截，只生成纪实、纪要、决议和督办清单。
+                  系统将整理已保存的会议内容；处理期间可离开页面，稍后从会议列表继续查看。
                 </div>
               )}
             </div>
@@ -6668,7 +6680,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <MeetingAiPulse active={recording || meetingRecordsLoading || recordGenerationStatus.status === 'running' || whisperStatus === 'running'} />
                 <div>
                   <div style={{ color: palette.ink, fontWeight: 600 }}>{isMajorMeeting ? '全链路闭环度' : '会议记录完整度'}</div>
-                  <Progress percent={completion} size="small" strokeColor={completion >= 80 ? palette.green : palette.blue} />
+                  {postMeetingSnapshotReady ? <Progress percent={completion} size="small" strokeColor={completion >= 80 ? palette.green : palette.blue} /> : <Text style={{ color: palette.muted, fontSize: 12 }}>正在读取会议内容…</Text>}
                 </div>
               </div>
             )}
@@ -6705,7 +6717,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 <Button
                   icon={<CheckCircleOutlined />}
                   onClick={confirmMeetingMinutes}
-                  disabled={meetingRecordsLoading}
+                  disabled={meetingRecordsLoading || !postMeetingSnapshotReady}
                   style={{ fontWeight: 600 }}
                 >
                   {reviewDone ? '查看已确认纪要' : '审核并确认纪要'}
@@ -6715,7 +6727,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 type="primary"
                 icon={activeStage === 'archive' ? <FolderOpenOutlined /> : <CheckCircleOutlined />}
                 onClick={runStageAction}
-                disabled={(activeStage === 'archive' && archiveDone) || (activeStage === 'audit' && !reviewDone)}
+                loading={stageActionPending}
+                disabled={(activeStage === 'archive' && archiveDone) || (activeStage === 'audit' && !reviewDone) || (['audit', 'archive'].includes(activeStage) && !postMeetingSnapshotReady)}
                 style={{ fontWeight: 600 }}
               >
                 {getActionText()}
@@ -6759,7 +6772,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           <div className="record-review-modal-titlebar">
             <div>
               <span className="record-review-modal-eyebrow">会议级人工审核</span>
-              <strong>确认本次会议纪要</strong>
+              <strong>{reviewDone ? '查看已确认纪要' : '确认本次会议纪要'}</strong>
             </div>
             <Button
               type="text"
@@ -7142,9 +7155,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 (minutesTemplateCategory === '全部' || template.category === minutesTemplateCategory)
                 && (!minutesTemplateQuery.trim() || `${template.name}${template.desc}`.includes(minutesTemplateQuery.trim()))
               )).map(template => (
-                <button type="button" key={template.id} className={`minutes-template-option ${selectedMinutesTemplate === template.id ? 'selected' : ''}`} onClick={() => setSelectedMinutesTemplate(template.id)}>
-                  <span className="minutes-template-check">{selectedMinutesTemplate === template.id ? '✓' : ''}</span>
-                  <span className={`minutes-template-icon ${template.tone}`}>{template.icon}</span>
+                <button type="button" key={template.id} className={`minutes-template-option ${selectedMinutesTemplate === template.id ? 'selected' : ''}`} aria-pressed={selectedMinutesTemplate === template.id} onClick={() => setSelectedMinutesTemplate(template.id)}>
+                  <span className="minutes-template-check" aria-hidden="true">{selectedMinutesTemplate === template.id && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 4 4L19 6" /></svg>}</span>
+                  <span className={`minutes-template-icon ${template.tone}`}><MinutesTemplateIcon type={template.id} /></span>
                   <span className="minutes-template-copy"><strong>{template.name}</strong><small>{template.desc}</small></span>
                   <Tag color={template.tone === 'gray' ? 'default' : template.tone}>{template.category}</Tag>
                 </button>
@@ -7231,7 +7244,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             ))}
           </div>
           <Space>
-            <Button onClick={() => setDownloadTemplateOpen(false)}>取消</Button>
+            <Button onClick={() => setDownloadTemplateOpen(false)}>关闭</Button>
             <Button icon={<FileTextOutlined />} loading={minutesTemplateDownloading} onClick={() => downloadArchiveDocx(selectedDocumentKind, selectedMinutesTemplate, 'review')}>
               下载内部审阅版
             </Button>

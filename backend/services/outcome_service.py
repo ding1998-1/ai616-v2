@@ -1231,7 +1231,8 @@ def confirm_records(meeting_id: str, user: dict, override_reason: str = "") -> d
         # Review completion is an outcome flag, not a workflow phase. Keeping
         # the meeting in audit prevents clients from falling back to the live
         # meeting workspace after confirmation.
-        meeting["phase"] = "会后终审"
+        if meeting.get("phase") not in {"待归档", "待签署", "已归档"}:
+            meeting["phase"] = "会后终审"
         meeting["generatedRecords"] = records
         meeting["updatedAt"] = now
         meetings[safe_id] = meeting
