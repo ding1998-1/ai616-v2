@@ -385,6 +385,12 @@ function inferMeetingMode(record) {
 
 function normalizeMeetingRecord(record) {
   const legacyReviewCompleted = record.phase === '纪要已确认';
+  const rawPhase = record.phase || '问题收集中';
+  const displayPhase = ['问题收集中', '待创建会议', '议程已确认'].includes(rawPhase)
+    ? '会前确认'
+    : legacyReviewCompleted
+      ? '会后终审'
+      : rawPhase;
   return {
     id: record.id,
     title: record.title || '未命名 AI 会议',
@@ -397,7 +403,7 @@ function normalizeMeetingRecord(record) {
     creator: record.creator || '当前用户',
     createdAt: record.createdAt || record.created_at || createLocalTimestamp(),
     updatedAt: record.updatedAt || record.updated_at || '',
-    phase: legacyReviewCompleted ? '会后终审' : (record.phase || '问题收集中'),
+    phase: displayPhase,
     statusColor: record.statusColor || 'default',
     issueCount: record.issueCount ?? record.issue_count ?? Math.max(record.type === '快速会议' ? 0 : 1, record.agendaDrafts?.length || record.issueSources?.length || 0),
     participantCount: record.participantCount || record.participant_count || record.participants?.length || 0,
