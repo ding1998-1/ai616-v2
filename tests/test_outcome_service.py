@@ -72,6 +72,44 @@ def test_degraded_retry_cannot_replace_existing_successful_records():
     assert outcome_service._should_preserve_existing_records({}, degraded) is False
 
 
+def test_real_transcript_topics_do_not_reinherit_locked_generic_process_minute():
+    previous = {
+        "minutes": [{
+            "id": "old-generic",
+            "agenda": "会议过程记录 1",
+            "locked": True,
+            "supportStatus": "human_supported",
+        }],
+    }
+    records = {
+        "minutes": [{
+            "agenda": "育儿互动与家庭关系",
+            "topicSource": "transcript",
+            "supportStatus": "ai_suggested",
+        }],
+    }
+
+    normalized = outcome_service.normalize_review_metadata(records, previous)
+
+    assert [item["agenda"] for item in normalized["minutes"]] == ["育儿互动与家庭关系"]
+
+
+def test_transcript_topics_preserve_human_edited_process_minute():
+    previous = {"minutes": [{
+        "id": "edited-generic", "agenda": "会议过程记录 1",
+        "locked": True, "editedByHuman": True, "formalSummary": "Human correction",
+    }]}
+    records = {"minutes": [{"agenda": "育儿互动", "topicSource": "transcript"}]}
+    normalized = outcome_service.normalize_review_metadata(records, previous)
+    assert normalized["minutes"][-1] == previous["minutes"][0]
+
+
+def test_retry_without_transcript_topics_preserves_locked_process_minute():
+    previous = {"minutes": [{"id": "old", "agenda": "会议过程记录 1", "locked": True}]}
+    normalized = outcome_service.normalize_review_metadata({"minutes": []}, previous)
+    assert normalized["minutes"] == previous["minutes"]
+
+
 def test_records_update_creates_versionable_payload(monkeypatch):
     meetings = {"m1": {"id": "m1", "title": "季度例会", "generatedRecords": {"generated": True, "summary": ["旧"]}}}
     saved_versions = []

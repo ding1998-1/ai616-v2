@@ -6762,7 +6762,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           </> },
           ...(whisperTranscriptRows.length ? [{ key: 'whisper', label: 'Whisper 终审原文', children: whisperTranscriptRows.map(line => <section key={line.id} style={{ padding: '12px 0', borderBottom: `1px solid ${palette.line}` }}><Space><Text type="secondary">{line.time}–{line.endTime}</Text><Text strong>Whisper 终审</Text></Space><Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{line.text}</Paragraph></section>) }] : []),
           ...(isQuickMeeting ? [{ key: 'speakers', label: '发言人', children: <QuickMeetingSpeakers meetingId={currentMeetingId} state={speakerDiarization} audioRows={recordingPlaybackRows} readOnly onChange={setSpeakerDiarization} /> }] : []),
-          ...(pendingMeetingRecords ? [{ key: 'pending', label: '新分析版本（待审核）', children: <><Tag color="orange">已确认纪要保持不变，以下为新分析结果</Tag>{recordSummaryLines(pendingMeetingRecords).map((line, index) => <Paragraph key={index}>{line}</Paragraph>)}{(pendingMeetingRecords.minutes || []).map((item, index) => <Paragraph key={index}>{item.formalSummary || item.content || item.agenda || '暂无正文'}</Paragraph>)}</> }] : []),
+          ...(pendingMeetingRecords ? [{ key: 'pending', label: '新分析版本（待审核）', children: <>
+            <Paragraph><Tag color="orange">待审核</Tag>已确认纪要保持不变，以下为新分析结果，共 {(pendingMeetingRecords.minutes || []).length} 个讨论主题。</Paragraph>
+            {(pendingMeetingRecords.minutes || []).map((item, index) => <section key={item.id || index} style={{ padding: '16px 0', borderBottom: `1px solid ${palette.line}` }}>
+              <Space wrap><Text strong>{index + 1}. {item.agenda || '讨论主题'}</Text>{item.topicSource === 'transcript' && <Tag color="blue">根据录音识别</Tag>}</Space>
+              <Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{Array.isArray(item.formalSummary) ? item.formalSummary.join('\n') : item.formalSummary || item.content || '请结合原始转写复核'}</Paragraph>
+              {item.basis?.timeRange && <Text type="secondary">原文时间：{item.basis.timeRange}</Text>}
+            </section>)}
+          </> }] : []),
           { key: 'minutes', label: '纪要与归档材料', children: meetingGeneratedRecords?.generated ? <>
             {recordSummaryLines(meetingGeneratedRecords).map((line, index) => <Paragraph key={index}>{line}</Paragraph>)}
             {['minutes', 'decisions', 'todos'].map(field => <section key={field}><Text strong>{{ minutes: '会议纪要', decisions: '会议决议', todos: '待办事项' }[field]}</Text>{(meetingGeneratedRecords[field] || []).map((item, index) => <Paragraph key={item.id || index} style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : item.formalSummary || item.content || item.task || item.agenda || '暂无已保存正文'}</Paragraph>)}</section>)}

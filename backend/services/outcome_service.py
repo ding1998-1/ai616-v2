@@ -63,11 +63,27 @@ def normalize_review_metadata(records: dict, previous: dict | None = None) -> di
     """Attach stable review metadata and preserve human-locked records on regeneration."""
 
     previous = previous if isinstance(previous, dict) else {}
+    has_transcript_topics = any(
+        isinstance(item, dict)
+        and item.get("topicSource") == "transcript"
+        and not re.fullmatch(r"会议过程记录\s*\d+", str(item.get("agenda") or "").replace(" ", ""))
+        for item in records.get("minutes") or []
+    )
     for field in FORMAL_RECORD_FIELDS:
         old_locked = {
             str(item.get("id") or ""): deepcopy(item)
             for item in previous.get(field) or []
-            if isinstance(item, dict) and item.get("locked") and item.get("id")
+            if (
+                isinstance(item, dict)
+                and item.get("locked")
+                and item.get("id")
+                and not (
+                    field == "minutes"
+                    and has_transcript_topics
+                    and not item.get("editedByHuman")
+                    and re.fullmatch(r"会议过程记录\s*\d+", str(item.get("agenda") or "").replace(" ", ""))
+                )
+            )
         }
         rows: list[dict] = []
         for index, raw in enumerate(records.get(field) or []):

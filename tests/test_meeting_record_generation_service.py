@@ -23,6 +23,30 @@ from backend.services.meeting_record_generation_service import (
 
 
 class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_topic_never_borrows_unrelated_conclusion_evidence(self):
+        from backend.services.meeting_record_generation_service import _map_recovery_candidates
+        rows = [{"id": "s1", "fileId": "f1", "text": "我不想在顾问公司工作，决定回台湾发展"}]
+        _, topics, _ = _map_recovery_candidates([{
+            "ok": True, "chunkSegments": rows,
+            "output": {
+                "conclusions": [{"content": "回台湾发展", "evidence": rows[0]["text"]}],
+                "topics": [{"title": "派对与社交生活", "evidence": "朋友聚会喝酒跳舞"}],
+            },
+        }], source_segments=[])
+        self.assertFalse(topics[0]["basis"]["evidenceValid"])
+        self.assertEqual(topics[0]["basis"]["quotes"], [])
+
+    def test_long_topic_evidence_uses_its_own_verbatim_excerpts(self):
+        from backend.services.meeting_record_generation_service import _map_recovery_candidates
+        texts = ["周末我们通常都是到朋友家开派对", "派对一直持续到第二天早上", "大家最后都睡在朋友的家里", "第二天早上大家再一起吃早饭"]
+        rows = [{"id": f"s{i}", "fileId": "f1", "text": value} for i, value in enumerate(texts)]
+        _, topics, _ = _map_recovery_candidates([{
+            "ok": True, "chunkSegments": rows,
+            "output": {"topics": [{"title": "周末派对", "evidence": "\n".join(texts)}]},
+        }], source_segments=[])
+        self.assertTrue(topics[0]["basis"]["evidenceValid"])
+        self.assertTrue(all(q["text"] in texts for q in topics[0]["basis"]["quotes"]))
+
     def test_formal_summary_never_upgrades_discussion_to_binding_outcome(self):
         text = _moderate_formal_summary(
             "会议明确必须强制上传照片，严禁直接支付，并规定完成联通。"
@@ -488,7 +512,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def map_call(_prompt, context):
             return {
-                "topics": [{"title": "预算调整与风险"}],
+                "topics": [{"title": "预算调整与风险", "evidence": "原文同意调整预算"}],
                 "conclusions": [{
                     "content": "同意调整预算",
                     "type": "决定",
@@ -549,7 +573,7 @@ class MeetingRecordGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def map_call(_prompt, _context):
             return {
-                "topics": [{"title": "预算调整"}],
+                "topics": [{"title": "预算调整", "evidence": "预算调整方案由财务部，在本周伍前提交"}],
                 "todos": [{
                     "task": "财务部在本周五前提交预算调整方案",
                     "owner": "张三",

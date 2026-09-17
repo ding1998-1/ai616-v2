@@ -934,7 +934,6 @@ def _map_recovery_candidates(
             ]
         output = result.get("output") or {}
         chunk_range = _as_text(result.get("timeRange"))
-        first_valid_basis: dict[str, Any] | None = None
         for output_field, category in map_fields:
             for raw_item in output.get(output_field) or []:
                 if not isinstance(raw_item, Mapping):
@@ -954,8 +953,6 @@ def _map_recovery_candidates(
                     segments=chunk_rows,
                     fallback_range=chunk_range,
                 )
-                if first_valid_basis is None:
-                    first_valid_basis = deepcopy(basis)
                 candidate_category = category
                 if output_field == "risks_disclosures":
                     kind = _as_text(_item_value(raw_item, "kind", "category")).lower()
@@ -977,14 +974,16 @@ def _map_recovery_candidates(
                 topic_basis = _basis_with_segment_range(
                     topic_basis, segments=chunk_rows, fallback_range=chunk_range,
                 )
-            elif first_valid_basis:
-                # Compatibility for older MAP payloads that predate topic
-                # evidence.  New prompts require a topic-specific quotation.
-                topic_basis = deepcopy(first_valid_basis)
             else:
-                topic_basis = _dump_model(Basis(
-                    timeRange=_as_text(_item_value(topic, "timeRange", "time_range")) or chunk_range,
-                ))
+                # Long topic quotations can span more than three source rows.
+                # Recover only excerpts supplied by this topic, never another
+                # conclusion's evidence from the same chunk.
+                evidence = _as_text(_item_value(topic, "evidence", "quote", "basisEvidence"))
+                excerpts = [part.strip() for part in re.split(r"\n+|\.{3,}|…+", evidence) if len(_evidence_key(part)) >= 8]
+                topic_basis = _basis_from_item(
+                    {"basis": {"quotes": excerpts}}, segments=chunk_rows, default_range=chunk_range,
+                )
+                topic_basis = _basis_with_segment_range(topic_basis, segments=chunk_rows, fallback_range=chunk_range)
             topics.append({
                 "content": title,
                 "basis": topic_basis,
@@ -1360,15 +1359,10 @@ def auto_resolve_formal_evidence(
     for item in invalid_minutes:
         exceptions.append({"field": "minutes", "reason": "unsupported_ai_claim", "item": deepcopy(dict(item))})
     removed += len(invalid_minutes)
-    pending_topic_candidates = [
-        {
-            "content": _as_text(item.get("agenda")),
-            "basis": deepcopy(item.get("basis") or {}),
-        }
-        for item in invalid_minutes
-        if _as_text(item.get("agenda"))
+    pending_topic_candidates = topic_candidates if map_results else [
+        {"content": _as_text(item.get("agenda")), "basis": deepcopy(item.get("basis") or {})}
+        for item in invalid_minutes if _as_text(item.get("agenda"))
     ]
-    pending_topic_candidates.extend(topic_candidates)
     if pending_topic_candidates and any(
         not _is_generic_process_agenda(item.get("agenda"))
         for item in verified_minutes
