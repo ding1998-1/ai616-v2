@@ -660,16 +660,53 @@ def _db_fetch_meetings(include_details: bool = True) -> dict:
         if not include_details or not meetings:
             return meetings
 
-        # 参会人数：以 meeting_participants 为真实来源（预留表，未写入时返回 0）
-        try:
-            for row in conn.execute(
-                "SELECT meeting_id, COUNT(*) AS c FROM meeting_participants GROUP BY meeting_id"
-            ).fetchall():
-                meeting = meetings.get(row["meeting_id"])
-                if meeting:
-                    meeting["participantCount"] = int(row["c"])
-        except Exception:
-            pass
+        # 首页参会人数需要兼容三条已经投入使用的数据链路：
+        # 1. H5 登录后写入的正式参会人；2. 已接入的录音设备；3. 历史转写中的发言身份。
+        # 老会议往往没有回填 meeting_participants，只统计该表会长期错误显示 0。
+        # 三个来源之间无法可靠地跨表去重，因此取各来源去重人数的最大值，既能补齐
+        # 历史会议，又不会把同一位参会人的登录、设备和字幕重复相加。
+        participant_counts: dict[str, int] = {}
+        participant_count_queries = (
+            """
+            SELECT meeting_id,
+                   COUNT(DISTINCT COALESCE(NULLIF(TRIM(user_id), ''), row_id)) AS c
+            FROM meeting_participants
+            GROUP BY meeting_id
+            """,
+            """
+            SELECT meeting_id,
+                   COUNT(DISTINCT COALESCE(NULLIF(TRIM(user_id), ''), NULLIF(TRIM(participant_row_id), ''), client_id)) AS c
+            FROM meeting_audio_clients
+            GROUP BY meeting_id
+            """,
+            """
+            SELECT meeting_id,
+                   COUNT(DISTINCT CASE
+                       WHEN TRIM(speaker_user_id) <> '' THEN speaker_user_id
+                       WHEN TRIM(participant_id) <> '' THEN participant_id
+                       WHEN TRIM(speaker_name) <> '' THEN speaker_name
+                       WHEN TRIM(username) <> '' THEN username
+                       ELSE NULL
+                   END) AS c
+            FROM meeting_transcripts
+            WHERE TRIM(transcript) <> ''
+            GROUP BY meeting_id
+            """,
+        )
+        for query in participant_count_queries:
+            try:
+                for row in conn.execute(query).fetchall():
+                    meeting_id = row["meeting_id"]
+                    participant_counts[meeting_id] = max(
+                        participant_counts.get(meeting_id, 0), int(row["c"] or 0)
+                    )
+            except sqlite3.OperationalError:
+                # 兼容尚未执行到对应迁移的旧数据库；其他可用来源仍继续统计。
+                continue
+        for meeting_id, count in participant_counts.items():
+            meeting = meetings.get(meeting_id)
+            if meeting:
+                meeting["participantCount"] = count
 
         for row in conn.execute("SELECT * FROM meeting_issue_sources ORDER BY sort_order, server_time, id").fetchall():
             meeting = meetings.get(row["meeting_id"])

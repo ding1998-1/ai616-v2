@@ -1976,7 +1976,9 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const loadMeetings = async () => {
     setMeetingsLoading(true);
     try {
-      const data = await authFetchJson('/api/meetings');
+      // 首页筛选与日期检索必须覆盖完整会议索引。接口默认仅返回 50 条，
+      // 会让“全部 50”看起来像系统总数，也会导致较早会议无法被筛选到。
+      const data = await authFetchJson('/api/meetings?limit=1000');
       const rows = (data.meetings || []).map(normalizeMeetingRecord);
       setMeetingRecords(rows);
       setMeetingDataReady(true);
@@ -3700,6 +3702,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           : phase === '已归档'
             ? '查看归档成果'
             : '确认议题与参会人员';
+    const primaryActionLabel = phase => phase === '会中记录' || phase === '进行中'
+      ? '进入会议'
+      : phase === '会后终审'
+        ? '审核纪要'
+        : ['待签署', '待归档'].includes(phase)
+          ? '完成归档'
+          : phase === '已归档'
+            ? '查看成果'
+            : '会前确认';
     const phaseClassName = phase => {
       if (phase === '会前确认') return 'is-pre';
       if (['会中记录', '进行中'].includes(phase)) return 'is-live';
@@ -3796,11 +3807,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       {sortedMeetingRecords.map(record => (
                         <article key={record.id} className="meeting-home-row" role="button" tabIndex={0} onClick={() => openMeetingRecord(record)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openMeetingRecord(record); } }}>
                           <div className="meeting-home-date"><strong>{record.date ? meetingDateLabel(record.date) : '待定'}</strong><span>{weekdayLabel(record.date)} {meetingTimeLabel(record.date)}</span></div>
-                          <div className="meeting-home-main"><div className="meeting-home-title-line"><Text strong>{record.title}</Text>{record.meetingMode === 'major' && <Tag color="gold">重大事项</Tag>}</div><p>{record.project || record.meetingNo || '未关联项目'}</p><div className="meeting-home-next"><span>下一步：</span>{nextActionLabel(record.phase)}</div></div>
+                          <div className="meeting-home-main"><div className="meeting-home-title-line"><Text strong>{record.title}</Text>{record.meetingMode === 'major' && <Tag color="gold">重大事项</Tag>}</div><p>议题：{record.agenda || record.project || '待补充'}</p><div className="meeting-home-next"><span>下一步：</span>{nextActionLabel(record.phase)}</div></div>
                           <div><span className={`meeting-status-pill ${phaseClassName(record.phase)}`}><i />{record.phase}</span></div>
-                          <div className="meeting-home-facts"><span><WorkbenchIcon name="topic" size={15} /> {record.issueCount || 0} 个议题</span><span><WorkbenchIcon name="user" size={15} /> {record.participantCount || 0} 位参会人</span></div>
+                          <div className="meeting-home-facts"><span><WorkbenchIcon name="topic" size={15} /> {record.issueCount || 0} 个议题</span><span><WorkbenchIcon name="user" size={15} /> {record.participantCount > 0 ? `${record.participantCount} 位参会人` : '暂无参会记录'}</span></div>
                           <div className="meeting-home-updated"><strong>{record.updatedAt ? String(record.updatedAt).replace('T', ' ').slice(0, 16) : String(record.createdAt || '').replace('T', ' ').slice(0, 16)}</strong><span>更新人：{record.creator || '系统管理员'}</span></div>
-                          <div className="meeting-home-actions" onClick={event => event.stopPropagation()}><Button type="primary" onClick={() => openMeetingRecord(record)}>继续</Button><Dropdown trigger={['click']} menu={{ items: meetingMenuItems(record), onClick: ({ key, domEvent }) => { domEvent?.stopPropagation(); if (key === 'archive') confirmDeleteMeetingRecord(record); else openMeetingRecord(record); } }}><Button aria-label="更多会议操作" icon={<WorkbenchIcon name="more" size={18} />} /></Dropdown></div>
+                          <div className="meeting-home-actions" onClick={event => event.stopPropagation()}><Button type="primary" onClick={() => openMeetingRecord(record)}>{primaryActionLabel(record.phase)}</Button><Dropdown trigger={['click']} menu={{ items: meetingMenuItems(record), onClick: ({ key, domEvent }) => { domEvent?.stopPropagation(); if (key === 'archive') confirmDeleteMeetingRecord(record); else openMeetingRecord(record); } }}><Button aria-label="更多会议操作" icon={<WorkbenchIcon name="more" size={18} />} /></Dropdown></div>
                         </article>
                       ))}
                       {!sortedMeetingRecords.length && <div className="meeting-home-empty"><Empty description={meetingRecords.length ? '没有符合当前条件的会议' : '还没有会议'}>{!meetingRecords.length && <p>从第一次会议开始，让 AI 帮你完成议题准备、录音、转写、纪要和归档。</p>}</Empty><Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft}>新建第一场会议</Button></div>}
