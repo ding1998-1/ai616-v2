@@ -3,7 +3,8 @@ import { createDesktopAsr } from '../lib/desktopAsr.mjs';
 import { recordingRequest, withDeadline } from '../lib/recordingRequest.mjs';
 import { desktopDurationSeconds, desktopSpeakerIdentity, desktopTranscriptLabel } from '../lib/desktopRecording.mjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Checkbox, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Tabs, Timeline, Tooltip, Typography, message } from 'antd';
+import { Button, Checkbox, DatePicker, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Tabs, Timeline, Tooltip, Typography, message } from 'antd';
+import dayjs from 'dayjs';
 import {
   AppstoreOutlined,
   AudioOutlined,
@@ -44,6 +45,7 @@ import "./MeetingComplianceWorkflow.css";
 
 const { Text, Title, Paragraph } = Typography;
 const { Paragraph: ArcoParagraph } = ArcoTypography;
+const { RangePicker } = DatePicker;
 
 const MEETING_TYPE_OPTIONS = ['快速会议', '普通企业会议', '经营例会', '董事会', '总经理办公会', '专题会', '党委会', '党组会'];
 
@@ -827,6 +829,8 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [meetingFilterStage, setMeetingFilterStage] = useState('');
   const [meetingFilterMode, setMeetingFilterMode] = useState('');
   const [meetingFilterSearch, setMeetingFilterSearch] = useState('');
+  const [meetingFilterDateRange, setMeetingFilterDateRange] = useState([]);
+  const [meetingSortMode, setMeetingSortMode] = useState('date_desc');
   const [meetingSearchResults, setMeetingSearchResults] = useState([]);
   const [meetingSearchLoading, setMeetingSearchLoading] = useState(false);
   const [locatedAgendaId, setLocatedAgendaId] = useState('');
@@ -1344,6 +1348,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       result = result.filter(record => record.phase === meetingFilterStage);
     }
     if (meetingFilterMode) result = result.filter(r => r.meetingMode === meetingFilterMode);
+    if (meetingFilterDateRange.length === 2) {
+      const [startDate, endDate] = meetingFilterDateRange;
+      result = result.filter(record => {
+        const meetingDay = normalizeMeetingDateTime(record.date).slice(0, 10);
+        return meetingDay && meetingDay >= startDate && meetingDay <= endDate;
+      });
+    }
     if (meetingFilterSearch) {
       const keyword = meetingFilterSearch.toLowerCase();
       result = result.filter(r =>
@@ -1353,7 +1364,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       );
     }
     return result;
-  }, [meetingRecords, meetingFilterStage, meetingFilterMode, meetingFilterSearch]);
+  }, [meetingRecords, meetingFilterStage, meetingFilterMode, meetingFilterSearch, meetingFilterDateRange]);
 
   useEffect(() => {
     const keyword = meetingFilterSearch.trim();
@@ -3658,9 +3669,13 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   if (!meetingWorkspaceOpen) {
     const stagePriority = { '会后终审': 0, '待签署': 1, '待归档': 1, '会中记录': 2, '进行中': 2, '会前确认': 3, '已归档': 4 };
     const sortedMeetingRecords = [...filteredMeetingRecords].sort((a, b) => {
-      const phaseDiff = (stagePriority[a.phase] ?? 3) - (stagePriority[b.phase] ?? 3);
-      if (phaseDiff) return phaseDiff;
-      return String(b.updatedAt || b.date || '').localeCompare(String(a.updatedAt || a.date || ''));
+      if (meetingSortMode === 'priority') {
+        const phaseDiff = (stagePriority[a.phase] ?? 3) - (stagePriority[b.phase] ?? 3);
+        if (phaseDiff) return phaseDiff;
+      }
+      const dateDiff = normalizeMeetingDateTime(b.date).localeCompare(normalizeMeetingDateTime(a.date));
+      if (dateDiff) return dateDiff;
+      return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
     });
     const activeMeetingCount = meetingRecords.filter(item => ['会前确认', '会中记录', '进行中'].includes(item.phase)).length;
     const liveMeetingCount = meetingRecords.filter(item => ['会中记录', '进行中'].includes(item.phase)).length;
@@ -3699,7 +3714,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     };
     const greeting = new Date().getHours() < 12 ? '上午好' : new Date().getHours() < 18 ? '下午好' : '晚上好';
     const recentMeetings = [...meetingRecords]
-      .sort((a, b) => String(b.updatedAt || b.date || '').localeCompare(String(a.updatedAt || a.date || '')))
+      .sort((a, b) => normalizeMeetingDateTime(b.date).localeCompare(normalizeMeetingDateTime(a.date)))
       .slice(0, 5);
     const remoteSearchActive = meetingFilterSearch.trim().length >= 2;
     const meetingSearchMatches = meetingSearchResults.filter(item => item.type === 'meeting');
@@ -3745,6 +3760,15 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   ))}
                 </div>
                 <div className="meeting-toolbar-actions">
+                  <RangePicker
+                    allowClear
+                    value={meetingFilterDateRange.length === 2 ? meetingFilterDateRange.map(value => dayjs(value)) : null}
+                    onChange={(_, values) => setMeetingFilterDateRange(values?.[0] && values?.[1] ? values : [])}
+                    placeholder={['开始日期', '结束日期']}
+                    format="YYYY-MM-DD"
+                    className="meeting-home-date-range"
+                  />
+                  <Select value={meetingSortMode} onChange={setMeetingSortMode} className="meeting-home-sort" options={[{ value: 'date_desc', label: '按会议时间' }, { value: 'priority', label: '待处理优先' }]} />
                   <Select allowClear value={meetingFilterMode || undefined} onChange={value => setMeetingFilterMode(value || '')} placeholder="会议类型" options={[{ value: 'normal', label: '普通会议' }, { value: 'major', label: '重大事项会议' }]} />
                   <Input allowClear value={meetingFilterSearch} onChange={event => setMeetingFilterSearch(event.target.value)} prefix={<SearchOutlined />} suffix={meetingSearchLoading ? <Spin size="small" /> : null} placeholder="搜索会议、议题或参与人..." className="meeting-home-search" />
                 </div>
