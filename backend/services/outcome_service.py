@@ -1086,6 +1086,63 @@ def get_records(meeting_id: str) -> dict:
     }
 
 
+def adopt_pending_records(meeting_id: str, user: dict) -> dict:
+    """Move a protected AI candidate into the normal human-review workflow.
+
+    The previously confirmed records are versioned before replacement.  The
+    candidate remains a draft until the existing item and meeting review gates
+    are completed, so adopting it never publishes a new formal document by
+    itself.
+    """
+
+    safe_id = _safe_meeting_id(meeting_id)
+    with MEETINGS_LOCK:
+        meetings = _load_meetings()
+        meeting = meetings.get(safe_id)
+        if not meeting:
+            raise KeyError("会议不存在")
+        _check_meeting_access(user, meeting)
+        _check_review_permission(user, meeting)
+
+        current_records = deepcopy(meeting.get("generatedRecords") or {})
+        pending_records = current_records.pop("pendingGeneratedRecords", None)
+        if not pending_records:
+            pending_records = deepcopy(meeting.get("pendingGeneratedRecords"))
+        if not isinstance(pending_records, dict) or not pending_records.get("generated"):
+            raise ValueError("当前没有可审核的新分析版本")
+
+        if current_records.get("generated"):
+            _save_version(
+                safe_id,
+                current_records,
+                user,
+                {"replacedByGenerationId": pending_records.get("generationId") or ""},
+                edit_summary="采用新分析前保留的正式版本",
+            )
+
+        draft = normalize_review_metadata(deepcopy(pending_records))
+        draft.pop("pendingGeneratedRecords", None)
+        draft.pop("documents", None)
+        draft.pop("pendingGenerationId", None)
+        draft.update({
+            "proofreadPassed": False,
+            "proofreadStatus": "needs_review",
+            "humanReviewed": False,
+            "adoptedForReviewAt": _now_text(),
+            "adoptedForReviewBy": user.get("name") or user.get("username") or "",
+        })
+        meeting.pop("pendingGeneratedRecords", None)
+        meeting["generatedRecords"] = draft
+        meeting["reviewDone"] = False
+        meeting["archiveDone"] = False
+        meeting["phase"] = "会后终审"
+        meeting["updatedAt"] = _now_text()
+        meetings[safe_id] = meeting
+        _save_meetings(meetings)
+        _invalidate_meetings_cache()
+    return draft
+
+
 def update_records(meeting_id: str, patch: dict, user: dict) -> dict:
     safe_id = _safe_meeting_id(meeting_id)
     with MEETINGS_LOCK:

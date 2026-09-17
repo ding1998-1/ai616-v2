@@ -6114,6 +6114,45 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
   };
 
+  const reviewPendingMeetingRecords = () => {
+    if (!pendingMeetingRecords || meetingRecordsLoading) return;
+    Modal.confirm({
+      title: '审核并采用新分析版本',
+      content: '当前正式纪要会先保留到版本记录。新分析结果将进入现有人工审核流程，审核完成后才能生成并下载新版 Word。',
+      okText: '进入审核',
+      cancelText: '暂不处理',
+      onOk: async () => {
+        setMeetingRecordsLoading(true);
+        try {
+          const adopted = await authFetchJson(`/api/meetings/${currentMeetingId}/records/pending/adopt`, { method: 'POST' });
+          setMeetingGeneratedRecords(adopted.records || null);
+          setPendingMeetingRecords(null);
+          setReviewDone(false);
+          setHistoryOpen(false);
+          const detail = await authFetchJson(`/api/meetings/${currentMeetingId}`);
+          hydrateMeetingDetail(detail.meeting);
+          await loadMeetings();
+          await loadRecordGenerationVersions();
+          setRecordReviewOpen(true);
+          setRecordReviewStep('overview');
+          setRecordReviewConsent(false);
+          setRecordReviewResult(null);
+          setRecordReviewLoading(true);
+          try {
+            await loadRecordReviewSummary();
+          } finally {
+            setRecordReviewLoading(false);
+          }
+          message.success('新分析版本已进入审核，原正式版本已保留');
+        } catch (error) {
+          message.error(`无法进入新版本审核：${error.message}`);
+        } finally {
+          setMeetingRecordsLoading(false);
+        }
+      },
+    });
+  };
+
   const renderArchiveWorkspace = () => {
     const archiveItems = isMajorMeeting
       ? [
@@ -6808,7 +6847,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
           </div> }] : []),
           ...(isQuickMeeting ? [{ key: 'speakers', label: '发言人', children: <QuickMeetingSpeakers meetingId={currentMeetingId} state={speakerDiarization} audioRows={recordingPlaybackRows} readOnly onChange={setSpeakerDiarization} /> }] : []),
           ...(pendingMeetingRecords ? [{ key: 'pending', label: '新分析版本（待审核）', children: <div className="meeting-history-analysis">
-            <div className="meeting-history-notice"><span className="meeting-history-notice-icon"><FileTextOutlined /></span><div><strong>新分析结果 <Tag color="orange">待审核</Tag></strong><p>已确认纪要保持不变，请结合原文核对以下内容。</p></div><span className="meeting-history-topic-count"><b>{(pendingMeetingRecords.minutes || []).length}</b> 个主题</span></div>
+            <div className="meeting-history-notice"><span className="meeting-history-notice-icon"><FileTextOutlined /></span><div><strong>新分析结果 <Tag color="orange">待审核</Tag></strong><p>当前正式纪要保持不变。审核确认后进入归档页，即可生成并下载新版 Word。</p><Button type="primary" icon={<SafetyCertificateOutlined />} onClick={reviewPendingMeetingRecords} loading={meetingRecordsLoading}>审核新版本</Button></div><span className="meeting-history-topic-count"><b>{(pendingMeetingRecords.minutes || []).length}</b> 个主题</span></div>
             <div className="meeting-history-topic-list">{(pendingMeetingRecords.minutes || []).map((item, index) => {
               const lines = (Array.isArray(item.formalSummary) ? item.formalSummary : [item.formalSummary || item.content || '']).flatMap(value => String(value).split('\n')).filter(Boolean);
               const prose = lines.filter(line => !line.startsWith('录音中提及：'));
@@ -6877,7 +6916,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
             </div>
             <div className="record-review-footer">
               <Button onClick={() => setRecordReviewOpen(false)}>返回查看</Button>
-              <Button type="primary" onClick={() => { setRecordReviewOpen(false); runStageAction(); }}>进入归档</Button>
+              <Button type="primary" onClick={() => { setRecordReviewOpen(false); runStageAction(); }}>进入归档并下载</Button>
             </div>
           </div>
         ) : recordReviewStep === 'exceptions' ? (() => {

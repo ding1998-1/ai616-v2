@@ -130,6 +130,57 @@ def test_records_update_creates_versionable_payload(monkeypatch):
     assert saved_versions[0][2] == {"summary": ["新"]}
 
 
+def test_adopt_pending_records_preserves_formal_version_and_reopens_review(monkeypatch):
+    formal = {
+        "generated": True,
+        "generationId": "formal-v1",
+        "proofreadPassed": True,
+        "humanReviewed": True,
+        "documents": {"minutes": "old.docx"},
+        "minutes": [{"id": "old", "agenda": "旧纪要", "locked": True}],
+        "pendingGeneratedRecords": {
+            "generated": True,
+            "generationId": "candidate-v2",
+            "proofreadPassed": True,
+            "humanReviewed": True,
+            "documents": {"minutes": "candidate.docx"},
+            "minutes": [{"id": "new", "agenda": "新分析"}],
+        },
+    }
+    meetings = {"m1": {
+        "id": "m1",
+        "phase": "已归档",
+        "reviewDone": True,
+        "archiveDone": True,
+        "generatedRecords": formal,
+    }}
+    saved_versions = []
+    monkeypatch.setattr(outcome_service, "_load_meetings", lambda: meetings)
+    monkeypatch.setattr(outcome_service, "_save_meetings", lambda value: None)
+    monkeypatch.setattr(outcome_service, "_check_meeting_access", lambda user, meeting: None)
+    monkeypatch.setattr(outcome_service, "_check_review_permission", lambda user, meeting: None)
+    monkeypatch.setattr(outcome_service, "_invalidate_meetings_cache", lambda: None)
+    monkeypatch.setattr(
+        outcome_service,
+        "_save_version",
+        lambda meeting_id, records, user, override, **kwargs: saved_versions.append((meeting_id, records, override, kwargs)),
+    )
+
+    adopted = outcome_service.adopt_pending_records("m1", {"name": "审核人"})
+
+    assert adopted["generationId"] == "candidate-v2"
+    assert adopted["proofreadPassed"] is False
+    assert adopted["humanReviewed"] is False
+    assert "documents" not in adopted
+    assert "pendingGeneratedRecords" not in adopted
+    assert meetings["m1"]["phase"] == "会后终审"
+    assert meetings["m1"]["reviewDone"] is False
+    assert meetings["m1"]["archiveDone"] is False
+    assert saved_versions[0][1]["generationId"] == "formal-v1"
+    assert "pendingGeneratedRecords" not in saved_versions[0][1]
+    assert saved_versions[0][2] == {"replacedByGenerationId": "candidate-v2"}
+
+
 def test_records_confirmation_enables_formal_documents(monkeypatch):
     meetings = {"m1": {"id": "m1", "generatedRecords": {
         "generated": True,

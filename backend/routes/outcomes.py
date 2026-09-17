@@ -10,6 +10,7 @@ from backend.config import MEETING_FILES_DIR, RECORDS_PIPELINE
 from backend.models import FormalActionRequest, MeetingMarkerRequest, MeetingRecordBatchReviewRequest, MeetingRecordReviewRequest, MeetingRecordsUpdateRequest
 from backend.services.outcome_service import (
     add_marker,
+    adopt_pending_records,
     batch_support_eligible_records,
     confirm_records,
     create_todo,
@@ -102,6 +103,22 @@ async def confirm_meeting_records(
     user, _, _ = require_meeting(request, meeting_id)
     try:
         records = confirm_records(meeting_id, user, (body.overrideReason if body else ""))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"success": True, "meetingId": meeting_id, "records": records}
+
+
+@router.post("/meetings/{meeting_id}/records/pending/adopt")
+async def adopt_pending_meeting_records(request: Request, meeting_id: str):
+    """Adopt a protected AI candidate as a draft for the normal review flow."""
+
+    user, _, _ = require_meeting(request, meeting_id)
+    try:
+        records = adopt_pending_records(meeting_id, user)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
