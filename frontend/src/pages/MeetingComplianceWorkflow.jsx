@@ -2578,6 +2578,23 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     })).filter(item => item.text);
   }, [latestWhisperReview]);
 
+  const whisperReadingBlocks = useMemo(() => {
+    const blockSize = 10;
+    const blocks = [];
+    for (let index = 0; index < whisperTranscriptRows.length; index += blockSize) {
+      const segments = whisperTranscriptRows.slice(index, index + blockSize);
+      if (!segments.length) continue;
+      blocks.push({
+        id: `whisper-reading-${segments[0].id}`,
+        time: segments[0].time,
+        endTime: segments[segments.length - 1].endTime,
+        text: segments.map(item => item.text).join(' '),
+        segmentCount: segments.length,
+      });
+    }
+    return blocks;
+  }, [whisperTranscriptRows]);
+
   const recordingPlaybackRows = useMemo(
     () => remoteEvents
       .filter(item => item.type === 'audio' && item.playbackUrl)
@@ -6746,35 +6763,78 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         <QuickMeetingSpeakers meetingId={currentMeetingId} state={speakerDiarization} audioRows={recordingPlaybackRows} readOnly={archiveDone} onChange={setSpeakerDiarization} />
       </Drawer>
       <Drawer
-        title={<Space wrap><strong>{meetingTitle}</strong><Tag color="default">只读查看</Tag></Space>}
+        rootClassName="meeting-history-drawer"
+        title={<div className="meeting-history-heading"><span className="meeting-history-heading-icon"><FileTextOutlined /></span><div><strong>{meetingTitle}</strong><div className="meeting-history-heading-meta">会议记录 · {meetingDate.replace('T', ' ')}</div></div><Tag>只读查看</Tag></div>}
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
         width="min(1100px, 96vw)"
-        footer={<Button onClick={() => setHistoryOpen(false)}>{activeStage === 'archive' ? '返回归档页面' : '返回纪要审核'}</Button>}
+        footer={<div className="meeting-history-footer"><span>查看记录不会修改已确认内容</span><Button icon={<LeftOutlined />} onClick={() => setHistoryOpen(false)}>{activeStage === 'archive' ? '返回归档页面' : '返回纪要审核'}</Button></div>}
       >
-        <Tabs items={[
-          { key: 'overview', label: '会议概况', children: <Space orientation="vertical"><Text strong>{meetingTitle}</Text><Text>{meetingDate.replace('T', ' ')}</Text><Text>{meetingOrg}</Text><Paragraph>{meetingNotes || '暂无会中备注'}</Paragraph></Space> },
-          { key: 'agendas', label: '议题与讨论', children: meetingAgendaItems.length ? meetingAgendaItems.map((item, index) => <section key={item.id || index} style={{ padding: 16, borderBottom: `1px solid ${palette.line}` }}><Text strong>{item.title || item.agenda || '未命名议题'}</Text><Paragraph style={{ whiteSpace: 'pre-wrap' }}>{item.content || item.description || item.summary || '暂无已保存的讨论说明，可在录音与字幕中查看发言。'}</Paragraph></section>) : <Empty description="暂无已保存议题" /> },
-          { key: 'transcripts', label: '录音与会中实时字幕', children: <>
-            <Input.Search aria-label="搜索已保存字幕" placeholder="搜索发言人或字幕内容" value={historyQuery} onChange={event => setHistoryQuery(event.target.value)} allowClear style={{ marginBottom: 16 }} />
-            {recordingPlaybackRows.map(item => <section key={item.id} style={{ marginBottom: 12 }}><MeetingAudioPlayer playbackUrl={item.playbackUrl} /></section>)}
-            {liveTranscriptRows.length ? liveTranscriptRows.filter(line => `${line.speaker || ''} ${line.text || ''}`.toLowerCase().includes(historyQuery.trim().toLowerCase())).map(line => <section key={line.id} style={{ padding: '12px 0', borderBottom: `1px solid ${palette.line}` }}><Space><Text type="secondary">{line.time}</Text><Text strong>{line.speaker || '会议室麦克风'}</Text></Space><Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{line.text}</Paragraph></section>) : <Empty description="暂无已保存字幕" />}
-          </> },
-          ...(whisperTranscriptRows.length ? [{ key: 'whisper', label: 'Whisper 终审原文', children: whisperTranscriptRows.map(line => <section key={line.id} style={{ padding: '12px 0', borderBottom: `1px solid ${palette.line}` }}><Space><Text type="secondary">{line.time}–{line.endTime}</Text><Text strong>Whisper 终审</Text></Space><Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{line.text}</Paragraph></section>) }] : []),
+        <Tabs className="meeting-history-tabs" tabBarGutter={8} items={[
+          { key: 'overview', label: '会议概况', children: <div className="meeting-history-page">
+            <div className="meeting-history-page-intro"><span className="meeting-history-page-icon"><AppstoreOutlined /></span><div><h2>会议概况</h2><p>快速了解会议基本信息与内容规模</p></div></div>
+            <div className="meeting-history-overview-grid">
+              <section className="meeting-history-overview-main">
+                <span className="meeting-history-eyebrow">会议主题</span>
+                <h3>{meetingTitle}</h3>
+                <div className="meeting-history-meta-list">
+                  <span><CalendarOutlined />{meetingDate.replace('T', ' ')}</span>
+                  <span><AppstoreOutlined />{meetingOrg || '普通企业会议'}</span>
+                </div>
+                <div className="meeting-history-note"><strong>会中备注</strong><p>{meetingNotes || '本次会议暂无会中备注'}</p></div>
+              </section>
+              <aside className="meeting-history-stats">
+                <div><strong>{meetingAgendaItems.length}</strong><span>会议议题</span></div>
+                <div><strong>{liveTranscriptRows.length}</strong><span>实时字幕</span></div>
+                <div><strong>{recordingPlaybackRows.length}</strong><span>录音文件</span></div>
+                <div><strong>{whisperTranscriptRows.length}</strong><span>终审片段</span></div>
+              </aside>
+            </div>
+          </div> },
+          { key: 'agendas', label: '议题与讨论', children: <div className="meeting-history-page">
+            <div className="meeting-history-page-intro"><span className="meeting-history-page-icon"><MessageOutlined /></span><div><h2>议题与讨论</h2><p>按议题查看会前设定与已保存的讨论说明</p></div><span className="meeting-history-page-count">{meetingAgendaItems.length} 个议题</span></div>
+            {meetingAgendaItems.length ? <div className="meeting-history-agenda-list">{meetingAgendaItems.map((item, index) => <section key={item.id || index} className="meeting-history-agenda-card"><span className="meeting-history-topic-number">{String(index + 1).padStart(2, '0')}</span><div><h3>{item.title || item.agenda || '未命名议题'}</h3><p>{item.content || item.description || item.summary || '暂无已保存的讨论说明，可在录音与字幕中查看发言。'}</p>{item.durationMinutes ? <span className="meeting-history-agenda-duration"><ClockCircleOutlined /> 预计 {item.durationMinutes} 分钟</span> : null}</div></section>)}</div> : <div className="meeting-history-empty"><Empty description="暂无已保存议题" /></div>}
+          </div> },
+          { key: 'transcripts', label: '录音与会中实时字幕', children: <div className="meeting-history-page">
+            <div className="meeting-history-page-intro"><span className="meeting-history-page-icon"><AudioOutlined /></span><div><h2>录音与会中实时字幕</h2><p>回听原始录音，并按发言人或内容检索会中字幕</p></div><span className="meeting-history-page-count">{liveTranscriptRows.length} 条字幕</span></div>
+            <div className="meeting-history-toolbar"><Input.Search aria-label="搜索已保存字幕" placeholder="搜索发言人或字幕内容" value={historyQuery} onChange={event => setHistoryQuery(event.target.value)} allowClear /></div>
+            {recordingPlaybackRows.length > 0 && <div className="meeting-history-audio-grid">{recordingPlaybackRows.map((item, index) => <section key={item.id} className="meeting-history-audio-card"><div><span className="meeting-history-audio-index">{index + 1}</span><strong>会议录音 {index + 1}</strong></div><MeetingAudioPlayer playbackUrl={item.playbackUrl} /></section>)}</div>}
+            {liveTranscriptRows.length ? <div className="meeting-history-transcript-list">{liveTranscriptRows.filter(line => `${line.speaker || ''} ${line.text || ''}`.toLowerCase().includes(historyQuery.trim().toLowerCase())).map(line => <section key={line.id} className="meeting-history-transcript-row"><time>{line.time}</time><div><strong>{line.speaker || '会议室麦克风'}</strong><p>{line.text}</p></div></section>)}</div> : <div className="meeting-history-empty"><Empty description="暂无已保存字幕" /></div>}
+          </div> },
+          ...(whisperTranscriptRows.length ? [{ key: 'whisper', label: 'Whisper 终审原文', children: <div className="meeting-history-page">
+            <div className="meeting-history-page-intro"><span className="meeting-history-page-icon"><SafetyCertificateOutlined /></span><div><h2>Whisper 终审原文</h2><p>会后高精度复核结果，连续短句已整理为阅读段落，原始内容保持不变</p></div><span className="meeting-history-page-count">{whisperTranscriptRows.length} 个原始片段</span></div>
+            <div className="meeting-history-reading-hint">已整理为 <strong>{whisperReadingBlocks.length}</strong> 个阅读段落，每段保留对应的原文起止时间。</div>
+            <div className="meeting-history-transcript-list meeting-history-whisper-list">{whisperReadingBlocks.map(line => <section key={line.id} className="meeting-history-transcript-row"><time>{line.time}<small>至 {line.endTime}</small></time><div><strong><SafetyCertificateOutlined /> Whisper 终审 <span>{line.segmentCount} 个连续片段</span></strong><p>{line.text}</p></div></section>)}</div>
+          </div> }] : []),
           ...(isQuickMeeting ? [{ key: 'speakers', label: '发言人', children: <QuickMeetingSpeakers meetingId={currentMeetingId} state={speakerDiarization} audioRows={recordingPlaybackRows} readOnly onChange={setSpeakerDiarization} /> }] : []),
-          ...(pendingMeetingRecords ? [{ key: 'pending', label: '新分析版本（待审核）', children: <>
-            <Paragraph><Tag color="orange">待审核</Tag>已确认纪要保持不变，以下为新分析结果，共 {(pendingMeetingRecords.minutes || []).length} 个讨论主题。</Paragraph>
-            {(pendingMeetingRecords.minutes || []).map((item, index) => <section key={item.id || index} style={{ padding: '16px 0', borderBottom: `1px solid ${palette.line}` }}>
-              <Space wrap><Text strong>{index + 1}. {item.agenda || '讨论主题'}</Text>{item.topicSource === 'transcript' && <Tag color="blue">根据录音识别</Tag>}</Space>
-              <Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{Array.isArray(item.formalSummary) ? item.formalSummary.join('\n') : item.formalSummary || item.content || '请结合原始转写复核'}</Paragraph>
-              {item.basis?.timeRange && <Text type="secondary">原文时间：{item.basis.timeRange}</Text>}
-            </section>)}
-          </> }] : []),
-          { key: 'minutes', label: '纪要与归档材料', children: meetingGeneratedRecords?.generated ? <>
-            {recordSummaryLines(meetingGeneratedRecords).map((line, index) => <Paragraph key={index}>{line}</Paragraph>)}
-            {['minutes', 'decisions', 'todos'].map(field => <section key={field}><Text strong>{{ minutes: '会议纪要', decisions: '会议决议', todos: '待办事项' }[field]}</Text>{(meetingGeneratedRecords[field] || []).map((item, index) => <Paragraph key={item.id || index} style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : item.formalSummary || item.content || item.task || item.agenda || '暂无已保存正文'}</Paragraph>)}</section>)}
-            <Text type="secondary">{archiveDone ? '已归档，可返回归档页面查看材料及下载。' : '尚未完成归档。'}</Text>
-          </> : <Empty description="尚未生成纪要，查看不会启动生成" /> },
+          ...(pendingMeetingRecords ? [{ key: 'pending', label: '新分析版本（待审核）', children: <div className="meeting-history-analysis">
+            <div className="meeting-history-notice"><span className="meeting-history-notice-icon"><FileTextOutlined /></span><div><strong>新分析结果 <Tag color="orange">待审核</Tag></strong><p>已确认纪要保持不变，请结合原文核对以下内容。</p></div><span className="meeting-history-topic-count"><b>{(pendingMeetingRecords.minutes || []).length}</b> 个主题</span></div>
+            <div className="meeting-history-topic-list">{(pendingMeetingRecords.minutes || []).map((item, index) => {
+              const lines = (Array.isArray(item.formalSummary) ? item.formalSummary : [item.formalSummary || item.content || '']).flatMap(value => String(value).split('\n')).filter(Boolean);
+              const prose = lines.filter(line => !line.startsWith('录音中提及：'));
+              const quotes = lines.filter(line => line.startsWith('录音中提及：')).map(line => line.slice('录音中提及：'.length));
+              return <section key={item.id || index} className="meeting-history-topic">
+                <header><span className="meeting-history-topic-number">{String(index + 1).padStart(2, '0')}</span><h3>{item.agenda || '讨论主题'}</h3>{item.topicSource === 'transcript' && <Tag color="blue">根据录音识别</Tag>}</header>
+                <div className="meeting-history-topic-body">
+                  {prose.map((line, lineIndex) => <p key={lineIndex}>{line}</p>)}
+                  {quotes.length > 0 && <blockquote><span className="meeting-history-quote-label">录音原文摘录</span>{quotes.map((quote, quoteIndex) => <p key={quoteIndex}>{quote}</p>)}</blockquote>}
+                  {!lines.length && <p>请结合原始转写复核</p>}
+                  {item.basis?.timeRange && <div className="meeting-history-source"><ClockCircleOutlined /><span>原文时间</span><time>{item.basis.timeRange}</time></div>}
+                </div>
+              </section>;
+            })}</div>
+          </div> }] : []),
+          { key: 'minutes', label: '纪要与归档材料', children: <div className="meeting-history-page">
+            <div className="meeting-history-page-intro"><span className="meeting-history-page-icon"><FileDoneOutlined /></span><div><h2>纪要与归档材料</h2><p>查看已生成的会议成果与当前归档状态</p></div><Tag color={archiveDone ? 'green' : 'orange'}>{archiveDone ? '已完成归档' : '待完成归档'}</Tag></div>
+            {meetingGeneratedRecords?.generated ? <>
+              {recordSummaryLines(meetingGeneratedRecords).length > 0 && <section className="meeting-history-summary-card"><span className="meeting-history-eyebrow">会议摘要</span>{recordSummaryLines(meetingGeneratedRecords).map((line, index) => <p key={index}>{line}</p>)}</section>}
+              <div className="meeting-history-result-grid">{['minutes', 'decisions', 'todos'].map(field => {
+                const items = meetingGeneratedRecords[field] || [];
+                return <section key={field} className="meeting-history-result-card"><header><span>{{ minutes: <FileTextOutlined />, decisions: <CheckCircleOutlined />, todos: <ClockCircleOutlined /> }[field]}</span><div><h3>{{ minutes: '会议纪要', decisions: '会议决议', todos: '待办事项' }[field]}</h3><small>{items.length} 项内容</small></div></header>{items.length ? <div>{items.map((item, index) => <p key={item.id || index}><b>{index + 1}</b><span>{typeof item === 'string' ? item : item.formalSummary || item.content || item.task || item.agenda || '暂无已保存正文'}</span></p>)}</div> : <span className="meeting-history-card-empty">暂无内容</span>}</section>;
+              })}</div>
+              <div className="meeting-history-archive-status"><FolderOpenOutlined /><div><strong>{archiveDone ? '归档材料已就绪' : '归档尚未完成'}</strong><p>{archiveDone ? '返回归档页面可查看、下载正式会议材料。' : '完成纪要审核后，可进入归档页面补齐并下载材料。'}</p></div></div>
+            </> : <div className="meeting-history-empty"><Empty description="尚未生成纪要，查看不会启动生成" /></div>}
+          </div> },
         ]} />
       </Drawer>
 
