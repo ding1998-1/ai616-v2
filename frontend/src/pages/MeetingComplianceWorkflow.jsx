@@ -3,7 +3,7 @@ import { createDesktopAsr } from '../lib/desktopAsr.mjs';
 import { recordingRequest, withDeadline } from '../lib/recordingRequest.mjs';
 import { desktopDurationSeconds, desktopSpeakerIdentity, desktopTranscriptLabel } from '../lib/desktopRecording.mjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Checkbox, DatePicker, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Tabs, Timeline, Tooltip, Typography, message } from 'antd';
+import { Button, Checkbox, DatePicker, Drawer, Dropdown, Empty, Input, Modal, Pagination, Popconfirm, Progress, QRCode, Select, Skeleton, Space, Spin, Tag, Tabs, Timeline, Tooltip, Typography, message } from 'antd';
 import dayjs from 'dayjs';
 import {
   AppstoreOutlined,
@@ -831,6 +831,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const [meetingFilterSearch, setMeetingFilterSearch] = useState('');
   const [meetingFilterDateRange, setMeetingFilterDateRange] = useState([]);
   const [meetingSortMode, setMeetingSortMode] = useState('date_desc');
+  const [meetingListPage, setMeetingListPage] = useState(1);
   const [meetingSearchResults, setMeetingSearchResults] = useState([]);
   const [meetingSearchLoading, setMeetingSearchLoading] = useState(false);
   const [locatedAgendaId, setLocatedAgendaId] = useState('');
@@ -1365,6 +1366,10 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
     }
     return result;
   }, [meetingRecords, meetingFilterStage, meetingFilterMode, meetingFilterSearch, meetingFilterDateRange]);
+
+  useEffect(() => {
+    setMeetingListPage(1);
+  }, [meetingFilterStage, meetingFilterMode, meetingFilterSearch, meetingFilterDateRange, meetingSortMode]);
 
   useEffect(() => {
     const keyword = meetingFilterSearch.trim();
@@ -3679,6 +3684,11 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
       if (dateDiff) return dateDiff;
       return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
     });
+    const meetingPageSize = 30;
+    const pagedMeetingRecords = sortedMeetingRecords.slice(
+      (meetingListPage - 1) * meetingPageSize,
+      meetingListPage * meetingPageSize,
+    );
     const activeMeetingCount = meetingRecords.filter(item => ['会前确认', '会中记录', '进行中'].includes(item.phase)).length;
     const liveMeetingCount = meetingRecords.filter(item => ['会中记录', '进行中'].includes(item.phase)).length;
     const preMeetingCount = meetingRecords.filter(item => item.phase === '会前确认').length;
@@ -3804,7 +3814,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                   <div className="meeting-home-table-wrap">
                     <div className="meeting-home-table-head" aria-hidden="true"><span>日期</span><span>会议信息与下一步</span><span>状态</span><span>议题 / 参与人</span><span>更新时间</span><span>操作</span></div>
                     <div className="meeting-home-list">
-                      {sortedMeetingRecords.map(record => (
+                      {pagedMeetingRecords.map(record => (
                         <article key={record.id} className="meeting-home-row" role="button" tabIndex={0} onClick={() => openMeetingRecord(record)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openMeetingRecord(record); } }}>
                           <div className="meeting-home-date"><strong>{record.date ? meetingDateLabel(record.date) : '待定'}</strong><span>{weekdayLabel(record.date)} {meetingTimeLabel(record.date)}</span></div>
                           <div className="meeting-home-main"><div className="meeting-home-title-line"><Text strong>{record.title}</Text>{record.meetingMode === 'major' && <Tag color="gold">重大事项</Tag>}</div><p>议题：{record.agenda || record.project || '待补充'}</p><div className="meeting-home-next"><span>下一步：</span>{nextActionLabel(record.phase)}</div></div>
@@ -3816,6 +3826,12 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                       ))}
                       {!sortedMeetingRecords.length && <div className="meeting-home-empty"><Empty description={meetingRecords.length ? '没有符合当前条件的会议' : '还没有会议'}>{!meetingRecords.length && <p>从第一次会议开始，让 AI 帮你完成议题准备、录音、转写、纪要和归档。</p>}</Empty><Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNewMeetingDraft}>新建第一场会议</Button></div>}
                     </div>
+                    {sortedMeetingRecords.length > meetingPageSize && (
+                      <div className="meeting-home-pagination">
+                        <span>共 {sortedMeetingRecords.length} 场会议</span>
+                        <Pagination current={meetingListPage} pageSize={meetingPageSize} total={sortedMeetingRecords.length} showSizeChanger={false} onChange={setMeetingListPage} />
+                      </div>
+                    )}
                   </div>
                 )}
               </main>
