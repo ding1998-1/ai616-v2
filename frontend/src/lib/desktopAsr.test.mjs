@@ -50,6 +50,48 @@ test('capture waits for ready, silences output and flushes final ASR before clos
   await stopping;
   assert.equal(payloads[0].newText,'Final sentence');
   assert.equal(socket.readyState,3);
-  assert.deepEqual(statuses,['connecting','connected']);
+  assert.deepEqual(statuses,['connecting','awaiting_audio','connected']);
   assert.equal(asr.stop(),stopping);
+});
+
+
+test('PC wakes a suspended graph, rebuilds stalled capture, and never stops the recording track', async () => {
+  const contexts = [], sockets = [], callbacks = new Map(), statuses = [];
+  let clock = 0, tick, cancelled = false, trackStops = 0;
+  const stream = { getTracks: () => [{ stop: () => { trackStops++; } }] };
+  class Context {
+    constructor() { this.state = 'suspended'; this.sampleRate = 48000; this.destination = {}; this.resumes = 0; contexts.push(this); }
+    resume() { this.resumes++; this.state = 'running'; return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { return this.processor = { connect() {}, disconnect() {} }; }
+    close() { this.state = 'closed'; return Promise.resolve(); }
+  }
+  class Socket {
+    constructor() { this.readyState = 1; this.sent = []; sockets.push(this); }
+    send(x) { this.sent.push(x); }
+    close() { this.readyState = 3; this.onclose?.(); }
+  }
+  const a = createDesktopAsr({ stream, url: 'ws://test', onPayload() {}, onStatus: s => statuses.push(s),
+    AudioContextCtor: Context, WebSocketCtor: Socket, now: () => clock,
+    scheduleWatchdog: fn => { tick = fn; return 1; }, cancelWatchdog: () => { cancelled = true; },
+    recoveryTarget: { addEventListener: (k, v) => callbacks.set(k, v), removeEventListener: k => callbacks.delete(k) } });
+  assert.equal(contexts[0].resumes, 1);
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  sockets[0].onmessage({ data: JSON.stringify({ type: 'ready' }) });
+  clock = 11000; tick();
+  assert.equal(contexts.length, 2);
+  assert.equal(contexts[0].state, 'closed');
+  assert.equal(sockets.length, 1);
+  const event = level => ({ outputBuffer: { getChannelData: () => new Float32Array(8192) }, inputBuffer: { getChannelData: () => new Float32Array(8192).fill(level) } });
+  contexts[1].processor.onaudioprocess(event(0.1));
+  contexts[1].processor.onaudioprocess(event(0.1));
+  assert.ok(sockets[0].sent.some(x => x instanceof ArrayBuffer));
+  clock = 18000; contexts[1].processor.onaudioprocess(event(0));
+  clock = 22000; tick();
+  assert.equal(contexts.length, 2, 'silence is not a stalled graph');
+  a.dispose(); tick();
+  assert.equal(contexts.length, 2);
+  assert.equal(trackStops, 0);
+  assert.equal(callbacks.size, 0);
+  assert.equal(cancelled, true);
 });

@@ -889,6 +889,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
   const micAsrRef = useRef(null);
   const micTranscriptUploadsRef = useRef(new Set());
   const [desktopAsrStatus, setDesktopAsrStatus] = useState('idle');
+  const [desktopMicInterim, setDesktopMicInterim] = useState('');
 
 
   // 流式上传单个录音 chunk（每 3 秒调用一次，避免浏览器内存溢出）
@@ -1079,6 +1080,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
     const startMic = async () => {
       try {
+        setDesktopMicInterim('');
         setDesktopRecorderState('requesting');
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
           throw new Error('浏览器只允许在 HTTPS 安全地址使用麦克风，请打开 https://aimeeting.xingsnb.cn/');
@@ -1130,13 +1132,14 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
         const onAsrPayload = payload => {
           if (stopped) return;
           try {
-            if (payload.type === 'interim') {
+            if ((payload.type === 'interim' || payload.type === 'preview')) {
               // 桌面麦克风 interim — 仅预览，不入库
               const text = String(payload.text || '').trim();
               if (text) setDesktopMicInterim(text);
               return;
             }
             const handleAsrText = (newText, fullText, vpInfo, sentenceId = '', sentenceMeta = {}) => {
+              setDesktopMicInterim('');
               const text = String(newText || '').trim();
               if (!text) return;
               const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1250,6 +1253,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
 
     return () => {
       stopped = true;
+      setDesktopMicInterim('');
       micAsrRef.current?.dispose(); micAsrRef.current = null;
       // 停止 MediaRecorder 并上传录音
       if (micMediaRecorderRef.current && micMediaRecorderRef.current.state !== 'inactive') {
@@ -5098,6 +5102,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 </div>
               </div>
               <div className="meeting-live-transcript-list">
+                {recording && desktopMicInterim && <div role="status" style={{ padding: 12, marginBottom: 12, background: '#eff6ff', borderRadius: 12 }}><Tag color="blue">电脑实时预览 · 待校对</Tag><div>{desktopMicInterim}</div></div>}
                 {transcriptTab === 'chronicle' && (
                   filteredMeetingLiveRows.length > 0 ? (
                     <div ref={transcriptScrollRef} style={{ height: 520, overflowY: 'auto' }}>
@@ -6608,7 +6613,7 @@ export default function MeetingComplianceWorkflow({ isDarkMode = false, currentU
                 ['会议 ID', currentMeetingId],
                 ['电脑录音', desktopRecorderState === 'requesting' ? '正在请求麦克风' : desktopRecorderState === 'uploading' ? '正在上传并合并' : recording ? '录音与转写中' : desktopRecorderState === 'error' ? '保存未完成' : '未开始'],
                 ...(isQuickMeeting ? [['发言人', '现场发言，姓名待人工确认']] : [['手机接入', `${remoteSpeakerRows.filter(item => item.fromRemote).length} 人`]]),
-                ['实时转写', desktopAsrStatus === 'connected' ? '已连接' : desktopAsrStatus === 'reconnecting' ? '正在重连，原始录音继续保存' : desktopAsrStatus === 'connecting' ? '正在连接' : desktopAsrStatus === 'error' ? '暂不可用，原始录音继续保存' : '未开始'],
+                ['实时转写', desktopAsrStatus === 'connected' ? '音频采集中' : desktopAsrStatus === 'recovering' ? '正在恢复字幕采集，原始录音继续保存' : desktopAsrStatus === 'awaiting_audio' ? '已连接，等待音频采集' : desktopAsrStatus === 'reconnecting' ? '正在重连，原始录音继续保存' : desktopAsrStatus === 'connecting' ? '正在连接' : desktopAsrStatus === 'error' ? '暂不可用，原始录音继续保存' : '未开始'],
                 ['底稿回传', `${remoteTranscripts.length} 条`],
               ].map(([label, value]) => (
                 <div key={label} style={{ padding: 11, borderRadius: 10, background: palette.panelSoft, border: `1px solid ${palette.line}` }}>

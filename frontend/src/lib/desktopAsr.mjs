@@ -32,10 +32,11 @@ export function speechDownsample(buffer, sampleRate) {
 
 export function createDesktopAsr({ stream, url, onPayload, onStatus,
   AudioContextCtor = window.AudioContext || window.webkitAudioContext,
-  WebSocketCtor = WebSocket }) {
-  const context = new AudioContextCtor({ sampleRate: 16000 });
-  const source = context.createMediaStreamSource(stream);
-  const processor = context.createScriptProcessor(8192, 1, 1);
+  WebSocketCtor = WebSocket,
+  now = Date.now, scheduleWatchdog = setInterval, cancelWatchdog = clearInterval,
+  recoveryTarget = globalThis.document }) {
+  let context, source, processor, watchdog, resumePending;
+  let lastProcessAt = now();
   let socket, ready = false, stopping = false, closed = false;
   let reconnectTimer, readyTimer, heartbeat, attempts = 0, lastPong = 0;
   let buffer = new Uint8Array(0), finishResolve, stopPromise;
@@ -57,7 +58,7 @@ export function createDesktopAsr({ stream, url, onPayload, onStatus,
         ready = true;
         attempts = 0;
         lastPong = Date.now();
-        onStatus('connected');
+        onStatus('awaiting_audio');
         heartbeat = setInterval(() => {
           if (Date.now() - lastPong > 30000) { next.close(); return; }
           if (next.readyState === 1) next.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
@@ -77,27 +78,83 @@ export function createDesktopAsr({ stream, url, onPayload, onStatus,
       reconnectTimer = setTimeout(connect, Math.min(1000 * 2 ** Math.min(attempts - 1, 3), 10000));
     };
   };
-  context.onstatechange = () => {
-    if (context.state === 'suspended' && !stopping && !closed) context.resume().catch(() => {});
+  const wakeCapture = () => {
+    if (stopping || closed || !context || resumePending) return;
+    if (!['suspended', 'interrupted'].includes(context.state)) return;
+    const current = context;
+    onStatus('recovering');
+    let resumeResult;
+    try { resumeResult = current.resume(); } catch { return; }
+    const pending = Promise.resolve(resumeResult).catch(() => {
+      if (!stopping && !closed && context === current) onStatus('recovering');
+    }).finally(() => { if (resumePending === pending) resumePending = null; });
+    resumePending = pending;
   };
-  processor.onaudioprocess = event => {
-    event.outputBuffer.getChannelData(0).fill(0);
-    if (stopping || !ready || socket?.readyState !== 1) return;
-    const pcm = speechPcm16(speechDownsample(event.inputBuffer.getChannelData(0), context.sampleRate));
-    if (!pcm) return;
-    const bytes = new Uint8Array(pcm);
-    const merged = new Uint8Array(buffer.length + bytes.length);
-    merged.set(buffer); merged.set(bytes, buffer.length); buffer = merged;
-    if (buffer.length >= 8000) { socket.send(buffer.buffer); buffer = new Uint8Array(0); }
+  const releaseCapture = () => {
+    if (context) context.onstatechange = null;
+    if (processor) processor.onaudioprocess = null;
+    processor?.disconnect(); source?.disconnect();
+    context?.close().catch(() => {});
+    context = source = processor = null;
+    resumePending = null;
   };
-  source.connect(processor);
-  processor.connect(context.destination);
+  const attachCapture = () => {
+    // Use the device rate; PCM conversion below still sends 16 kHz audio.
+    const current = context = new AudioContextCtor();
+    source = current.createMediaStreamSource(stream);
+    processor = current.createScriptProcessor(8192, 1, 1);
+    lastProcessAt = now();
+    current.onstatechange = wakeCapture;
+    processor.onaudioprocess = event => {
+      event.outputBuffer.getChannelData(0).fill(0);
+      if (stopping || closed || context !== current) return;
+      lastProcessAt = now();
+      if (!ready || socket?.readyState !== 1) return;
+      onStatus('connected');
+      const pcm = speechPcm16(speechDownsample(event.inputBuffer.getChannelData(0), current.sampleRate));
+      if (!pcm) return;
+      const bytes = new Uint8Array(pcm);
+      const merged = new Uint8Array(buffer.length + bytes.length);
+      merged.set(buffer); merged.set(bytes, buffer.length); buffer = merged;
+      if (buffer.length >= 8000) { socket.send(buffer.buffer); buffer = new Uint8Array(0); }
+    };
+    source.connect(processor);
+    processor.connect(current.destination);
+    wakeCapture();
+  };
+  const removeRecovery = () => {
+    cancelWatchdog(watchdog);
+    recoveryTarget?.removeEventListener('pointerdown', wakeCapture);
+    recoveryTarget?.removeEventListener('keydown', wakeCapture);
+    recoveryTarget?.removeEventListener('visibilitychange', wakeCapture);
+  };
+  try {
+    attachCapture();
+  } catch (error) {
+    releaseCapture();
+    throw error;
+  }
+  recoveryTarget?.addEventListener('pointerdown', wakeCapture);
+  recoveryTarget?.addEventListener('keydown', wakeCapture);
+  recoveryTarget?.addEventListener('visibilitychange', wakeCapture);
+  watchdog = scheduleWatchdog(() => {
+    if (stopping || closed) return;
+    wakeCapture();
+    // Silence still produces callbacks. Only a stalled graph is rebuilt.
+    if (now() - lastProcessAt < 10000) return;
+    onStatus('recovering');
+    releaseCapture();
+    try { attachCapture(); } catch {
+      releaseCapture();
+      lastProcessAt = now();
+      onStatus('error');
+    }
+  }, 2000);
   connect();
   const dispose = () => {
     if (closed) return;
     closed = true; clearTimers();
-    processor.disconnect(); source.disconnect();
-    context.close().catch(() => {});
+    removeRecovery(); releaseCapture();
     socket?.close();
   };
   return {
@@ -106,7 +163,7 @@ export function createDesktopAsr({ stream, url, onPayload, onStatus,
       if (stopPromise) return stopPromise;
       stopping = true;
       clearTimers();
-      processor.disconnect(); source.disconnect();
+      removeRecovery(); releaseCapture();
       stopPromise = (async () => {
         if (ready && socket?.readyState === 1) {
           await new Promise(resolve => {
