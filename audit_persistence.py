@@ -5,10 +5,10 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 class AuditPersistence:
-    def __init__(self, base_dir: str = "data"):
-        self.base_dir = base_dir
-        self.history_file = os.path.join(base_dir, "audit_history.json")
-        self.upload_dir = os.path.join(base_dir, "uploads")
+    def __init__(self, base_dir: str = None):
+        self.base_dir = base_dir or os.environ.get("AI616_DATA_DIR", "data")
+        self.history_file = os.path.join(self.base_dir, "audit_history.json")
+        self.upload_dir = os.path.join(self.base_dir, "uploads")
         
         # Ensure directories exist
         os.makedirs(self.upload_dir, exist_ok=True)

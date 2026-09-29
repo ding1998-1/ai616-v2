@@ -1058,19 +1058,28 @@ async def meeting_asr_2pass_websocket(websocket: WebSocket):
         start_ms = max(0, int(result.get("start_ms") or 0))
         end_ms = max(start_ms, int(result.get("end_ms") or start_ms))
         forced_split = bool(result.get("forced_split"))
-        if sentence_seq <= 0 or not online_text.strip():
+        if sentence_seq <= 0:
             return
-        task = asyncio.create_task(
-            review_sentence(
-                sentence_id,
-                sentence_seq,
-                pcm,
-                online_text,
-                start_ms,
-                end_ms,
-                forced_split,
+        if not online_text.strip():
+            # The online service still assigns a sequence to empty finals.
+            # Advance the ordered buffer without publishing an empty subtitle.
+            task = asyncio.create_task(commit_result({
+                "sentenceSeq": sentence_seq,
+                "sentenceId": sentence_id,
+                "newText": "",
+            }))
+        else:
+            task = asyncio.create_task(
+                review_sentence(
+                    sentence_id,
+                    sentence_seq,
+                    pcm,
+                    online_text,
+                    start_ms,
+                    end_ms,
+                    forced_split,
+                )
             )
-        )
         review_tasks.add(task)
         task.add_done_callback(review_tasks.discard)
 

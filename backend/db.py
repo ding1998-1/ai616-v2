@@ -33,6 +33,9 @@ from .config import (
     MEETINGS_DB,
     MEETING_TRANSCRIPTS_DB,
     MEETING_DATA_DIR,
+    AUTH_DATA_DIR,
+    USERS_DB,
+    SEED_DEMO_DATA,
     now_text as _now_text,
     today_text as _today_text,
     _meetings_cache,
@@ -52,13 +55,8 @@ logger = logging.getLogger(__name__)
 
 # ═══ 本地路径常量 ══════════════════════════════════════════════════════════════════
 
-_script_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent
-
-AUTH_DATA_DIR = _script_dir / "data" / "auth"
 AUTH_DATA_DIR.mkdir(parents=True, exist_ok=True)
-USERS_DB = AUTH_DATA_DIR / "users.json"
-
-RULES_IMAGES_DIR = _script_dir / "rules"
+RULES_IMAGES_DIR = Path(os.path.dirname(os.path.abspath(__file__))).parent / "rules"
 
 # ═══ 线程本地数据库连接 ═══════════════════════════════════════════════════════════
 
@@ -1350,7 +1348,7 @@ def _migrate_legacy_meeting_json_once():
                 except Exception:
                     migration_ok = False
                     logger.exception("旧会议 JSON 迁移失败")
-            elif existing_count == 0:
+            elif existing_count == 0 and SEED_DEMO_DATA:
                 _db_save_meetings(_default_meetings())
 
             transcript_count = conn.execute("SELECT COUNT(*) AS c FROM meeting_transcripts").fetchone()["c"]
@@ -1614,9 +1612,10 @@ def _load_users() -> List[dict]:
                     return data
         except Exception:
             pass
-    data = _default_users()
-    with open(USERS_DB, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    data = _default_users() if SEED_DEMO_DATA else []
+    if data:
+        with open(USERS_DB, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     return data
 
 
@@ -1652,10 +1651,10 @@ def _check_meeting_access(user: dict, meeting: dict):
     creator = (meeting.get("creator") or "").strip()
     user_name = (user.get("name") or user.get("username") or "").strip()
     user_dept = (user.get("dept") or "").strip()
-    # Check if user's name or dept+name appears in the creator field
-    if user_name and user_name in creator:
-        return
-    if user_dept and user_name and f"{user_dept} {user_name}" in creator:
+    creator_identities = {user_name} if user_name else set()
+    if user_dept and user_name:
+        creator_identities.add(f"{user_dept} {user_name}")
+    if creator and creator in creator_identities:
         return
     # For demo: allow admin to access any meeting
     if user.get("role") == "admin":
@@ -1671,8 +1670,38 @@ def _check_meeting_access(user: dict, meeting: dict):
                     "SELECT 1 FROM meeting_participants WHERE meeting_id = ? AND user_id = ? LIMIT 1",
                     (meeting_id, user_id),
                 ).fetchone()
-            if participant:
-                return
+                if participant:
+                    return
+
+                # 早期版本尚未稳定写入 meeting_participants，但已经把参会
+                # 身份持久化到字幕和会中事件。这些是“实际参会”证据，
+                # 用于兼容历史会议，不按部门或名称模糊授权。
+                legacy_transcript = conn.execute(
+                    """
+                    SELECT 1 FROM meeting_transcripts
+                    WHERE meeting_id = ?
+                      AND (speaker_user_id = ? OR username = ?)
+                    LIMIT 1
+                    """,
+                    (meeting_id, user_id, (user.get("username") or "").strip()),
+                ).fetchone()
+                if legacy_transcript:
+                    return
+
+                legacy_event = conn.execute(
+                    """
+                    SELECT 1 FROM meeting_events
+                    WHERE meeting_id = ?
+                      AND (
+                        json_extract(payload_json, '$.speaker.userId') = ?
+                        OR json_extract(payload_json, '$.speaker.username') = ?
+                      )
+                    LIMIT 1
+                    """,
+                    (meeting_id, user_id, (user.get("username") or "").strip()),
+                ).fetchone()
+                if legacy_event:
+                    return
         except Exception:
             # 兼容未完成旧库初始化；此时继续按原有 creator/admin 规则判断。
             pass
@@ -1755,6 +1784,17 @@ def _public_meeting(meeting: dict, include_detail: bool = False) -> dict:
         公开格式的会议字典
     """
     normalized = _normalize_meeting(meeting)
+    agenda_titles = []
+    for item in normalized.get("agendaDrafts", []):
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("agenda") or item.get("name") or "").strip()
+        else:
+            title = str(item or "").strip()
+        if title and title not in agenda_titles:
+            agenda_titles.append(title)
+    fallback_agenda = str(normalized.get("agenda") or "").strip()
+    if not agenda_titles and fallback_agenda not in {"", "待确认议题", "待梳理议题", "本次会议"}:
+        agenda_titles.append(fallback_agenda)
     base = {
         "id": normalized.get("id"),
         "title": normalized.get("title", ""),
@@ -1772,7 +1812,8 @@ def _public_meeting(meeting: dict, include_detail: bool = False) -> dict:
         "updatedAt": normalized.get("updatedAt", ""),
         "phase": normalized.get("phase", "问题收集中"),
         "statusColor": normalized.get("statusColor", "default"),
-        "issueCount": normalized.get("issueCount", 0),
+        "issueCount": len(agenda_titles),
+        "agendaTitles": agenda_titles,
         "participantCount": normalized.get("participantCount", 0),
         "projectBound": normalized.get("projectBound", False),
         "agendaFrozen": normalized.get("agendaFrozen", False),
@@ -1965,8 +2006,9 @@ def _load_meetings(include_details: bool = True) -> dict:
         _meetings_cache = data
         _meetings_cache_time = now
         return data
-    data = _default_meetings()
-    _save_meetings(data)
+    data = _default_meetings() if SEED_DEMO_DATA else {}
+    if data:
+        _save_meetings(data)
     _meetings_cache = data
     _meetings_cache_time = now
     return data

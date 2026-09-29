@@ -24,8 +24,16 @@ def _check_quick_type_change(existing: dict, next_type: str) -> None:
         raise PermissionError("已有会议不能转换为或转出快速会议，请新建会议")
 
 
-def list_meetings(include_archived: bool = False, limit: int = 50, offset: int = 0) -> dict:
-    rows = [_public_meeting(item, include_detail=False) for item in _load_meetings().values()]
+def list_meetings(user: dict, include_archived: bool = False, limit: int = 50, offset: int = 0) -> dict:
+    visible = []
+    for item in _load_meetings().values():
+        try:
+            _check_meeting_access(user, item)
+            visible.append(item)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 403:
+                raise
+    rows = [_public_meeting(item, include_detail=False) for item in visible]
     if not include_archived:
         rows = [item for item in rows if not item.get("archived")]
     rows.sort(key=lambda item: item.get("updatedAt") or item.get("createdAt") or "", reverse=True)

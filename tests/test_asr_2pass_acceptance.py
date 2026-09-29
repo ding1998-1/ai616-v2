@@ -2,7 +2,10 @@ import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
+
 import backend.asr_online_server as online
+import backend.routes.asr as asr_routes
 from backend.routes.asr import _apply_asr_homophone_corrections
 from backend.services.asr_2pass_service import (
     ContinuationFinalBuffer,
@@ -123,6 +126,82 @@ def test_offline_results_are_committed_in_sentence_order():
     ready = buffer.add({"sentenceSeq": 1, "sentenceId": "s1", "newText": "一"})
 
     assert [item["newText"] for item in ready] == ["一", "二"]
+
+
+@pytest.mark.parametrize("device_type", ["desktop", "mobile"])
+def test_empty_online_final_does_not_block_later_subtitles(monkeypatch, device_type):
+    class FakeWebSocket:
+        def __init__(self):
+            self.query_params = {
+                "token": "test", "meetingId": "meeting-test", "deviceType": device_type,
+            }
+            self.messages = iter([
+                {"bytes": b"first"},
+                {"bytes": b"second"},
+                {"text": '{"type":"finish"}'},
+            ])
+            self.sent = []
+
+        async def accept(self):
+            pass
+
+        async def receive(self):
+            return next(self.messages)
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+        async def close(self, **_kwargs):
+            pass
+
+    class FakeOnlineClient:
+        async def is_available(self):
+            return True
+
+        async def start(self, **_kwargs):
+            return "session-test"
+
+        async def send_chunk(self, _session_id, audio, **_kwargs):
+            seq = 1 if audio == b"first" else 2
+            return {
+                "event": "sentence_final", "sentence_id": f"s{seq}",
+                "sentence_seq": seq,
+                "final_text": "" if seq == 1 else "会议开始。",
+                "is_speaking": False,
+            }
+
+        async def finish(self, _session_id):
+            return {}
+
+    class FakeOfflineClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def transcribe(self, *_args, **_kwargs):
+            return SimpleNamespace(text="会议开始。", backend="test-offline")
+
+        async def close(self):
+            pass
+
+    async def require_meeting(*_args):
+        return "meeting-test", {"title": "测试会议"}
+
+    async def online_client():
+        return FakeOnlineClient()
+
+    monkeypatch.setattr(asr_routes, "_get_user_from_auth_token", lambda *_args, **_kwargs: {"username": "tester"})
+    monkeypatch.setattr(asr_routes, "_require_asr_meeting", require_meeting)
+    monkeypatch.setattr(asr_routes, "_get_qwen_client", online_client)
+    monkeypatch.setattr(asr_routes, "_db_load_transcripts_for_meeting", lambda *_args: {"transcripts": []})
+    monkeypatch.setattr(asr_routes, "_resolve_meeting_role", lambda *_args: {"displayName": "测试者"})
+    monkeypatch.setattr("backend.services.offline_asr_client.OfflineASRClient", FakeOfflineClient)
+
+    websocket = FakeWebSocket()
+    asyncio.run(asr_routes.meeting_asr_2pass_websocket(websocket))
+    finals = [payload for payload in websocket.sent if payload["type"] == "final"]
+
+    assert [(payload["sentenceSeq"], payload["newText"]) for payload in finals] == [(2, "会议开始。")]
+    assert websocket.sent[-1]["type"] == "finished"
 
 
 def test_forced_split_fragments_are_committed_as_one_logical_sentence():

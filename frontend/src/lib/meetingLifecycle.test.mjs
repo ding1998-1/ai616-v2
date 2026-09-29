@@ -90,6 +90,14 @@ test('a failed create preserves the draft and does not invent a meeting', async 
   assert.equal(context.creatingMeetingRef.current, false);
 });
 
+test('legacy collect entry never creates a missing meeting', () => {
+  const detailCode = source.slice(source.indexOf('  const loadMeetingDetail ='), source.indexOf('  useEffect(() => {', source.indexOf('  const loadMeetingDetail =')));
+  assert.ok(detailCode.includes("authFetchJson(`/api/meetings/${meetingId}?compact=true`)"));
+  assert.ok(!detailCode.includes("method: 'POST'"));
+  assert.ok(!detailCode.includes("authFetchJson('/api/meetings'"));
+  assert.ok(!source.includes('createIfMissing: true'));
+});
+
 test('draft save preserves typed content and agendas, and stays open on failure', async () => {
   const code = source.slice(source.indexOf('  const saveDraftAndExit ='), source.indexOf('  const discardAndExit ='));
   for (const fail of [true, false]) {
@@ -130,4 +138,32 @@ test('a late snapshot from the previous meeting cannot overwrite the open meetin
   finish({ records: { generated: true, title: 'meeting-a' } });
   assert.equal(await request, null);
   assert.ok(!events.some(e => e[0] === 'records' || e[0] === 'snapshot'));
+});
+
+
+test('automatic Word uses review mode and leaves confirmed content untouched for pending versions', async () => {
+  for (const pending of [false, true]) {
+    const calls = [];
+    const h = stageHarness('meeting', {
+      currentMeetingId: 'meeting-test',
+      generateMeetingRecords: async () => ({ generated: true, pendingGenerationId: pending ? 'new-version' : '' }),
+      authFetchJson: async (url, options) => { calls.push([url, options.method]); return { documents: {} }; },
+      setMeetingGeneratedRecords: () => {},
+    });
+    await h.run();
+    assert.equal(calls.length, pending ? 0 : 1);
+    if (!pending) assert.equal(calls[0][0], '/api/meetings/meeting-test/records/documents?template_id=standard&mode=review');
+    assert.equal(h.events.some(e => e[0] === 'warning'), false);
+  }
+});
+
+test('review Word failure preserves minutes and releases end action for retry', async () => {
+  const h = stageHarness('meeting', {
+    currentMeetingId: 'meeting-test', generateMeetingRecords: async () => ({ generated: true }),
+    authFetchJson: async () => { throw new Error('offline'); }, setMeetingGeneratedRecords: () => {},
+  });
+  await h.run();
+  assert.ok(h.events.some(e => e[0] === 'warning' && e[1].includes('offline')));
+  assert.equal(h.context.endingMeetingRef.current, false);
+  assert.equal(h.events.filter(e => e[0] === 'persist').length, 1);
 });

@@ -20,10 +20,10 @@ from backend.services.document_service import (
     resolve_document,
 )
 from backend.services.knowledge_service import search_legal_provisions
+from backend.config import CONTRACT_DATA_DIR
 
 
 logger = logging.getLogger(__name__)
-CONTRACT_DATA_DIR = DOCS_DIR.parent / "contracts"
 CONTRACT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -30,17 +30,21 @@ from backend.services.outcome_service import (
     regenerate_record_paragraphs,
     update_todo,
 )
+from backend.services.meeting_payload_service import compact_records_snapshot
 
 
 router = APIRouter(prefix="/api", tags=["outcomes"])
 
 
 @router.get("/meetings/{meeting_id}/records/snapshot")
-async def meeting_records_snapshot(request: Request, meeting_id: str):
+async def meeting_records_snapshot(request: Request, meeting_id: str, compact: bool = False):
     """Read saved records without creating a generation task."""
     require_meeting(request, meeting_id)
     try:
-        return {"success": True, **get_records(meeting_id)}
+        snapshot = get_records(meeting_id)
+        if compact:
+            snapshot = compact_records_snapshot(snapshot)
+        return {"success": True, **snapshot}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

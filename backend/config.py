@@ -38,32 +38,53 @@ DASHSCOPE_API_KEY = (
 DASHSCOPE_WORKSPACE = (
     os.environ.get("DASHSCOPE_WORKSPACE") or os.environ.get("DASHSCOPE_WORKSPACE_ID") or ""
 )
-PERSIST_DIR = str(Path(os.path.dirname(os.path.abspath(__file__))) / ".." / "chroma_db")
+PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
+INSTANCE_MODE = os.environ.get("AI616_INSTANCE_MODE", "development").strip().lower()
+DATA_ROOT = Path(os.environ.get("AI616_DATA_DIR", str(PROJECT_ROOT / "data"))).expanduser().resolve()
+_seed_setting = os.environ.get("AI616_SEED_DEMO_DATA")
+SEED_DEMO_DATA = (
+    _seed_setting.strip().lower() in {"1", "true", "yes", "on"}
+    if _seed_setting is not None
+    else INSTANCE_MODE != "customer"
+)
+_chroma_setting = os.environ.get("AI616_CHROMA_DIR")
+_legacy_chroma_dir = PROJECT_ROOT / "chroma_db"
+if _chroma_setting:
+    _chroma_dir = Path(_chroma_setting)
+elif os.environ.get("AI616_DATA_DIR") or INSTANCE_MODE == "customer":
+    # Customer instances must keep embeddings inside their isolated data root.
+    _chroma_dir = DATA_ROOT / "chroma_db"
+elif _legacy_chroma_dir.exists():
+    # Existing production installations stored Chroma beside the project root.
+    _chroma_dir = _legacy_chroma_dir
+else:
+    _chroma_dir = DATA_ROOT / "chroma_db"
+PERSIST_DIR = str(_chroma_dir.expanduser().resolve())
 
 # ═══ 目录与文件路径 ══════════════════════════════════════════════════════════════
 
 def _script_dir() -> Path:
     return Path(os.path.dirname(os.path.abspath(__file__))).parent
 
-CUSTOM_RULES_DIR = _script_dir() / "data" / "custom_rules"
+CUSTOM_RULES_DIR = DATA_ROOT / "custom_rules"
 CUSTOM_RULES_DIR.mkdir(parents=True, exist_ok=True)
 CUSTOM_RULES_DB = CUSTOM_RULES_DIR / "files.json"
 
-MEETING_DATA_DIR = _script_dir() / "data" / "meetings"
+MEETING_DATA_DIR = DATA_ROOT / "meetings"
 MEETING_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-APP_DB = _script_dir() / "data" / "app.db"
-MEETING_FILES_DIR = _script_dir() / "data" / "meeting_files"
+APP_DB = DATA_ROOT / "app.db"
+MEETING_FILES_DIR = DATA_ROOT / "meeting_files"
 MEETING_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
 RULES_IMAGES_DIR = _script_dir() / "rules"
 
-AUTH_DATA_DIR = _script_dir() / "data" / "auth"
+AUTH_DATA_DIR = DATA_ROOT / "auth"
 AUTH_DATA_DIR.mkdir(parents=True, exist_ok=True)
 USERS_DB = AUTH_DATA_DIR / "users.json"
 DEPARTMENTS_DB = AUTH_DATA_DIR / "departments.json"
 
-ASR_CONFIG_DIR = _script_dir() / "data" / "asr"
+ASR_CONFIG_DIR = DATA_ROOT / "asr"
 ASR_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 ASR_HOTWORDS_DB = ASR_CONFIG_DIR / "hotwords.json"
 ASR_CORRECTIONS_DB = ASR_CONFIG_DIR / "corrections.json"
@@ -71,6 +92,13 @@ ASR_LEARNED_HOTWORDS_DB = ASR_CONFIG_DIR / "learned_hotwords.json"
 
 MEETINGS_DB = MEETING_DATA_DIR / "meetings.json"
 MEETING_TRANSCRIPTS_DB = MEETING_DATA_DIR / "transcripts.json"
+
+DOCS_DIR = DATA_ROOT / "docs"
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
+KNOWLEDGE_FILES_DIR = DATA_ROOT / "knowledge_files"
+KNOWLEDGE_FILES_DIR.mkdir(parents=True, exist_ok=True)
+CONTRACT_DATA_DIR = DATA_ROOT / "contracts"
+CONTRACT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ═══ 锁 — 保护共享状态 ═══════════════════════════════════════════════════════════
 

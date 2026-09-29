@@ -58,6 +58,7 @@ class UserUpsertRequest(BaseModel):
     meetingSeat: Optional[str] = None
     is_meeting_participant: Optional[bool] = None
     lastLoginAt: Optional[str] = None
+    status: Optional[str] = None
 
 
 # ── auth routes ──
@@ -230,15 +231,17 @@ async def create_user(request: Request, body: UserUpsertRequest):
     users = _load_users()
     if any(u.get("username") == body.username for u in users):
         raise HTTPException(status_code=400, detail="用户名已存在")
+    password = (body.password or "").strip()
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="新建用户必须设置至少 6 位密码")
     new_user = {
         "id": body.id or f"u_{body.username}", "username": body.username,
         "name": body.name or body.username, "role": body.role or "user",
         "dept": body.dept or "", "meetingRole": body.meetingRole or "",
         "meetingSeat": body.meetingSeat or "", "createdAt": _now_text(),
-        "lastLoginAt": "",
+        "lastLoginAt": "", "status": body.status or "active",
+        "password": _hash_password(password),
     }
-    if body.password:
-        new_user["password"] = _hash_password(body.password)
     users.append(new_user)
     _save_users(users)
     return {"success": True, "user": _public_user(new_user)}

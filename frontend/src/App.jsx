@@ -79,7 +79,8 @@ class ErrorBoundary extends React.Component {
     return this.props.children;
   }
 }
-import { Badge, Layout, Menu, theme, ConfigProvider, Tooltip, Dropdown, Button, Space, Avatar, Typography, Spin, Tag } from 'antd';
+import { Badge, Select, Layout, Menu, theme, ConfigProvider, Tooltip, Dropdown, Button, Space, Avatar, Typography, Spin, Tag } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
 import {
   FileTextOutlined,
   DatabaseOutlined,
@@ -229,7 +230,7 @@ function SidebarStatus({ online }) {
   const dotColor = online === null ? '#f59e0b' : online ? '#22c55e' : '#ef4444';
   return (
     <Tooltip title={online ? '后端 API 在线' : '无法连接到后端，请检查服务是否启动'}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 12px', padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.62)' }}>
+      <div className="app-sidebar-status" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 12px', padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.62)' }}>
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, boxShadow: `0 0 0 4px ${dotColor}22` }} />
         <span style={{ fontSize: 11, color: '#7c8798' }}>{label}</span>
       </div>
@@ -243,6 +244,15 @@ function AppShell({ currentUser, onLogout }) {
     return PAGE_META[page] ? page : 'ai_meeting';
   });
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [appearance, setAppearance] = useState(() => {
+    try { return localStorage.getItem('ai616.meetingAppearance') === 'enterprise' ? 'enterprise' : 'modern'; }
+    catch { return 'modern'; }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.meetingAppearance = appearance;
+    try { localStorage.setItem('ai616.meetingAppearance', appearance); } catch { /* Storage may be disabled. */ }
+    return () => { delete document.documentElement.dataset.meetingAppearance; };
+  }, [appearance]);
   const [notificationCount, setNotificationCount] = useState(0);
   const backendOnline = useBackendStatus();
 
@@ -346,11 +356,12 @@ function AppShell({ currentUser, onLogout }) {
 
   return (
     <ConfigProvider
+      locale={zhCN}
       theme={{
         algorithm: isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
-          colorPrimary: UI_PRIMARY,
-          colorInfo: UI_PRIMARY,
+          colorPrimary: appearance === 'enterprise' ? (isDarkMode ? '#7DA9DD' : '#234D79') : UI_PRIMARY,
+          colorInfo: appearance === 'enterprise' ? '#234D79' : UI_PRIMARY,
           colorText: 'var(--ui-text-1)',
           colorTextSecondary: 'var(--ui-text-2)',
           colorBorder: 'var(--ui-border-2)',
@@ -360,7 +371,8 @@ function AppShell({ currentUser, onLogout }) {
           fontFamily: 'var(--ui-font-family)',
         },
         components: {
-          Button: { borderRadius: 8, controlHeight: 36, fontWeight: 500 },
+          Button: { borderRadius: appearance === 'enterprise' ? 6 : 8, controlHeight: 36, fontWeight: 500 },
+          Menu: appearance === 'enterprise' ? { darkItemBg: '#152e4c', darkSubMenuItemBg: '#152e4c', darkItemColor: '#d0dbe8', darkItemSelectedBg: '#2c4f76', itemColor: '#d0dbe8', itemSelectedColor: '#fff', itemSelectedBg: '#2c4f76', itemHoverColor: '#fff', itemHoverBg: '#24415f', subMenuItemBg: '#152e4c', itemBorderRadius: 6 } : {},
           Card: { borderRadiusLG: 12, paddingLG: 16 },
           Tag: { borderRadiusSM: 999 },
         },
@@ -380,19 +392,19 @@ function AppShell({ currentUser, onLogout }) {
             backdropFilter: 'blur(24px)',
           }}
         >
-          <div style={{ padding: '22px 18px 16px' }}>
+          <div className="app-sidebar-brand" style={{ padding: '22px 18px 16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <SidebarBrandMark />
               <div>
-                <div style={{ fontSize: 15, fontWeight: 650, color: '#172033', letterSpacing: '-0.01em' }}>AI 会议工作台</div>
+                <div className="app-brand-title" style={{ fontSize: 15, fontWeight: 650, color: '#172033', letterSpacing: '-0.01em' }}>AI 会议工作台</div>
                 <div style={{ fontSize: 11, color: '#8b95a7', marginTop: 2 }}>从议题到决议</div>
               </div>
             </div>
-            <div style={{ marginTop: 20, padding: '11px 12px', borderRadius: 16, background: 'rgba(255,255,255,0.72)', border: '1px solid rgba(15,23,42,0.05)', boxShadow: '0 8px 24px rgba(15,23,42,0.04)' }}>
+            <div className="app-sidebar-profile" style={{ marginTop: 20, padding: '11px 12px', borderRadius: 16, background: 'rgba(255,255,255,0.72)', border: '1px solid rgba(15,23,42,0.05)', boxShadow: '0 8px 24px rgba(15,23,42,0.04)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Avatar size={34} icon={<UserOutlined />} style={{ background: UI_PRIMARY }} />
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ color: '#172033', fontWeight: 600 }}>{currentUser?.name}</div>
+                  <div className="app-sidebar-name" style={{ color: '#172033', fontWeight: 600 }}>{currentUser?.name}</div>
                   <div style={{ color: '#8b95a7', fontSize: 11, marginTop: 2 }}>{currentUser?.dept || '未设置部门'}</div>
                 </div>
               </div>
@@ -400,7 +412,7 @@ function AppShell({ currentUser, onLogout }) {
           </div>
 
           <Menu
-            theme="light"
+            theme={appearance === 'enterprise' ? 'dark' : 'light'}
             mode="inline"
             selectedKeys={[currentPage]}
             items={menuItems}
@@ -408,7 +420,7 @@ function AppShell({ currentUser, onLogout }) {
             style={{ borderRight: 0, flex: 1, background: 'transparent', marginTop: 4, paddingInline: 10 }}
           />
 
-          <div style={{ flexShrink: 0, paddingBottom: 12 }}>
+          <div className="app-sidebar-status-footer" style={{ flexShrink: 0, paddingBottom: 12 }}>
             <SidebarStatus online={backendOnline} />
           </div>
         </Sider>
@@ -424,7 +436,14 @@ function AppShell({ currentUser, onLogout }) {
                 <Tooltip title={notificationCount ? `${notificationCount} 条待处理通知` : '暂无新通知'}>
                   <Badge dot={notificationCount > 0} offset={[-3, 3]}><Button shape="circle" icon={<BellOutlined />} aria-label="通知" /></Badge>
                 </Tooltip>
-                <Tooltip title="切换主题">
+                <Select
+                  aria-label="切换界面外观"
+                  value={appearance}
+                  onChange={setAppearance}
+                  style={{ width: 132 }}
+                  options={[{ value: 'modern', label: '现代主题' }, { value: 'enterprise', label: '政企主题' }]}
+                />
+                <Tooltip title="切换深浅色">
                   <Button shape="circle" icon={isDarkMode ? <BulbFilled /> : <BulbOutlined />} onClick={() => setIsDarkMode(v => !v)} />
                 </Tooltip>
                 <Dropdown menu={userMenu} trigger={['click']}>
@@ -544,6 +563,7 @@ export default function App() {
   if (isIssueCollectPath) {
     return (
       <ConfigProvider
+        locale={zhCN}
         theme={{
           token: {
             colorPrimary: UI_PRIMARY,
@@ -571,6 +591,7 @@ export default function App() {
   if (isMobileRecorderPath) {
     return (
       <ConfigProvider
+        locale={zhCN}
         theme={{
           token: {
             colorPrimary: UI_PRIMARY,

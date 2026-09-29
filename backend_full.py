@@ -58,6 +58,7 @@ from backend.config import (  # noqa: E402
     LLM_CONCURRENCY, AUTH_SECRET, DASHSCOPE_FUN_ASR_WS_URL,
     DASHSCOPE_API_KEY, DASHSCOPE_WORKSPACE, PERSIST_DIR,
     # 路径常量
+    DATA_ROOT, DOCS_DIR, KNOWLEDGE_FILES_DIR, CONTRACT_DATA_DIR,
     CUSTOM_RULES_DIR, CUSTOM_RULES_DB, MEETING_DATA_DIR,
     APP_DB, MEETING_FILES_DIR, RULES_IMAGES_DIR,
     AUTH_DATA_DIR, USERS_DB, DEPARTMENTS_DB, MEETINGS_DB, MEETING_TRANSCRIPTS_DB,
@@ -1155,11 +1156,11 @@ async def get_audit_history_api(request: Request):
         })
 
 
-AUTH_DATA_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "auth"))
+AUTH_DATA_DIR = DATA_ROOT / "auth"
 AUTH_DATA_DIR.mkdir(parents=True, exist_ok=True)
 USERS_DB = AUTH_DATA_DIR / "users.json"
 
-CUSTOM_RULES_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "custom_rules"))
+CUSTOM_RULES_DIR = DATA_ROOT / "custom_rules"
 CUSTOM_RULES_DIR.mkdir(parents=True, exist_ok=True)
 CUSTOM_RULES_DB = CUSTOM_RULES_DIR / "files.json"
 
@@ -2332,9 +2333,16 @@ async def delete_user(request: Request, user_id: str):
 
 @app.get("/api/meetings")
 async def list_meetings(request: Request, include_archived: bool = False, limit: int = 50, offset: int = 0):
-    _get_request_user(request, required=True)
+    user = _get_request_user(request, required=True)
     meetings = _load_meetings()
-    rows = [_public_meeting(item, include_detail=False) for item in meetings.values()]
+    visible = []
+    for item in meetings.values():
+        try:
+            _check_meeting_access(user, item)
+            visible.append(item)
+        except HTTPException:
+            continue
+    rows = [_public_meeting(item, include_detail=False) for item in visible]
     if not include_archived:
         rows = [item for item in rows if not item.get("archived")]
     rows.sort(key=lambda item: item.get("updatedAt") or item.get("createdAt") or "", reverse=True)
@@ -7274,7 +7282,6 @@ class KnowledgeFileUpdate(BaseModel):
     parsedText: Optional[str] = None
     savedName: Optional[str] = None
 
-KNOWLEDGE_FILES_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "knowledge_files"))
 KNOWLEDGE_FILES_DIR.mkdir(parents=True, exist_ok=True)
 KNOWLEDGE_FILES_DB = KNOWLEDGE_FILES_DIR / "files.json"
 
@@ -7522,7 +7529,6 @@ ONLYOFFICE_API_PATH = "/web-apps/apps/api/documents/api.js"
 OO_JWT_SECRET = os.environ.get("ONLYOFFICE_JWT_SECRET", "your-secret-key-change-in-production")
 
 # Directory for storing editable documents
-DOCS_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "docs"))
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Directory for storing plugin files
@@ -8472,7 +8478,6 @@ async def doc_export_reviewed(request: Request, body: ReviewedDocExportRequest):
     })
 
 
-CONTRACT_DATA_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "contracts"))
 CONTRACT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -9481,7 +9486,7 @@ def _check_todo_deadlines():
 @app.get("/api/meetings/search")
 async def cross_meeting_search(request: Request, q: str = "", limit: int = 30):
     """全文检索：搜索会议标题、议题、转写原文、发言人、AI 纪要。"""
-    _get_request_user(request, required=True)
+    user = _get_request_user(request, required=True)
     keyword = (q or "").strip()
     if not keyword or len(keyword) < 2:
         return JSONResponse({"results": [], "query": keyword})
@@ -9569,6 +9574,15 @@ async def cross_meeting_search(request: Request, q: str = "", limit: int = 30):
         logger.error("全文检索失败: %s", e)
         return JSONResponse({"results": [], "query": keyword, "total": 0, "error": str(e)})
 
+    accessible = set()
+    for meeting_id, meeting in _load_meetings().items():
+        try:
+            _check_meeting_access(user, meeting)
+            accessible.add(meeting_id)
+        except HTTPException:
+            continue
+    results_map = {meeting_id: item for meeting_id, item in results_map.items() if meeting_id in accessible}
+
     # 按匹配数排序
     sorted_results = sorted(results_map.values(), key=lambda x: x["matchCount"], reverse=True)[:limit]
     return JSONResponse({"results": sorted_results, "query": keyword, "total": len(sorted_results)})
@@ -9654,6 +9668,10 @@ async def export_single_meeting(request: Request, meeting_id: str):
     """导出单个会议完整数据包（JSON + 录音，ZIP 格式）。"""
     user = _get_request_user(request, required=True)
     safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
     try:
         import io, zipfile
         buf = io.BytesIO()
@@ -9719,25 +9737,40 @@ async def export_single_meeting(request: Request, meeting_id: str):
 @app.get("/api/dashboard/stats")
 async def dashboard_stats(request: Request):
     """仪表盘统计数据。"""
-    _get_request_user(request, required=True)
+    user = _get_request_user(request, required=True)
+    visible = []
+    for meeting in _load_meetings().values():
+        try:
+            _check_meeting_access(user, meeting)
+            visible.append(meeting)
+        except HTTPException:
+            continue
+    visible_ids = [item.get("id") for item in visible if item.get("id")]
+    active = sum(1 for item in visible if item.get("phase") not in {"已归档", ""})
+    archived = sum(1 for item in visible if item.get("phase") == "已归档")
+    recent = sorted(visible, key=lambda item: item.get("updatedAt") or item.get("createdAt") or "", reverse=True)[:5]
     with _db_connect() as conn:
-        total = conn.execute("SELECT COUNT(*) as cnt FROM meetings").fetchone()["cnt"]
-        active = conn.execute(
-            "SELECT COUNT(*) as cnt FROM meetings WHERE phase NOT IN ('已归档', '')"
-        ).fetchone()["cnt"]
-        archived = conn.execute(
-            "SELECT COUNT(*) as cnt FROM meetings WHERE phase = '已归档'"
-        ).fetchone()["cnt"]
-        total_ts = conn.execute("SELECT COUNT(*) as cnt FROM meeting_transcripts").fetchone()["cnt"]
-        recent = conn.execute(
-            "SELECT id, title, project, phase, meeting_date, updated_at FROM meetings ORDER BY updated_at DESC LIMIT 5"
-        ).fetchall()
+        if visible_ids:
+            placeholders = ",".join("?" for _ in visible_ids)
+            total_ts = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM meeting_transcripts WHERE meeting_id IN ({placeholders})",
+                visible_ids,
+            ).fetchone()["cnt"]
+        else:
+            total_ts = 0
     return JSONResponse({
-        "totalMeetings": total,
+        "totalMeetings": len(visible),
         "activeMeetings": active,
         "archivedMeetings": archived,
         "totalTranscripts": total_ts,
-        "recentMeetings": [dict(row) for row in recent],
+        "recentMeetings": [
+            {
+                "id": item.get("id"), "title": item.get("title"),
+                "project": item.get("project"), "phase": item.get("phase"),
+                "meeting_date": item.get("date"), "updated_at": item.get("updatedAt"),
+            }
+            for item in recent
+        ],
     })
 
 

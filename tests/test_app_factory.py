@@ -21,6 +21,42 @@ def test_core_app_registers_health_and_user_routes():
         assert isinstance(users.json()["users"], list)
 
 
+def test_new_user_requires_password_and_can_login_immediately(monkeypatch):
+    from backend.routes import auth as auth_routes
+
+    stored_users = [{
+        "id": "u_admin", "username": "admin", "name": "管理员",
+        "role": "admin", "dept": "信息管理中心", "status": "active",
+        "password": auth_routes._hash_password("admin-password"),
+    }]
+    monkeypatch.setattr(auth_routes, "_load_users", lambda: stored_users)
+    monkeypatch.setattr(auth_routes, "_save_users", lambda users: stored_users.__setitem__(slice(None), users))
+
+    app = create_core_app()
+    token = _issue_auth_token(stored_users[0])
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(app) as client:
+        missing_password = client.post(
+            "/api/users",
+            headers=headers,
+            json={"username": "new-user", "name": "新用户", "role": "staff", "dept": "业务部"},
+        )
+        assert missing_password.status_code == 400
+
+        created = client.post(
+            "/api/users",
+            headers=headers,
+            json={
+                "username": "new-user", "password": "new-password",
+                "name": "新用户", "role": "staff", "dept": "业务部", "status": "active",
+            },
+        )
+        assert created.status_code == 200
+        login = client.post("/api/auth/login", json={"username": "new-user", "password": "new-password"})
+        assert login.status_code == 200
+        assert login.json()["user"]["username"] == "new-user"
+
+
 def test_main_entry_uses_factory_routes_once(monkeypatch):
     monkeypatch.setenv("APP_AUTH_SECRET", "local-test-secret-not-for-production-32chars")
     from backend import main

@@ -71,3 +71,11 @@ def test_safari_mp4_mime_keeps_mp4_extension():
     assert recording_service.extension_for_mime("audio/mp4", "chunk_0.webm") == ".mp4"
     assert recording_service.extension_for_mime("audio/webm;codecs=opus", "chunk_0.mp4") == ".webm"
     assert recording_service.extension_for_mime("audio/ogg;codecs=opus", "chunk_0.webm") == ".ogg"
+
+
+def test_desktop_merge_ignores_wall_clock_duration_that_includes_sleep():
+    assert recording_service.expected_duration_for_merge(14064, "") is None
+
+
+def test_mobile_merge_keeps_device_duration_gate():
+    assert recording_service.expected_duration_for_merge(1572, "phone-123") == 1572

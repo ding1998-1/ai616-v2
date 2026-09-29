@@ -310,7 +310,15 @@ export default function UserManagement({ currentUser }) {
           <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="密码" name="password" extra={editing ? '留空则保留原密码' : '请设置至少 6 位密码，不使用公共默认密码'}>
+          <Form.Item
+            label="密码"
+            name="password"
+            extra={editing ? '留空则保留原密码' : '创建后可立即使用该密码登录'}
+            rules={editing ? [{ min: 6, message: '密码至少 6 位', transform: value => value || undefined }] : [
+              { required: true, message: '请设置登录密码' },
+              { min: 6, message: '密码至少 6 位' },
+            ]}
+          >
             <Input.Password />
           </Form.Item>
           <Form.Item label="角色" name="role" rules={[{ required: true, message: '请选择角色' }]}>

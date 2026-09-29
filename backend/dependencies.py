@@ -43,9 +43,13 @@ def require_meeting_user(user: dict, meeting_id: str) -> tuple[str, dict]:
 def can_manage_meeting(user: dict, meeting: dict) -> bool:
     if user.get("role") == "admin":
         return True
-    creator = meeting.get("creator") or ""
-    name = user.get("name") or user.get("username") or ""
-    if creator and (name in creator or creator in name):
+    creator = (meeting.get("creator") or "").strip()
+    name = (user.get("name") or user.get("username") or "").strip()
+    dept = (user.get("dept") or "").strip()
+    creator_identities = {name} if name else set()
+    if dept and name:
+        creator_identities.add(f"{dept} {name}")
+    if creator and creator in creator_identities:
         return True
     role = (user.get("meetingRole") or user.get("role") or "").strip()
     return role in GOVERNOR_ROLES

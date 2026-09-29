@@ -19,8 +19,9 @@ from typing import Iterable
 from fastapi import HTTPException
 
 
+from backend.config import DOCS_DIR
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DOCS_DIR = PROJECT_ROOT / "data" / "docs"
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"docx", "xlsx", "pptx", "doc", "xls", "ppt", "pdf", "txt", "md"}

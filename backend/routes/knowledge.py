@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import MAX_UPLOAD_BYTES, llm_semaphore
 from backend.dependencies import require_user
-from backend.llm_client import llm
+from backend.llm_client import QwenLocalLLM
 from backend.models import KBQueryRequest
 from backend.services.knowledge_service import (
     create_knowledge_file,
@@ -31,6 +31,9 @@ from backend.services.knowledge_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["knowledge"])
+
+# Keep knowledge answers local without changing other model consumers.
+knowledge_llm = QwenLocalLLM()
 
 
 def _sse(event_type: str, **payload) -> str:
@@ -79,9 +82,8 @@ async def knowledge_stream(request: Request, body: KBQueryRequest):
                 })
             yield _sse("sources", sources=sources)
             yield _sse("tool_end", tool=f"检索完毕，找到 {len(docs)} 条相关资料")
-            if not getattr(llm, "api_key", ""):
-                yield _sse("degraded", reason="未配置 LLM，返回本地资料片段")
-                yield _sse("report", content=context or "本地知识库未找到相关资料。")
+            if not docs:
+                yield _sse("report", content="本地知识库未找到相关资料，请补充资料或换一种问法。")
                 yield 'data: {"type": "done"}\n\n'
                 return
             from langchain_core.messages import HumanMessage, SystemMessage
@@ -90,7 +92,7 @@ async def knowledge_stream(request: Request, body: KBQueryRequest):
 内部资料：\n{context}\n\n用户提问：{body.query}"""
             response_text = ""
             async with llm_semaphore:
-                async for chunk in llm._astream(
+                async for chunk in knowledge_llm._astream(
                     [SystemMessage(content="你是企业合规知识库助手。"), HumanMessage(content=prompt)],
                     enable_thinking=False,
                 ):

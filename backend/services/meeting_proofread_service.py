@@ -28,11 +28,13 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+
+from backend.config import DATA_ROOT
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 PROOFREAD_VERSION = "meeting-proofread-v1"
-DEFAULT_GLOSSARY_PATH = Path(__file__).resolve().parents[2] / "data" / "glossary.json"
+DEFAULT_GLOSSARY_PATH = DATA_ROOT / "glossary.json"
 _CORRECTOR = Callable[[str, list[dict[str, Any]], Mapping[str, Any]], Any]
 
 

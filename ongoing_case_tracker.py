@@ -1,4 +1,5 @@
 import json
+import os
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
@@ -28,8 +29,8 @@ class OngoingCase:
         return cls(**data)
 
 class OngoingCaseTracker:
-    def __init__(self, data_path: str = 'data/ongoing_cases.json'):
-        self.data_path = data_path
+    def __init__(self, data_path: str = None):
+        self.data_path = data_path or os.path.join(os.environ.get("AI616_DATA_DIR", "data"), "ongoing_cases.json")
         self.ongoing_cases: Dict[str, OngoingCase] = {}
         self._load_data()
 

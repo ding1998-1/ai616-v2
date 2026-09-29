@@ -1,4 +1,5 @@
 import json
+import os
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -30,8 +31,8 @@ class LegalCase:
         return cls(**data)
 
 class LegalCaseDatabase:
-    def __init__(self, db_path: str = 'data/legal_cases.json'):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or os.path.join(os.environ.get("AI616_DATA_DIR", "data"), "legal_cases.json")
         self.cases: Dict[str, LegalCase] = {}
         self._load_database()
 

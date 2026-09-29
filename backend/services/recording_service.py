@@ -223,6 +223,23 @@ def _probe_duration(path: Path) -> float:
         return 0.0
 
 
+def expected_duration_for_merge(duration_seconds: int | None, client_id: str) -> int | None:
+    """Return a trustworthy duration gate for one recording source.
+
+    Mobile/H5 supplies a device identity and its own capture duration, so the
+    duration remains an independent completeness signal. Desktop recording has
+    no client id and its wall-clock duration includes system sleep/browser
+    suspension; chunk ACK continuity is the authoritative completeness check.
+    """
+    if not sanitize_client_id(client_id):
+        return None
+    try:
+        duration = int(duration_seconds or 0)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
+
+
 def _join_continuous_chunks(chunks: list[Path], output: Path) -> None:
     """MediaRecorder 后续分片是连续 cluster，必须原样顺序拼接。"""
 

@@ -13,6 +13,7 @@ from backend.services.meeting_service import (
     update_stage,
     upsert_meeting,
 )
+from backend.services.meeting_payload_service import compact_meeting_detail
 from backend.services.voiceprint_preflight_service import (
     VoiceprintPreflightError,
     check_meeting_voiceprints,
@@ -24,8 +25,8 @@ router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
 @router.get("")
 async def list_meeting_route(request: Request, include_archived: bool = False, limit: int = 50, offset: int = 0):
-    require_user(request)
-    return {"success": True, **list_meetings(include_archived, limit, offset)}
+    user = require_user(request)
+    return {"success": True, **list_meetings(user, include_archived, limit, offset)}
 
 
 @router.post("")
@@ -44,12 +45,15 @@ async def upsert_meeting_route(request: Request, body: MeetingUpsertRequest):
 
 
 @router.get("/{meeting_id}")
-async def get_meeting_route(request: Request, meeting_id: str):
+async def get_meeting_route(request: Request, meeting_id: str, compact: bool = False):
     _, safe_id, _ = require_meeting(request, meeting_id)
     meeting = get_meeting(safe_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="会议不存在")
-    return {"success": True, "meeting": _public_meeting(meeting, include_detail=True)}
+    payload = _public_meeting(meeting, include_detail=True)
+    if compact:
+        payload = compact_meeting_detail(payload)
+    return {"success": True, "meeting": payload}
 
 
 @router.patch("/{meeting_id}")

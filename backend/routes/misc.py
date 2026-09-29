@@ -217,8 +217,12 @@ async def export_all(request: Request):
 
 @router.get("/api/export/meetings/{meeting_id}")
 async def export_single(request: Request, meeting_id: str):
-    require_user(request)
+    user = require_user(request)
     safe_id = _safe_meeting_id(meeting_id)
+    meeting = _load_meetings().get(safe_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    _check_meeting_access(user, meeting)
     _init_app_db()
     with _db_connect() as conn:
         meetings = _meeting_export_payload(conn, safe_id)
@@ -239,12 +243,37 @@ async def export_single(request: Request, meeting_id: str):
 
 @router.get("/api/dashboard/stats")
 async def dashboard_stats(request: Request):
-    require_user(request)
+    user = require_user(request)
     _init_app_db()
+    visible = []
+    for meeting in _load_meetings().values():
+        try:
+            _check_meeting_access(user, meeting)
+            visible.append(meeting)
+        except HTTPException:
+            continue
+    visible_ids = [item.get("id") for item in visible if item.get("id")]
+    active = sum(1 for item in visible if item.get("phase") not in {"已归档", ""})
+    archived = sum(1 for item in visible if item.get("phase") == "已归档")
+    recent = sorted(visible, key=lambda item: item.get("updatedAt") or item.get("createdAt") or "", reverse=True)[:5]
     with _db_connect() as conn:
-        total = conn.execute("SELECT COUNT(*) AS cnt FROM meetings").fetchone()["cnt"]
-        active = conn.execute("SELECT COUNT(*) AS cnt FROM meetings WHERE phase NOT IN ('已归档', '')").fetchone()["cnt"]
-        archived = conn.execute("SELECT COUNT(*) AS cnt FROM meetings WHERE phase = '已归档'").fetchone()["cnt"]
-        total_transcripts = conn.execute("SELECT COUNT(*) AS cnt FROM meeting_transcripts").fetchone()["cnt"]
-        recent = conn.execute("SELECT id, title, project, phase, meeting_date, updated_at FROM meetings ORDER BY updated_at DESC LIMIT 5").fetchall()
-    return {"totalMeetings": total, "activeMeetings": active, "archivedMeetings": archived, "totalTranscripts": total_transcripts, "recentMeetings": [dict(row) for row in recent]}
+        if visible_ids:
+            placeholders = ",".join("?" for _ in visible_ids)
+            total_transcripts = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM meeting_transcripts WHERE meeting_id IN ({placeholders})",
+                visible_ids,
+            ).fetchone()["cnt"]
+        else:
+            total_transcripts = 0
+    return {
+        "totalMeetings": len(visible), "activeMeetings": active,
+        "archivedMeetings": archived, "totalTranscripts": total_transcripts,
+        "recentMeetings": [
+            {
+                "id": item.get("id"), "title": item.get("title"),
+                "project": item.get("project"), "phase": item.get("phase"),
+                "meeting_date": item.get("date"), "updated_at": item.get("updatedAt"),
+            }
+            for item in recent
+        ],
+    }

@@ -520,3 +520,157 @@ select,
 }
 @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
 .radar-pulse { animation: pulse 1.5s infinite ease-in-out; }
+
+/* Enterprise appearance: opt-in and independent of light/dark mode. */
+html[data-meeting-appearance="enterprise"] {
+  --ui-primary:#234d79; --ui-primary-hover:#173c64; --ui-primary-soft:#edf2f8;
+  --ui-text-1:#192b40; --ui-text-2:#4e6074; --ui-text-3:#708095;
+  --ui-border-2:#d9e1ea; --ui-fill-1:#f4f6f9; --ui-fill-2:#eaf0f5;
+  --ui-bg-page:#edf1f5; --ui-bg-panel:#fff;
+  --ui-shadow-panel:0 2px 8px rgba(22,43,66,.035);
+}
+html[data-meeting-appearance="enterprise"][data-ui-theme="dark"] {
+  --ui-primary:#7da9dd; --ui-primary-soft:#1a304a; --ui-text-1:#e6edf5;
+  --ui-text-2:#b7c6d7; --ui-text-3:#91a5bc; --ui-border-2:#34475d;
+  --ui-fill-1:#1a293b; --ui-fill-2:#24364b; --ui-bg-page:#0e1b2b; --ui-bg-panel:#142438;
+}
+html[data-meeting-appearance="enterprise"] .app-shell > .ant-layout-sider {
+  background:#152e4c !important; border-right:1px solid #294460 !important; backdrop-filter:none !important;
+}
+html[data-meeting-appearance="enterprise"] .app-sidebar-brand { border-bottom:1px solid #30455e; }
+html[data-meeting-appearance="enterprise"] :is(.app-brand-title,.app-sidebar-name) { color:#f3f6fa !important; }
+html[data-meeting-appearance="enterprise"] .app-sidebar-profile {
+  background:#203c5b !important; border:1px solid #39516c !important; border-radius:8px !important; box-shadow:none !important;
+}
+html[data-meeting-appearance="enterprise"] .app-sidebar-brand [style*="color: rgb(139"] { color:#bbcbdc !important; }
+html[data-meeting-appearance="enterprise"] .ant-layout-header { border-bottom:1px solid var(--ui-border-2); margin-bottom:12px; }
+html[data-meeting-appearance="enterprise"] .meeting-workbench-hero {
+  background:var(--ui-bg-panel) !important; border:1px solid var(--ui-border-2); border-top:3px solid var(--ui-primary); border-radius:8px; box-shadow:none;
+}
+html[data-meeting-appearance="enterprise"] .meeting-workbench-hero::before,
+html[data-meeting-appearance="enterprise"] .meeting-workbench-hero::after { display:none; }
+html[data-meeting-appearance="enterprise"] :is(.meeting-home-metric,.meeting-aside-card,.meeting-home-list,.meeting-create-panel,.meeting-history-result-card,.meeting-history-agenda-card,.meeting-history-audio-card,.meeting-history-summary-card) {
+  border-radius:8px !important; border-color:var(--ui-border-2) !important; background:var(--ui-bg-panel) !important; box-shadow:none !important;
+}
+html[data-meeting-appearance="enterprise"] :is(.meeting-home-metric strong,.meeting-home-metric span,.meeting-home-row,.meeting-history-heading,.meeting-history-topic,.meeting-history-page) { color:var(--ui-text-1); }
+html[data-meeting-appearance="enterprise"] .meeting-home-row:hover { transform:none; box-shadow:inset 3px 0 var(--ui-primary); background:var(--ui-primary-soft); }
+html[data-meeting-appearance="enterprise"] :is(.meeting-history-toolbar,.meeting-history-notice,.meeting-history-page-intro,.meeting-compact-header,.meeting-control-hero) {
+  background:var(--ui-fill-1) !important; border-color:var(--ui-border-2) !important; border-radius:8px;
+}
+html[data-meeting-appearance="enterprise"] :is(.ant-modal-content,.ant-drawer-content,.minutes-template-preview) { background:var(--ui-bg-panel); color:var(--ui-text-1); }
+html[data-meeting-appearance="enterprise"] :is(.meeting-history-drawer,.meeting-compliance-page) h2 { letter-spacing:.02em; }
+html[data-meeting-appearance="enterprise"] .meeting-voiceprint-bar { animation-duration:3s; }
+
+html[data-meeting-appearance="enterprise"] .meeting-home { background:var(--ui-bg-page); }
+html[data-meeting-appearance="enterprise"] .meeting-workbench-heading .ant-typography { color:var(--ui-text-1); }
+html[data-meeting-appearance="enterprise"] .meeting-modern-greeting { display:none; }
+html[data-meeting-appearance="enterprise"] .meeting-create-refined .ref-col { border-radius:8px; box-shadow:none; border-color:var(--ui-border-2); }
+html[data-meeting-appearance="enterprise"] .meeting-create-refined .ref-btn-primary:not(:disabled) { background:var(--ui-primary); box-shadow:none; border-radius:6px; }
+html[data-meeting-appearance="enterprise"] .meeting-create-refined :is(.ref-col-title,.ref-create-title) { color:var(--ui-text-1); }
+
+.meeting-type-options { display:flex; flex-wrap:wrap; gap:8px; }
+.meeting-type-options .ant-radio-button-wrapper { border-inline-start-width:1px; border-radius:6px; }
+.meeting-type-options .ant-radio-button-wrapper::before { display:none; }
+.ref-quick-agenda-add > .ant-input { flex:1; min-width:0; }
+.ref-quick-agenda-add > .ant-btn { flex-shrink:0; }
+
+/* Enterprise appearance: restrained surfaces and stable information hierarchy. */
+.meeting-enterprise-heading { display:none; }
+html[data-meeting-appearance="enterprise"] .meeting-enterprise-heading { display:inline; }
+html[data-meeting-appearance="enterprise"] :is(.meeting-workbench-main,.meeting-aside-card,.meeting-workbench-hero,.ref-col,.ref-agenda-items-scroll) { border-radius:6px !important; box-shadow:none !important; }
+html[data-meeting-appearance="enterprise"] .meeting-workbench-hero { padding:18px 20px; }
+html[data-meeting-appearance="enterprise"] .meeting-workbench-heading .ant-typography { font-size:24px; letter-spacing:0; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metrics { gap:0; border-top:1px solid var(--ui-border-2); padding-top:16px; margin-top:16px; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric { border:0 !important; border-right:1px solid var(--ui-border-2) !important; border-radius:0 !important; padding:4px 20px; background:transparent !important; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric:last-child { border-right:0 !important; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric:hover { transform:none; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric .meeting-metric-icon { border-radius:4px; background:var(--ui-fill-1); color:var(--ui-primary); }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric small { color:var(--ui-text-2); }
+html[data-meeting-appearance="enterprise"] .meeting-home-table-head { background:var(--ui-fill-2); color:var(--ui-text-1); font-size:13px; min-height:42px; }
+html[data-meeting-appearance="enterprise"] .meeting-home-row { border-bottom-color:var(--ui-border-2); }
+html[data-meeting-appearance="enterprise"] .meeting-home-filters button { border-radius:4px; background:transparent; }
+html[data-meeting-appearance="enterprise"] .meeting-home-filters button.is-active { color:var(--ui-primary); background:var(--ui-primary-soft); border-color:var(--ui-border-2); box-shadow:inset 0 -2px var(--ui-primary); }
+html[data-meeting-appearance="enterprise"] .meeting-home-create { border-radius:6px !important; box-shadow:none; }
+html[data-meeting-appearance="enterprise"] .meeting-data-bars i { background:#809bb7; border-radius:2px 2px 0 0; }
+html[data-meeting-appearance="enterprise"] .ref-manual-agenda-item { background:var(--ui-bg-panel); border-color:var(--ui-border-2); border-radius:4px; color:var(--ui-text-1); }
+html[data-meeting-appearance="enterprise"] .ref-manual-agenda-item > span:first-child { background:var(--ui-fill-2); color:var(--ui-primary); border-radius:4px; }
+html[data-meeting-appearance="enterprise"] .ref-quick-agenda-add { border-radius:0 0 6px 6px; }
+html[data-meeting-appearance="enterprise"] .ref-col-title { border-left:3px solid var(--ui-primary); padding-left:10px; font-size:18px; }
+@media (min-width:901px) {
+  html[data-meeting-appearance="enterprise"] .meeting-create-refined .ref-create-layout-v2 { max-height:740px; }
+}
+html[data-meeting-appearance="enterprise"] .meeting-home-toolbar { flex-wrap:wrap; }
+html[data-meeting-appearance="enterprise"] .meeting-home-filters { flex-shrink:0; }
+html[data-meeting-appearance="enterprise"] .meeting-toolbar-actions { flex-wrap:wrap; margin-left:auto; }
+
+/* Enterprise density: preserve the palette, reserve space for working content. */
+@media (min-width: 901px) {
+  html[data-meeting-appearance="enterprise"] .app-shell .ant-layout-header { padding:12px 24px 10px !important; margin-bottom:0; }
+  html[data-meeting-appearance="enterprise"] .meeting-home { padding:12px 16px; }
+  html[data-meeting-appearance="enterprise"] .meeting-workbench-shell { max-width:none; gap:10px; }
+  html[data-meeting-appearance="enterprise"] .meeting-workbench-hero { padding:12px 16px; }
+  html[data-meeting-appearance="enterprise"] .meeting-workbench-heading .ant-typography { font-size:20px; }
+  html[data-meeting-appearance="enterprise"] .meeting-workbench-heading p { margin-top:4px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-metrics { margin-top:10px; padding-top:10px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-metric { padding:2px 16px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-metric strong { font-size:22px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-row { min-height:72px; padding-block:8px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-next { margin-top:3px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-table-head { min-height:36px; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-toolbar { padding:8px 12px; gap:6px 12px; }
+  html[data-meeting-appearance="enterprise"] .meeting-create-refined { padding:16px 20px; }
+  html[data-meeting-appearance="enterprise"] .ref-create-intro { margin-bottom:14px; }
+  html[data-meeting-appearance="enterprise"] .ref-create-title { font-size:22px; }
+  html[data-meeting-appearance="enterprise"] .meeting-create-refined .ref-create-layout-v2 { grid-template-columns:minmax(0,1fr) 410px; gap:16px; max-height:660px; }
+  html[data-meeting-appearance="enterprise"] .meeting-create-refined :is(.ref-agenda-workspace,.ref-settings-workspace) { padding:16px; }
+  html[data-meeting-appearance="enterprise"] .ref-settings-head { padding-bottom:12px; margin-bottom:12px; }
+  html[data-meeting-appearance="enterprise"] .ref-field { margin-bottom:14px; }
+  html[data-meeting-appearance="enterprise"] .ref-field-label { margin-bottom:6px; }
+  html[data-meeting-appearance="enterprise"] .ref-settings-footer { padding-top:12px; margin-top:12px; }
+  html[data-meeting-appearance="enterprise"] .ref-col-title { font-size:16px; }
+  html[data-meeting-appearance="enterprise"] .ref-col-desc { margin-top:4px; }
+  html[data-meeting-appearance="enterprise"] .meeting-type-options { gap:6px; }
+  html[data-meeting-appearance="enterprise"] .ref-agenda-hint { margin-top:10px; }
+}
+@media (min-width:901px) {
+  html[data-meeting-appearance="enterprise"] .meeting-toolbar-actions { flex:1 0 100%; width:100%; justify-content:flex-start; flex-wrap:nowrap; }
+  html[data-meeting-appearance="enterprise"] .meeting-home-search { margin-left:auto; flex:0 1 280px; }
+}
+@media (min-width:901px) {
+  html[data-meeting-appearance="enterprise"] .ref-meeting-info-panel .ref-settings-form { gap:12px; padding-top:8px; }
+  html[data-meeting-appearance="enterprise"] .ref-meeting-info-panel .ref-field { margin:0; }
+  html[data-meeting-appearance="enterprise"] .ref-meeting-info-panel .ref-settings-head { padding-bottom:12px; margin-bottom:0; }
+  html[data-meeting-appearance="enterprise"] .ref-meeting-info-panel .ref-field-label { margin-bottom:6px; }
+}
+
+html[data-meeting-appearance="enterprise"] .app-sidebar-status {
+  background:rgba(255,255,255,.045) !important;
+  border:1px solid rgba(180,201,224,.12);
+  border-radius:6px !important;
+}
+html[data-meeting-appearance="enterprise"] .app-sidebar-status > span:last-child { color:#b9c9dc !important; }
+html[data-meeting-appearance="enterprise"] .app-sidebar-status > span:first-child { box-shadow:none !important; }
+html[data-meeting-appearance="enterprise"] .app-shell .ant-menu-item-divider { border-color:rgba(180,201,224,.18); }
+
+/* Enterprise shell: quiet persistent status and consistent work surfaces. */
+html[data-meeting-appearance="enterprise"] .app-shell > .ant-layout-sider .ant-layout-sider-children {
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  min-height:0;
+}
+html[data-meeting-appearance="enterprise"] .app-sidebar-brand { flex-shrink:0; }
+html[data-meeting-appearance="enterprise"] .app-shell > .ant-layout-sider .ant-menu-root { min-height:0; overflow-y:auto; }
+html[data-meeting-appearance="enterprise"] .app-sidebar-status-footer { margin-top:auto; padding-top:12px; }
+html[data-meeting-appearance="enterprise"] .app-sidebar-status { background:transparent !important; border:0; padding-block:8px !important; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric .meeting-metric-icon { background:transparent; }
+html[data-meeting-appearance="enterprise"] .meeting-home-metric strong { font-weight:600; }
+html[data-meeting-appearance="enterprise"] :is(.minutes-overview-panel,.archive-readiness-panel,.record-review-side-card) { border-radius:6px; box-shadow:none; }
+html[data-meeting-appearance="enterprise"] :is(.meeting-history-footer,.record-review-footer,.minutes-template-footer) { border-top:1px solid var(--ui-border-2); box-shadow:none; }
+@media (min-width:901px) {
+  html[data-meeting-appearance="enterprise"] .meeting-compliance-page .meeting-compact-header { padding:12px 16px !important; border-radius:6px !important; }
+  html[data-meeting-appearance="enterprise"] .meeting-compliance-page.is-stage-meeting .meeting-compact-title > span { font-size:22px; letter-spacing:0; }
+  html[data-meeting-appearance="enterprise"] .meeting-header-participant-wrap { padding:8px 10px !important; border-radius:6px !important; }
+  html[data-meeting-appearance="enterprise"] :is(.meeting-compact-header-grid.is-meeting,.archive-primary-stack) { gap:12px; }
+  html[data-meeting-appearance="enterprise"] .meeting-history-page-intro { padding:14px 16px; }
+}

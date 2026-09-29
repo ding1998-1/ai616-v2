@@ -19,13 +19,12 @@ from backend.config import APP_DB_LOCK
 from backend.db import _db_connect, _init_app_db
 from backend.services.permission_service import can_view_agenda
 from backend.services.document_service import parse_document_bytes
-from backend.config import PERSIST_DIR
+from backend.config import DOCS_DIR, KNOWLEDGE_FILES_DIR, PERSIST_DIR, SEED_DEMO_DATA
 
 STOPWORDS = {"的", "了", "在", "是", "和", "与", "或", "及", "有", "对", "于", "就", "都", "吗", "呢", "吧"}
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-KNOWLEDGE_FILES_DIR = PROJECT_ROOT / "data" / "knowledge_files"
 KNOWLEDGE_FILES_DIR.mkdir(parents=True, exist_ok=True)
 KNOWLEDGE_FILES_DB = KNOWLEDGE_FILES_DIR / "files.json"
 
@@ -41,6 +40,8 @@ def load_knowledge_files() -> list[dict]:
                 return data
         except (OSError, json.JSONDecodeError):
             logger.warning("知识库文件索引读取失败，将使用内置样例")
+    if not SEED_DEMO_DATA:
+        return []
     try:
         from demo_content import get_seed_knowledge_files
 
@@ -54,7 +55,7 @@ def save_knowledge_files(files: list[dict]) -> None:
 
 
 def _resolve_saved_name(record: dict, docs_dir: Path | None = None) -> str | None:
-    docs_dir = docs_dir or (PROJECT_ROOT / "data" / "docs")
+    docs_dir = docs_dir or DOCS_DIR
     current = record.get("savedName")
     if current and (docs_dir / Path(str(current)).name).exists():
         return Path(str(current)).name
@@ -87,7 +88,7 @@ def repair_knowledge_files(files: list[dict], persist: bool = False) -> list[dic
 
 
 def discover_orphaned_docs(files: list[dict], persist: bool = False) -> list[dict]:
-    docs_dir = PROJECT_ROOT / "data" / "docs"
+    docs_dir = DOCS_DIR
     if not docs_dir.exists():
         return files
     tracked = {item.get("savedName") for item in files if item.get("savedName")}

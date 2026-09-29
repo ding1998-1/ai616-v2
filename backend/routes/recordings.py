@@ -21,6 +21,7 @@ from backend.services.recording_service import (
     record_chunk_receipt,
     finalize_recording_manifest,
     get_recording_manifest,
+    expected_duration_for_merge,
     recording_dir,
     recording_completion_lock,
     sanitize_client_id,
@@ -232,7 +233,7 @@ async def complete_audio(
                 directory,
                 chunks,
                 audio_id,
-                expected_duration_seconds=duration_seconds,
+                expected_duration_seconds=expected_duration_for_merge(duration_seconds, client_id),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
